@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Feishu Document CLI — create, read, write documents.
+"""Feishu Document CLI — create, read, write, comment on documents.
 
 Usage:
     doc_ctl.py create "title" [--content "text"] [--folder TOKEN] [--share OPEN_ID]
     doc_ctl.py read <doc_id_or_url>
     doc_ctl.py append <doc_id> "content"
     doc_ctl.py list [--folder TOKEN]
+    doc_ctl.py comments <doc_id_or_url>
+    doc_ctl.py reply <doc_id_or_url> <comment_id> "reply text"
 """
 
 import argparse
@@ -168,6 +170,82 @@ def cmd_append(args, api, cfg):
     print(f"Appended {len(blocks)} blocks to {doc_id}")
 
 
+def cmd_comments(args, api, cfg):
+    """List all comments (with replies) on a document."""
+    doc_id = _extract_doc_id(args.doc_id)
+    file_type = args.file_type or "docx"
+
+    items = []
+    page_token = None
+    while True:
+        params = {"file_type": file_type, "page_size": "50"}
+        if page_token:
+            params["page_token"] = page_token
+        resp = api.get(f"/open-apis/drive/v1/files/{doc_id}/comments", params=params)
+        if resp.get("code") != 0:
+            print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+            sys.exit(1)
+        items.extend(resp.get("data", {}).get("items", []))
+        if not resp.get("data", {}).get("has_more"):
+            break
+        page_token = resp["data"].get("page_token")
+
+    if not items:
+        print("No comments found.")
+        return
+
+    for c in items:
+        solved = " [RESOLVED]" if c.get("is_solved") else ""
+        quote = c.get("quote", "").replace("\n", " ")
+        if len(quote) > 80:
+            quote = quote[:77] + "..."
+        print(f"Comment {c['comment_id']}{solved}")
+        if quote:
+            print(f"  Quote: \"{quote}\"")
+        replies = c.get("reply_list", {}).get("replies", [])
+        for r in replies:
+            text = _extract_reply_text(r)
+            print(f"  [{r['reply_id']}] {text}")
+        print()
+
+
+def _extract_reply_text(reply: dict) -> str:
+    """Extract plain text from a comment reply's content elements."""
+    elements = reply.get("content", {}).get("elements", [])
+    parts = []
+    for el in elements:
+        if el.get("type") == "text_run":
+            parts.append(el.get("text_run", {}).get("text", ""))
+        elif el.get("type") == "person":
+            parts.append(f"@{el.get('person', {}).get('user_id', '?')}")
+        elif el.get("type") == "docs_link":
+            parts.append(el.get("docs_link", {}).get("url", "[link]"))
+    return "".join(parts) or "(empty)"
+
+
+def cmd_reply(args, api, cfg):
+    """Reply to a specific comment on a document."""
+    doc_id = _extract_doc_id(args.doc_id)
+    file_type = args.file_type or "docx"
+
+    body = {
+        "content": {
+            "elements": [
+                {"type": "text_run", "text_run": {"text": args.content}}
+            ]
+        }
+    }
+    resp = api.post(
+        f"/open-apis/drive/v1/files/{doc_id}/comments/{args.comment_id}/replies",
+        body=body,
+        params={"file_type": file_type},
+    )
+    if resp.get("code") != 0:
+        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Replied to comment {args.comment_id} (reply_id: {resp['data']['reply_id']})")
+
+
 def cmd_list(args, api, cfg):
     folder = args.folder
     if not folder:
@@ -223,6 +301,18 @@ def main():
     ls = sub.add_parser("list")
     ls.add_argument("--folder", help="Folder token")
 
+    cm = sub.add_parser("comments")
+    cm.add_argument("doc_id", help="Document ID or URL")
+    cm.add_argument("--file-type", dest="file_type", default="docx",
+                    help="File type (docx, doc, sheet, etc.)")
+
+    rp = sub.add_parser("reply")
+    rp.add_argument("doc_id", help="Document ID or URL")
+    rp.add_argument("comment_id", help="Comment ID to reply to")
+    rp.add_argument("content", help="Reply text")
+    rp.add_argument("--file-type", dest="file_type", default="docx",
+                    help="File type (docx, doc, sheet, etc.)")
+
     args = parser.parse_args()
     if not args.action:
         parser.print_help()
@@ -236,6 +326,8 @@ def main():
         "read": cmd_read,
         "append": cmd_append,
         "list": cmd_list,
+        "comments": cmd_comments,
+        "reply": cmd_reply,
     }
     dispatch[args.action](args, api, cfg)
 

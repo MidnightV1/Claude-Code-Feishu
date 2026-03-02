@@ -15,6 +15,7 @@ from scheduler import CronScheduler
 from heartbeat import HeartbeatMonitor
 from dispatcher import Dispatcher
 from file_store import FileStore
+from feishu_api import FeishuAPI
 
 log = logging.getLogger("hub.feishu_bot")
 
@@ -72,20 +73,7 @@ FEISHU_SYSTEM_PROMPT = """\
 - `#flash` — Gemini 3-Flash
 - hub-ops skill — 定时任务管理
 
-**长程任务模式（重要）**
-
-当任务需要**多个步骤**且**执行时间较长**（用户会等待超过 30 秒）时，**必须**使用长程任务模式。这是用户体验设计——让用户看到进度而非干等。
-
-典型场景：调研+整理+输出文档、跨文件修改、分析+设计+实现、任何涉及 3+ 工具调用的复合任务。
-
-触发方式——执行以下 bash 命令：
-```
-python3 .claude/skills/long-task/scripts/task_ctl.py create --goal "任务目标" --plan '{"steps": [{"name": "步骤名", "description": "做什么", "acceptance": "完成标准"}, ...]}'
-```
-
-调用后告诉用户：「已创建任务计划，请在进度卡片中确认后开始执行。」
-
-**不要用于**：简单问答、单步操作、闲聊。
+- long-task skill — 多步骤+长耗时任务走任务模式（用户不应干等），详见 `.claude/skills/long-task/SKILL.md`
 
 ### 回复规范
 
@@ -157,6 +145,7 @@ class FeishuBot:
         self._dedup: dict[str, float] = {}
         self._sender_cache: dict[str, tuple[str, float]] = {}
         self._bot_open_id: str | None = None
+        self._feishu_api = FeishuAPI(self.app_id, self.app_secret, self.domain)
 
     def register_command(self, prefix: str, handler, help_lines: str | None = None):
         """Register a plugin command handler. handler: async (cmd, args) -> str"""
@@ -263,6 +252,12 @@ class FeishuBot:
                         text = text.replace(m.key, "").strip() if m.key else text
                 if not text:
                     return
+
+                # Prepend quoted message content if this is a reply
+                if msg.parent_id:
+                    quoted = self._fetch_quoted_text(msg.parent_id)
+                    if quoted:
+                        text = f"[用户引用的消息: {quoted}]\n\n{text}"
 
                 # Commands bypass debounce
                 if text.startswith("#"):
@@ -1184,15 +1179,56 @@ class FeishuBot:
         if msg_type == "text":
             return content.get("text", "")
         elif msg_type == "post":
-            texts = []
+            lines = []
             for lang_content in content.values():
-                if isinstance(lang_content, dict):
-                    for para in lang_content.get("content", []):
-                        for elem in para:
-                            if elem.get("tag") in ("text", "md"):
-                                texts.append(elem.get("text", ""))
-            return "\n".join(texts)
+                if not isinstance(lang_content, dict):
+                    continue
+                title = lang_content.get("title")
+                if title:
+                    lines.append(title)
+                for para in lang_content.get("content", []):
+                    parts = []
+                    for elem in para:
+                        tag = elem.get("tag", "")
+                        if tag in ("text", "md"):
+                            parts.append(elem.get("text", ""))
+                        elif tag == "a":
+                            text = elem.get("text", "")
+                            href = elem.get("href", "")
+                            parts.append(f"[{text}]({href})" if href else text)
+                        elif tag == "at":
+                            parts.append(elem.get("name", elem.get("key", "")))
+                        elif tag == "code_block":
+                            lang = elem.get("language", "")
+                            parts.append(f"```{lang}\n{elem.get('text', '')}\n```")
+                        elif tag == "emotion":
+                            parts.append(f":{elem.get('emoji_type', '')}:")
+                        # img/media/hr — skip, no text content
+                    if parts:
+                        lines.append("".join(parts))
+                if lines:
+                    break  # use first available language
+            return "\n".join(lines)
         return ""
+
+    def _fetch_quoted_text(self, parent_id: str) -> str:
+        """Fetch the content of a quoted/replied-to message via API."""
+        try:
+            resp = self._feishu_api.get(f"/open-apis/im/v1/messages/{parent_id}")
+            if resp.get("code") != 0:
+                log.warning("Failed to fetch parent message %s: %s",
+                            parent_id, resp.get("msg"))
+                return ""
+            items = resp.get("data", {}).get("items", [])
+            if not items:
+                return ""
+            item = items[0]
+            msg_type = item.get("msg_type", "")
+            body = item.get("body", {}).get("content", "")
+            return self._parse_content(body, msg_type)
+        except Exception as e:
+            log.warning("Error fetching parent message %s: %s", parent_id, e)
+            return ""
 
     def _is_duplicate(self, message_id: str) -> bool:
         now = time.time()
