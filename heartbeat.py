@@ -23,9 +23,9 @@ HEARTBEAT_TOKEN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 DEFAULT_PROMPT_TEMPLATE = (
-    "Current time: {current_time}\n\n"
-    "Review the tasks below. If any need action now, do it and report briefly.\n"
-    "If nothing needs attention, reply HEARTBEAT_OK.\n\n"
+    "当前时间：{current_time}\n\n"
+    "请用中文检查以下任务。如有需要立即处理的事项，简要报告。\n"
+    "如一切正常，回复 HEARTBEAT_OK。\n\n"
     "{heartbeat_content}"
 )
 ACK_MAX_CHARS = 300

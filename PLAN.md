@@ -321,3 +321,216 @@ cd ~/workspace/nas-claude-hub && screen -S claude-hub && python3 main.py
 8. **Cron**：`#cron add test "*/5 * * * *" "say hi" --model gemini-api/2.5-Flash` → 验证
 9. **心跳**：HEARTBEAT.md 写入任务 → `#heartbeat run` → 确认走 Flash-Lite 且投递
 10. **心跳抑制**：清空 HEARTBEAT.md → 确认跳过
+
+---
+
+## Long Task：可观测的长程任务执行
+
+### 问题
+
+当前架构：用户消息 → 单次 Claude CLI 调用（最长 10min）→ 一次性返回。中间完全黑盒——无进度、不知卡没卡、crash 也无感知。
+
+### 架构：Plan → Approve → Execute → Report
+
+```
+#task <目标描述>
+    ↓
+1. Plan — Claude 生成结构化计划（JSON）
+    ↓
+2. Approve — 飞书卡片展示计划，用户确认/修改
+    ↓
+3. Execute — 逐步执行，每步独立 Claude CLI 调用
+    ├→ 飞书卡片实时更新（同一张卡片刷新内容）
+    ├→ 飞书任务子任务逐个打勾（P1）
+    └→ 异常/超时 → 通知用户
+    ↓
+4. Report — 完成摘要 + 标记任务完成
+```
+
+### 数据结构
+
+```python
+@dataclass
+class TaskPlan:
+    task_id: str                    # UUID[:12]
+    session_key: str                # "user:ou_xxx" / "chat:oc_xxx"
+    status: str                     # planning → awaiting_approval → executing → completed → failed
+    goal: str                       # 用户原始请求
+    steps: list[TaskStep]           # 结构化计划
+    current_step: int               # 当前执行到第几步（0-indexed）
+    progress_message_id: str | None # 进度卡片的 message_id（用于 update）
+    feishu_task_guid: str | None    # 飞书任务 GUID（P1）
+    cli_session_id: str | None      # Claude CLI session（跨步骤复用上下文）
+    created_at: float
+    updated_at: float
+    results: list[str]              # 每步执行结果
+    error: str | None
+
+@dataclass
+class TaskStep:
+    name: str                       # 步骤名称
+    description: str                # 具体要做什么
+    acceptance: str                 # 验收标准
+    status: str                     # pending → running → completed → failed
+    result: str | None
+```
+
+### 状态机
+
+```
+        #task 触发
+            ↓
+       ┌─ planning ──────→ awaiting_approval ─┐
+       │    (Claude 生成 plan)    (发卡片等确认)   │
+       │                                        ↓
+       │                    用户 "ok" ────→ executing
+       │                    用户修改 ────→ planning（replan）
+       │                                    │
+       │                         ┌──────────┤
+       │                         ↓          ↓
+       │                    step N done   step N fail
+       │                         │          │
+       │                         ↓          ↓
+       │                   N < total?    failed
+       │                    yes → next step
+       │                    no  ↓
+       │                   completed
+       └───────────────────────────────────┘
+              任何阶段 crash → heartbeat 检测
+```
+
+### 消息路由变更
+
+`feishu_bot.py` 的消息处理增加任务状态检查：
+
+```
+消息到达
+  ↓
+是 #task 命令？→ 创建 TaskPlan，进入 planning
+  ↓ 否
+当前用户有 awaiting_approval 的任务？→ 路由到 task_runner（处理确认/修改）
+  ↓ 否
+正常 LLM 路由（现有逻辑不变）
+```
+
+### 双通道进度
+
+| 通道 | 机制 | 时效 | 持久 |
+|------|------|------|------|
+| **飞书卡片更新** | 发卡片 → 拿 message_id → PATCH 更新内容 | 实时 | 低 |
+| **飞书任务** | 创建 Task + 子任务 → 逐步 complete | 事件 | 高 |
+
+卡片更新示例（执行中）：
+```
+📋 重构 briefing 模块
+
+✅ 1. 分析现有 briefing.py 结构
+✅ 2. 设计 Collector 接口
+🔄 3. 实现 collector.py        ← 当前
+⬜ 4. 重构 briefing.py 调用
+⬜ 5. 运行测试
+
+> Step 3/5 执行中...
+```
+
+### 心跳集成
+
+心跳快照增加任务池状态，注入 HEARTBEAT.md 内容之后、发给 LLM 之前：
+
+```python
+# heartbeat.py — 扩展 snapshot
+def _collect_task_snapshot(self) -> str:
+    tasks = task_store.list_active()
+    if not tasks:
+        return ""
+    lines = ["## 活跃任务"]
+    for t in tasks:
+        age = format_duration(time.time() - t.updated_at)
+        lines.append(f"- [{t.status}] {t.goal} (Step {t.current_step+1}/{len(t.steps)}, {age}前更新)")
+    return "\n".join(lines)
+```
+
+心跳 LLM 判断规则（自然语言，写入 HEARTBEAT.md 或 prompt）：
+- 执行中任务超过 15min 无更新 → 可能卡住
+- awaiting_approval 超过 2h → 提醒用户确认
+- completed 超过 24h 未查看 → 提醒
+
+### 分阶段实现
+
+#### P0：卡片进度管道（核心，无飞书任务依赖）
+
+**新增文件：**
+- `task_runner.py` — 任务编排器
+
+**修改文件：**
+- `dispatcher.py` — 增加 `update_card(message_id, text)` 方法
+- `feishu_bot.py` — `#task` 命令 + awaiting_approval 拦截
+- `models.py` — TaskPlan / TaskStep 数据结构
+- `main.py` — 初始化 TaskRunner 并注入 bot
+
+**实现步骤：**
+1. `models.py` 添加 TaskPlan / TaskStep
+2. `dispatcher.py` 添加 `update_card()` — PATCH `/im/v1/messages/:id`
+3. `task_runner.py` 核心逻辑：
+   - `create_plan(goal)` — system prompt 约束 Claude 输出 JSON plan
+   - `send_plan_card(task)` — 格式化计划发卡片
+   - `approve(task, user_input)` — 解析确认/修改
+   - `execute(task)` — 逐步执行 + 卡片更新
+   - 状态持久化到 `data/tasks/{task_id}.json`
+4. `feishu_bot.py` 接入：`#task` 触发 + 消息拦截
+5. `main.py` 初始化
+
+#### P1：飞书任务集成
+
+**前置：** 飞书应用开通 `task:task:write` + `task:tasklist:write` 权限
+
+**新增/修改：**
+- `feishu_api.py` 增加任务 API（create_task, update_task, complete_task, create_subtask）
+- `task_runner.py` 增加飞书任务双写
+- 创建 "Hub Agent Tasks" Tasklist
+- Activity Subscription 推送到通知群
+
+#### P2：心跳集成
+
+**修改：**
+- `heartbeat.py` — `run_once()` 前收集任务快照，注入 prompt
+- `task_runner.py` — 暴露 `list_active()` 给心跳查询
+- `HEARTBEAT.md` — 增加任务监控规则说明
+
+#### P3：韧性增强
+
+- subprocess 输出心跳（检测 stdout 停滞）
+- crash 后从 checkpoint 恢复（读取 `data/tasks/` 中未完成任务）
+- 执行中 replan（用户中途发消息修改方向）
+
+### Plan 生成的 System Prompt
+
+```
+你是一个任务规划器。根据用户目标，生成结构化执行计划。
+
+输出格式（严格 JSON，不要 markdown 包裹）：
+{
+  "steps": [
+    {
+      "name": "步骤简称",
+      "description": "具体做什么",
+      "acceptance": "怎么算完成"
+    }
+  ]
+}
+
+约束：
+- 3-8 个步骤，太细增加协调成本，太粗失去可观测性
+- 每步应产出可验证的结果（文件变更、测试通过、配置生效等）
+- 步骤间依赖关系用执行顺序隐含表达
+- 不要包含"确认需求"类步骤——用户已确认目标
+```
+
+### 验证步骤
+
+1. `#task 给 dispatcher 加个 update_card 方法` → 确认生成 plan
+2. 回复 "ok" → 确认开始执行
+3. 观察卡片实时更新（Step 1/N → 2/N → ...）
+4. 故意给一个会失败的任务 → 确认 error 处理和通知
+5. 执行中杀 Claude CLI 进程 → 确认超时检测
+6. 心跳周期到达 → 确认任务状态出现在心跳快照中
