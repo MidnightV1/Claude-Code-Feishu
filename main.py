@@ -127,6 +127,7 @@ async def main():
     feishu_reporter = FeishuReporter(dispatcher)
     task_runner = TaskRunner(router, reporter=feishu_reporter)
     await task_runner.start()
+    hb.task_runner = task_runner  # inject for heartbeat task snapshot
 
     bot = FeishuBot(
         cfg.get("feishu", {}),
