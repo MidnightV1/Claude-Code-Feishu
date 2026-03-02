@@ -251,7 +251,12 @@ class FeishuBot:
                     for m in msg.mentions:
                         text = text.replace(m.key, "").strip() if m.key else text
                 if not text:
+                    log.warning("Empty text after parsing msg_type=%s, raw content: %s",
+                                msg_type, msg.content[:500] if msg.content else "(none)")
                     return
+            elif msg_type not in ("image", "file"):
+                log.warning("Unhandled msg_type=%s, content: %s",
+                            msg_type, msg.content[:500] if msg.content else "(none)")
 
                 # Prepend quoted message content if this is a reply
                 if msg.parent_id:
