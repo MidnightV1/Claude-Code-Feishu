@@ -254,10 +254,6 @@ class FeishuBot:
                     log.warning("Empty text after parsing msg_type=%s, raw content: %s",
                                 msg_type, msg.content[:500] if msg.content else "(none)")
                     return
-            elif msg_type not in ("image", "file"):
-                log.warning("Unhandled msg_type=%s, content: %s",
-                            msg_type, msg.content[:500] if msg.content else "(none)")
-
                 # Prepend quoted message content if this is a reply
                 if msg.parent_id:
                     quoted = self._fetch_quoted_text(msg.parent_id)
@@ -294,6 +290,10 @@ class FeishuBot:
                 log.info("Message from %s in %s: %s", sender_id[:8], chat_type, text[:100])
                 key = self._debounce_key(chat_type, chat_id, sender_id)
                 await self._enqueue(key, text, "", message_id, chat_id, chat_type, sender_id)
+                return
+            elif msg_type not in ("image", "file"):
+                log.warning("Unhandled msg_type=%s, content: %s",
+                            msg_type, msg.content[:500] if msg.content else "(none)")
                 return
 
             session_key = (
