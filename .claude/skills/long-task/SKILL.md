@@ -2,19 +2,26 @@
 
 ## 什么时候使用
 
-当你判断用户的请求**需要 3 个以上独立步骤**才能完成时，主动使用此技能。典型场景：
+**核心原则：用户不应该干等。** 当任务需要多个步骤且执行时间较长时，使用长程任务模式让用户实时看到进度。
 
-- 涉及多个文件的功能开发或重构
-- 需要先分析、再设计、再实现的复杂任务
-- 跨模块修改（改代码 + 改配置 + 改文档 + 测试）
+### 必须使用的场景
 
-**不要用于**：简单问答、单文件修改、信息查询、一步能完成的操作。
+- 涉及 **2+ 工具调用**的复合任务（调研+分析+输出、读取+整理+创建文档等）
+- 预计执行时间 **超过 30 秒**
+- 跨文件/跨模块的修改
+- 需要先分析再设计再实现的任务
+
+### 不要使用的场景
+
+- 简单问答、闲聊
+- 单个文件的小修改
+- 一步能完成的操作
 
 ## 如何触发
 
 ### 你主动触发（推荐）
 
-对话中发现任务复杂时，调用 `task_ctl.py create` 创建任务请求：
+对话中发现任务符合上述条件时，执行：
 
 ```bash
 python3 .claude/skills/long-task/scripts/task_ctl.py create \
@@ -22,9 +29,9 @@ python3 .claude/skills/long-task/scripts/task_ctl.py create \
   --plan '{"steps": [{"name": "步骤名", "description": "做什么", "acceptance": "怎么算完成"}, ...]}'
 ```
 
-脚本会写入请求文件到 `data/task_requests/`。Hub 在你的响应返回后自动读取，用当前会话上下文创建 TaskPlan，发送飞书卡片供用户确认。
+脚本写入请求到 `data/task_requests/`。Hub 自动读取后发送进度卡片到对话框，供用户确认。
 
-调用后告诉用户你创建了一个长程任务，计划已发送待确认。
+调用后告诉用户：「已创建任务计划，请在进度卡片中确认后开始执行。」
 
 ### 用户显式触发
 
@@ -47,14 +54,14 @@ python3 .claude/skills/long-task/scripts/task_ctl.py create \
 ### 约束
 
 - **3-8 个步骤** — 太细增加协调成本，太粗失去可观测性
-- 每步应产出**可验证的结果**（文件变更、测试通过、配置生效等）
+- 每步应产出**可验证的结果**（文件变更、测试通过、文档产出等）
 - 步骤间依赖关系用**执行顺序**隐含表达
 - **不要**包含「确认需求」类步骤 — 用户已确认目标
 - **不要**包含「总结汇报」类步骤 — 系统自动生成完成报告
 
 ## 步骤执行协议
 
-计划获批后，Hub 会逐步调用你执行。每步你会收到：
+计划获批后，Hub 逐步调用你执行。每步你会收到：
 
 - 任务总目标
 - 当前步骤名称、描述、验收标准
@@ -67,9 +74,16 @@ python3 .claude/skills/long-task/scripts/task_ctl.py create \
 - 如果步骤无法完成，明确说明原因
 - 利用 Claude Code 的工具能力（读写文件、运行命令等）
 
+## 进度可视化
+
+任务进度通过飞书卡片在对话框中实时展示：
+- 计划提交 → 卡片展示步骤列表，等待用户 ok
+- 用户确认 → 逐步执行，卡片原地更新（:DONE: / 🔄 / ⬜ 状态图标）
+- 完成/失败 → 卡片最终状态 + 结果摘要
+
 ## 跨 Session 上下文
 
-每次 CLI 调用是独立 session。你可以随时查看任务状态以获取上下文：
+每次 CLI 调用是独立 session。查看任务状态：
 
 ```bash
 # 查看所有活跃任务
@@ -86,18 +100,15 @@ python3 .claude/skills/long-task/scripts/task_ctl.py list
 
 ## 示例
 
-用户说「帮我重构 briefing 模块，把采集和生成逻辑拆开」，你判断这需要多步：
+用户说「整理下环境信息和项目情况，写个介绍文档发我」：
 
 ```bash
 python3 .claude/skills/long-task/scripts/task_ctl.py create \
-  --goal "重构 briefing 模块，拆分采集和生成逻辑" \
+  --goal "整理 NAS 环境和项目信息，创建个人介绍飞书文档" \
   --plan '{"steps": [
-    {"name": "分析现有结构", "description": "阅读 briefing.py，梳理数据流和模块边界", "acceptance": "输出职责清单和依赖关系"},
-    {"name": "设计 Collector 接口", "description": "定义采集器输入输出协议", "acceptance": "接口定义写入代码"},
-    {"name": "实现 collector.py", "description": "将采集逻辑抽取到独立模块", "acceptance": "collector.py 可独立运行"},
-    {"name": "重构 briefing.py", "description": "调用 collector 接口获取数据", "acceptance": "日报生成正常工作"},
-    {"name": "端到端测试", "description": "手动触发日报生成验证", "acceptance": "日报正常生成并投递"}
+    {"name": "采集环境信息", "description": "读取 nas_env.md、硬件配置、存储布局", "acceptance": "环境数据整理完成"},
+    {"name": "梳理项目清单", "description": "扫描 workspace 目录，读取各项目 CLAUDE.md", "acceptance": "项目清单和状态整理完成"},
+    {"name": "读取认知画像", "description": "读取 COGNITION.md 和灵魂文件", "acceptance": "身份和认知信息提取完成"},
+    {"name": "创建飞书文档", "description": "整合所有信息，创建并分享飞书文档", "acceptance": "文档创建成功并发送给用户"}
   ]}'
 ```
-
-然后回复用户：「这个重构涉及 5 个步骤，我已创建长程任务计划，请在飞书确认后开始执行。」

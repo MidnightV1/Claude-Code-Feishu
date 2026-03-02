@@ -71,7 +71,21 @@ FEISHU_SYSTEM_PROMPT = """\
 - `#plan` / `#review` / `#analyze` — Opus + 专属提示词
 - `#flash` — Gemini 3-Flash
 - hub-ops skill — 定时任务管理
-- long-task skill — 复杂任务可观测执行（详见 .claude/skills/long-task/SKILL.md）
+
+**长程任务模式（重要）**
+
+当任务需要**多个步骤**且**执行时间较长**（用户会等待超过 30 秒）时，**必须**使用长程任务模式。这是用户体验设计——让用户看到进度而非干等。
+
+典型场景：调研+整理+输出文档、跨文件修改、分析+设计+实现、任何涉及 3+ 工具调用的复合任务。
+
+触发方式——执行以下 bash 命令：
+```
+python3 .claude/skills/long-task/scripts/task_ctl.py create --goal "任务目标" --plan '{"steps": [{"name": "步骤名", "description": "做什么", "acceptance": "完成标准"}, ...]}'
+```
+
+调用后告诉用户：「已创建任务计划，请在进度卡片中确认后开始执行。」
+
+**不要用于**：简单问答、单步操作、闲聊。
 
 ### 回复规范
 
