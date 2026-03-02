@@ -251,6 +251,7 @@ class FeishuBot:
                 if text.startswith("#"):
                     first_word = text.split(None, 1)[0].lower()
                     if first_word not in SKILL_ROUTES:
+                        log.info("Command from %s: %s", sender_id[:8], text[:60])
                         cmd_result = await self._route_command(text, chat_id, sender_id)
                         if cmd_result is not None:
                             await self.dispatcher.send_text(
@@ -764,13 +765,15 @@ class FeishuBot:
         await asyncio.sleep(3)
         import subprocess
         hub_dir = os.path.expanduser("~/workspace/nas-claude-hub")
-        subprocess.Popen(
-            ["/opt/bin/bash", "-c", f"HUB_CHILD=0 {hub_dir}/hub.sh restart"],
-            cwd=hub_dir,
-            start_new_session=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        log_path = os.path.join(hub_dir, "data", "restart.log")
+        with open(log_path, "a") as lf:
+            subprocess.Popen(
+                ["/bin/sh", "-c", f"HUB_CHILD=0 {hub_dir}/hub.sh restart"],
+                cwd=hub_dir,
+                start_new_session=True,
+                stdout=lf,
+                stderr=lf,
+            )
 
     # ═══ Media Processing ═══
 
