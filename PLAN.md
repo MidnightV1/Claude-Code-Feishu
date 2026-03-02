@@ -572,10 +572,30 @@ def _collect_task_snapshot(self) -> str:
 
 **前置：** 飞书应用开通 `task:task:write` + `task:tasklist:write` 权限
 
+**底层共享：** `feishu_api.py` 增加任务 API（create_task, update_task, complete_task, create_subtask, list_tasks）。`feishu-task` skill 和 `feishu_reporter.py` 共用同一套方法。
+
+**新增 `feishu-task` Skill**（用户直接操作任务）：
+```
+.claude/skills/feishu-task/
+├── SKILL.md              # 任务 CRUD 指令集
+└── scripts/
+    └── task_api.py       # 调 feishu_api.py 的任务方法
+```
+
+用户场景：「帮我建个任务」「看看我的待办」「把那个任务标完成」→ Claude 通过 feishu-task skill 代用户操作。
+
+**long-task 内部集成：**
 - `feishu_reporter.py` 增加飞书任务双写（create_task + subtasks + complete）
-- `feishu_api.py` 增加任务 API
 - 创建 "Hub Agent Tasks" Tasklist
 - Activity Subscription 推送到通知群
+
+两个 skill 独立但共享 API 层：
+
+| | `feishu-task` | `long-task` |
+|---|---|---|
+| 触发 | 用户自然语言 | `#task` 命令 |
+| 操作者 | Claude 代用户 | Orchestrator 自动 |
+| API 层 | `feishu_api.py` | 同左（共享） |
 
 #### P2：心跳集成
 
