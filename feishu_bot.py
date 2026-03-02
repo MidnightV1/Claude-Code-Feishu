@@ -71,13 +71,7 @@ FEISHU_SYSTEM_PROMPT = """\
 - `#plan` / `#review` / `#analyze` — Opus + 专属提示词
 - `#flash` — Gemini 3-Flash
 - hub-ops skill — 定时任务管理
-- long-task skill — 复杂任务自动拆解执行（详见 .claude/skills/long-task/SKILL.md）
-
-**长程任务（Long Task）**
-当你判断用户的请求需要 3 个以上独立步骤才能完成时（多文件修改、需要先分析再实现等），
-主动使用 long-task 协议：在回复开头输出 `[LONG_TASK]{"steps":[...]}[/LONG_TASK]`。
-Hub 会自动检测并进入 plan→approve→execute 流程，用户可在飞书卡片中确认计划后逐步执行。
-不要用于简单问答、单文件修改或一步能完成的操作。
+- long-task skill — 复杂任务可观测执行（详见 .claude/skills/long-task/SKILL.md）
 
 ### 回复规范
 
@@ -459,15 +453,11 @@ class FeishuBot:
                     reply_to=batch.first_message_id,
                 )
             elif result.text:
-                # Check for [LONG_TASK] marker — Claude auto-triggered long-task
-                if self.task_runner and "[LONG_TASK]" in result.text:
-                    handled = await self._handle_auto_long_task(
-                        result.text, session_key,
-                        batch.chat_id, batch.sender_id,
-                        batch.first_message_id,
+                # Check if Claude created long-task requests via task_ctl.py
+                if self.task_runner:
+                    await self.task_runner.check_pending_requests(
+                        session_key, batch.chat_id, batch.sender_id,
                     )
-                    if handled:
-                        return
 
                 footer_parts = [f for f in batch.footers if f]
                 if llm_config.provider == "gemini-api" and result.cost_usd > 0:
@@ -812,61 +802,6 @@ class FeishuBot:
                 stdout=lf,
                 stderr=lf,
             )
-
-    async def _handle_auto_long_task(
-        self, text: str, session_key: str,
-        chat_id: str, sender_id: str, message_id: str,
-    ) -> bool:
-        """Detect [LONG_TASK]...[/LONG_TASK] in Claude's response.
-        If found, extract plan JSON, create TaskPlan, and send remainder as message.
-        Returns True if handled.
-        """
-        import json as _json
-        match = re.search(
-            r'\[LONG_TASK\]\s*(.*?)\s*\[/LONG_TASK\]', text, re.DOTALL
-        )
-        if not match:
-            return False
-
-        json_str = match.group(1).strip()
-        remainder = text[:match.start()].strip() + "\n" + text[match.end():].strip()
-        remainder = remainder.strip()
-
-        try:
-            from task_runner import TaskRunner
-            steps_data = TaskRunner._parse_plan_json(json_str)
-            if not steps_data or len(steps_data) < 2:
-                return False
-        except Exception as e:
-            log.warning("Auto long-task JSON parse failed: %s", e)
-            return False
-
-        # Create task with pre-built plan
-        from task_runner import TaskPlan, TaskStep
-        task = TaskPlan(
-            session_key=session_key,
-            goal=remainder[:200] if remainder else "Auto-detected complex task",
-            chat_id=chat_id,
-            sender_id=sender_id,
-        )
-        task.steps = [TaskStep.from_dict(s) for s in steps_data]
-        task.status = "awaiting_approval"
-
-        # Register in task runner
-        self.task_runner._tasks[task.task_id] = task
-        await self.task_runner._save()
-
-        # Notify via reporter
-        await self.task_runner.reporter.on_plan_ready(task)
-
-        # Send remainder text as supplementary message
-        if remainder:
-            await self.dispatcher.send_text(
-                chat_id, remainder, reply_to=message_id
-            )
-
-        log.info("Auto long-task detected: %s (%d steps)", task.task_id, len(task.steps))
-        return True
 
     async def _handle_task_approval(self, task, text: str) -> str | None:
         """Handle user response to a task awaiting approval.

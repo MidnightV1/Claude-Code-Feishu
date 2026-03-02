@@ -1,26 +1,33 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Task status CLI — query and manage long-running tasks.
+"""Task management CLI — create, query, and manage long-running tasks.
 
 Usage:
+    python task_ctl.py create --goal "目标" --plan '{"steps":[...]}'
     python task_ctl.py list              # List all tasks
+    python task_ctl.py active            # List active tasks only
     python task_ctl.py status <task_id>  # Show task details
     python task_ctl.py cancel <task_id>  # Cancel a task
-    python task_ctl.py active            # List active tasks only
+
+The `create` command writes a request file to data/task_requests/.
+The hub picks it up after the current CLI session ends and creates
+a TaskPlan with the correct session context.
 """
 
 import sys
 import os
 import json
+import time
+import uuid
 from datetime import datetime
 
-# Add project root to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
-from store import load_json_sync
+# Project root (4 levels up from scripts/)
+PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
+sys.path.insert(0, PROJECT_ROOT)
+from store import load_json_sync, save_json_sync
 
-TASKS_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "..", "..", "data", "tasks.json"
-)
+TASKS_PATH = os.path.join(PROJECT_ROOT, "data", "tasks.json")
+REQUESTS_DIR = os.path.join(PROJECT_ROOT, "data", "task_requests")
 
 
 def _fmt_time(ts: float) -> str:
@@ -32,7 +39,6 @@ def _fmt_time(ts: float) -> str:
 def _fmt_age(ts: float) -> str:
     if not ts:
         return "—"
-    import time
     delta = int(time.time() - ts)
     if delta < 60:
         return f"{delta}s"
@@ -41,6 +47,36 @@ def _fmt_age(ts: float) -> str:
     if delta < 86400:
         return f"{delta // 3600}h{(delta % 3600) // 60}m"
     return f"{delta // 86400}d"
+
+
+def cmd_create(goal: str, plan_json: str):
+    """Write a task request file for the hub to pick up."""
+    try:
+        plan = json.loads(plan_json)
+        steps = plan.get("steps", plan) if isinstance(plan, dict) else plan
+        if not isinstance(steps, list) or len(steps) < 2:
+            print("Error: plan must contain at least 2 steps.")
+            sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"Error: invalid JSON — {e}")
+        sys.exit(1)
+
+    os.makedirs(REQUESTS_DIR, exist_ok=True)
+    request_id = uuid.uuid4().hex[:12]
+    request = {
+        "request_id": request_id,
+        "goal": goal,
+        "steps": steps,
+        "created_at": time.time(),
+    }
+    path = os.path.join(REQUESTS_DIR, f"{request_id}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(request, f, ensure_ascii=False, indent=2)
+
+    print(f"Task request created: {request_id}")
+    print(f"Goal: {goal}")
+    print(f"Steps: {len(steps)}")
+    print("Hub will pick this up and create a TaskPlan for user approval.")
 
 
 def cmd_list(active_only=False):
@@ -104,7 +140,6 @@ def cmd_cancel(task_id: str):
                 return
             t["status"] = "failed"
             t["error"] = "Cancelled via CLI"
-            import time
             t["updated_at"] = time.time()
             found = True
             print(f"Task {t['task_id']} cancelled.")
@@ -112,7 +147,6 @@ def cmd_cancel(task_id: str):
     if not found:
         print(f"Task {task_id} not found.")
         sys.exit(1)
-    from store import save_json_sync
     save_json_sync(TASKS_PATH, tasks)
 
 
@@ -122,7 +156,24 @@ def main():
         sys.exit(0)
 
     cmd = sys.argv[1]
-    if cmd == "list":
+    if cmd == "create":
+        goal = ""
+        plan_json = ""
+        i = 2
+        while i < len(sys.argv):
+            if sys.argv[i] == "--goal" and i + 1 < len(sys.argv):
+                goal = sys.argv[i + 1]
+                i += 2
+            elif sys.argv[i] == "--plan" and i + 1 < len(sys.argv):
+                plan_json = sys.argv[i + 1]
+                i += 2
+            else:
+                i += 1
+        if not goal or not plan_json:
+            print('Usage: task_ctl.py create --goal "目标" --plan \'{"steps":[...]}\'')
+            sys.exit(1)
+        cmd_create(goal, plan_json)
+    elif cmd == "list":
         cmd_list()
     elif cmd == "active":
         cmd_list(active_only=True)

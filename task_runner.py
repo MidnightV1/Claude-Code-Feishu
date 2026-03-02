@@ -5,6 +5,8 @@ Zero platform imports — progress notification goes through ProgressReporter pr
 """
 
 import asyncio
+import glob
+import os
 import time
 import uuid
 import json
@@ -17,6 +19,7 @@ from store import load_json, save_json
 log = logging.getLogger("hub.task_runner")
 
 TASKS_PATH = "data/tasks.json"
+REQUESTS_DIR = "data/task_requests"
 
 
 # ═══ Data Models ═══
@@ -214,6 +217,52 @@ class TaskRunner:
 
     def list_all(self) -> list[TaskPlan]:
         return list(self._tasks.values())
+
+    async def check_pending_requests(self, session_key: str,
+                                     chat_id: str, sender_id: str) -> int:
+        """Check for task request files written by task_ctl.py create.
+
+        Called after each Claude CLI response. Returns number of tasks created.
+        """
+        if not os.path.isdir(REQUESTS_DIR):
+            return 0
+
+        created = 0
+        for path in glob.glob(os.path.join(REQUESTS_DIR, "*.json")):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    req = json.load(f)
+                os.remove(path)
+
+                goal = req.get("goal", "")
+                steps_data = req.get("steps", [])
+                if not goal or not steps_data:
+                    continue
+
+                task = TaskPlan(
+                    session_key=session_key,
+                    goal=goal,
+                    chat_id=chat_id,
+                    sender_id=sender_id,
+                )
+                task.steps = [TaskStep.from_dict(s) for s in steps_data]
+                task.status = "awaiting_approval"
+
+                async with self._lock:
+                    self._tasks[task.task_id] = task
+                    await self._save()
+
+                await self.reporter.on_plan_ready(task)
+                log.info("Task from request: %s — %s (%d steps)",
+                         task.task_id, goal[:60], len(task.steps))
+                created += 1
+            except Exception as e:
+                log.warning("Failed to process task request %s: %s", path, e)
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+        return created
 
     # ── Planning Phase ──
 
