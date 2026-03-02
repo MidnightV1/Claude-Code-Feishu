@@ -59,6 +59,28 @@
 - 不假设其他端点的状态，看到不认识的改动先查 git log 再行动
 - 环境变更（装包、改配置、加目录）必须更新 `nas_env.md`
 
+### Git 协作
+
+代码通过 NAS 上的 bare repo 同步，**不经 GitHub**。
+
+| 角色 | 仓库路径 |
+|------|----------|
+| **Bare repo（canonical）** | `~/repos/YOUR_PROJECT.git` |
+| **NAS 工作目录** | `~/workspace/nas-claude-hub`（remote: `origin`） |
+| **Windows 工作目录** | `YOUR_LOCAL_WORKSPACE/nas-claude-hub`（remote: `origin` → `ssh://USER@YOUR_SERVER_IP/~/repos/YOUR_PROJECT.git`） |
+
+工作流：
+1. **修改代码后** → `git add` + `git commit` + `git push origin master`
+2. **push 触发 post-receive hook** → 自动 `git reset --hard` 到 NAS 工作目录
+3. **Python 文件变更** → hook 会记录到 `data/deploy.log`，需手动重启服务
+4. **拉取对方变更** → `git pull origin master`（先 pull 再改，避免冲突）
+
+规则：
+- **先 pull 后 push** — 修改前先 `git pull` 确认是否有对方变更
+- **commit 粒度** — 一个功能/修复一个 commit，message 说清 what 和 why
+- **不要 force push** — 两端共享 master，force push 会丢对方的提交
+- `config.yaml`、`data/`、`__pycache__/` 已在 `.gitignore` 中排除
+
 ---
 
 ## LLM Providers
