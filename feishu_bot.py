@@ -122,6 +122,7 @@ class FeishuBot:
         dispatcher: Dispatcher,
         default_llm: LLMConfig,
         file_store: FileStore,
+        task_runner=None,
     ):
         self.app_id = config.get("app_id", "")
         self.app_secret = config.get("app_secret", "")
@@ -132,6 +133,7 @@ class FeishuBot:
         self.dispatcher = dispatcher
         self.default_llm = default_llm
         self.file_store = file_store
+        self.task_runner = task_runner
         self._command_handlers: dict[str, callable] = {}
         self._help_sections: list[str] = []
         self._pending: dict[str, PendingBatch] = {}  # debounce buffers
@@ -256,6 +258,21 @@ class FeishuBot:
                         if cmd_result is not None:
                             await self.dispatcher.send_text(
                                 chat_id, cmd_result, reply_to=message_id
+                            )
+                            return
+
+                # Check if user has a task awaiting approval
+                if self.task_runner:
+                    session_key = (
+                        f"user:{sender_id}" if chat_type == "p2p"
+                        else f"chat:{chat_id}"
+                    )
+                    awaiting = self.task_runner.get_awaiting_task(session_key)
+                    if awaiting:
+                        resp = await self._handle_task_approval(awaiting, text)
+                        if resp:
+                            await self.dispatcher.send_text(
+                                chat_id, resp, reply_to=message_id
                             )
                             return
 
@@ -508,6 +525,8 @@ class FeishuBot:
             return await self._cmd_heartbeat(cmd, args)
         elif cmd == "#server":
             return await self._cmd_server(args)
+        elif cmd == "#task":
+            return await self._cmd_task(args, chat_id, sender_id)
         else:
             # Plugin commands: check registered handlers
             for prefix, handler in self._command_handlers.items():
@@ -537,6 +556,8 @@ class FeishuBot:
             "| `#cron add <name> <cron> <prompt> [--model X]` | Add job |\n"
             "| `#cron remove/run/enable/disable <id>` | Manage job |\n"
             "| `#heartbeat status/run` | Heartbeat info/trigger |\n"
+            "| `#task <目标>` | Create long-running task |\n"
+            "| `#task list/status/cancel <id>` | Manage tasks |\n"
             "| `#server restart` | Restart hub service |\n"
             "| `#help` | This help |"
         )
@@ -774,6 +795,96 @@ class FeishuBot:
                 stdout=lf,
                 stderr=lf,
             )
+
+    async def _handle_task_approval(self, task, text: str) -> str | None:
+        """Handle user response to a task awaiting approval.
+        Returns response text, or None to fall through to normal routing.
+        """
+        text_lower = text.strip().lower()
+        # Approve keywords
+        if text_lower in ("ok", "好", "确认", "开始", "执行", "go", "yes", "可以"):
+            ok = await self.task_runner.approve_task(task.task_id)
+            if ok:
+                log.info("Task %s approved by user", task.task_id)
+                return f"任务 `{task.task_id}` 已批准，开始执行..."
+            return "任务状态异常，无法批准。"
+        # Cancel keywords
+        if text_lower in ("取消", "cancel", "算了", "不要了"):
+            await self.task_runner.cancel_task(task.task_id)
+            return f"任务 `{task.task_id}` 已取消。"
+        # Otherwise treat as feedback for replan
+        ok = await self.task_runner.reject_task(task.task_id, feedback=text)
+        if ok:
+            log.info("Task %s rejected with feedback, replanning", task.task_id)
+            return f"收到反馈，正在重新规划任务 `{task.task_id}`..."
+        return None
+
+    async def _cmd_task(self, args: str, chat_id: str, sender_id: str) -> str | None:
+        """Handle #task command — create long-running task or manage existing ones."""
+        if not self.task_runner:
+            return "长程任务功能未启用。"
+
+        if not args.strip():
+            return self._cmd_task_list()
+
+        subcmd = args.strip().split(None, 1)[0].lower()
+        rest = args.strip().split(None, 1)[1] if len(args.strip().split(None, 1)) > 1 else ""
+
+        if subcmd == "list":
+            return self._cmd_task_list()
+        elif subcmd == "cancel":
+            task_id = rest.strip()
+            ok = await self.task_runner.cancel_task(task_id)
+            return f"任务 `{task_id}` 已取消。" if ok else f"任务 `{task_id}` 未找到或已结束。"
+        elif subcmd == "status":
+            task_id = rest.strip()
+            task = self.task_runner.get_task(task_id)
+            if not task:
+                return f"任务 `{task_id}` 未找到。"
+            return task.progress_text()
+        else:
+            # Treat entire args as the task goal
+            session_key = (
+                f"user:{sender_id}" if chat_id.startswith("oc_") is False
+                else f"chat:{chat_id}"
+            )
+            # Check for existing active task
+            existing = self.task_runner.get_awaiting_task(session_key)
+            if existing:
+                return (
+                    f"已有等待确认的任务 `{existing.task_id}`：{existing.goal[:60]}...\n"
+                    f"请先回复 **ok** 确认或 **取消** (`#task cancel {existing.task_id}`)。"
+                )
+            task = await self.task_runner.create_task(
+                goal=args.strip(),
+                session_key=session_key,
+                chat_id=chat_id,
+                sender_id=sender_id,
+            )
+            return f"任务已创建 `{task.task_id}`，正在生成执行计划..."
+
+    def _cmd_task_list(self) -> str:
+        """List all tasks."""
+        tasks = self.task_runner.list_all()
+        if not tasks:
+            return "没有任务记录。"
+        # Show most recent 10
+        tasks = sorted(tasks, key=lambda t: t.created_at, reverse=True)[:10]
+        lines = ["**任务列表**\n"]
+        for t in tasks:
+            status_icon = {
+                "planning": "🔧", "awaiting_approval": "⏳",
+                "executing": "🔄", "completed": ":DONE:",
+                "failed": "❌",
+            }.get(t.status, "?")
+            done = sum(1 for s in t.steps if s.status == "completed")
+            total = len(t.steps)
+            progress = f" ({done}/{total})" if total > 0 else ""
+            lines.append(
+                f"| `{t.task_id}` | {status_icon} {t.status} | "
+                f"{t.goal[:40]}{'...' if len(t.goal) > 40 else ''}{progress} |"
+            )
+        return "\n".join(lines)
 
     # ═══ Media Processing ═══
 

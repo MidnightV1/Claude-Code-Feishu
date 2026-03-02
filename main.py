@@ -19,6 +19,8 @@ from heartbeat import HeartbeatMonitor
 from feishu_bot import FeishuBot
 from file_store import FileStore
 from briefing_v2 import BriefingPipeline
+from task_runner import TaskRunner
+from feishu_reporter import FeishuReporter
 
 
 def setup_logging(config: dict):
@@ -121,10 +123,16 @@ async def main():
 
     file_store = FileStore(base_dir="data/files")
 
+    # Long-task orchestrator
+    feishu_reporter = FeishuReporter(dispatcher)
+    task_runner = TaskRunner(router, reporter=feishu_reporter)
+    await task_runner.start()
+
     bot = FeishuBot(
         cfg.get("feishu", {}),
         router, scheduler, hb, dispatcher, default_llm,
         file_store=file_store,
+        task_runner=task_runner,
     )
 
     # Plugins

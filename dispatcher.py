@@ -96,6 +96,102 @@ class Dispatcher:
         except Exception as e:
             log.debug("remove_reaction error: %s", e)
 
+    async def send_card_return_id(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: str | None = None,
+    ) -> str | None:
+        """Send a card and return its message_id (for later updates). None on failure."""
+        import lark_oapi as lark
+        from lark_oapi.api.im.v1 import (
+            CreateMessageRequest, CreateMessageRequestBody,
+            ReplyMessageRequest, ReplyMessageRequestBody,
+        )
+
+        content = json.dumps({
+            "schema": "2.0",
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": text}
+                ]
+            }
+        }, ensure_ascii=False)
+
+        for attempt in range(3):
+            try:
+                if reply_to:
+                    req = ReplyMessageRequest.builder() \
+                        .message_id(reply_to) \
+                        .request_body(
+                            ReplyMessageRequestBody.builder()
+                            .msg_type("interactive")
+                            .content(content)
+                            .build()
+                        ).build()
+                    resp = await asyncio.to_thread(
+                        self._client.im.v1.message.reply, req
+                    )
+                else:
+                    req = CreateMessageRequest.builder() \
+                        .receive_id_type("chat_id") \
+                        .request_body(
+                            CreateMessageRequestBody.builder()
+                            .receive_id(chat_id)
+                            .msg_type("interactive")
+                            .content(content)
+                            .build()
+                        ).build()
+                    resp = await asyncio.to_thread(
+                        self._client.im.v1.message.create, req
+                    )
+
+                if resp.success() and resp.data:
+                    return resp.data.message_id
+                log.warning("send_card_return_id failed: code=%s msg=%s", resp.code, resp.msg)
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+            except Exception as e:
+                log.error("send_card_return_id error (attempt %d): %s", attempt + 1, e)
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+        return None
+
+    async def update_card(self, message_id: str, text: str) -> bool:
+        """Update an existing card message via PATCH. Returns success."""
+        content = json.dumps({
+            "schema": "2.0",
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": text}
+                ]
+            }
+        }, ensure_ascii=False)
+
+        for attempt in range(3):
+            try:
+                from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+                req = PatchMessageRequest.builder() \
+                    .message_id(message_id) \
+                    .request_body(
+                        PatchMessageRequestBody.builder()
+                        .content(content)
+                        .build()
+                    ).build()
+                resp = await asyncio.to_thread(
+                    self._client.im.v1.message.patch, req
+                )
+                if resp.success():
+                    return True
+                log.warning("update_card failed: code=%s msg=%s", resp.code, resp.msg)
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+            except Exception as e:
+                log.error("update_card error (attempt %d): %s", attempt + 1, e)
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+        return False
+
     async def _send_card(
         self, chat_id: str, text: str, reply_to: str | None = None,
     ) -> bool:
