@@ -41,6 +41,7 @@
 | `hub-ops` | `.claude/skills/hub-ops/` | 定时任务 CRUD、服务状态、热加载 |
 | `feishu-cal` | `.claude/skills/feishu-cal/` | 日历日程 CRUD、参会人管理、联系人 |
 | `feishu-doc` | `.claude/skills/feishu-doc/` | 飞书文档创建、读取、追加内容 |
+| `long-task` | `.claude/skills/long-task/` | 长程任务 plan→execute→report 协议 |
 
 参考：https://code.claude.com/docs/en/skills
 
