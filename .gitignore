@@ -1,0 +1,20 @@
+# Credentials & runtime
+config.yaml
+data/
+__pycache__/
+*.pyc
+
+# Temp files
+*.tmp
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reference docs (not source code)
+飞书消息卡片*
+.playwright-mcp/
+test_*.py
+get_chat_id.py

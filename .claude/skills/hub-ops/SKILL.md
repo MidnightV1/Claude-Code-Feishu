@@ -1,0 +1,81 @@
+---
+name: hub-ops
+description: Manage nas-claude-hub service operations — cron jobs, scheduler reload, service status. Use when the user asks about scheduled tasks, periodic jobs, adding/removing/enabling cron jobs, checking service status, or reloading configuration.
+---
+
+# Hub Operations
+
+You are running inside nas-claude-hub as a Claude CLI subprocess. Use the `hub_ctl.py` script to manage hub operations. **Never run `hub.sh restart` or `hub.sh stop` directly** — that would kill your own parent process.
+
+## Tool
+
+```
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py <command> [args]
+```
+
+## Available Commands
+
+### Cron Job Management
+
+```bash
+# List all jobs
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py cron list
+
+# Add a handler job (e.g. briefing pipeline)
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py cron add "daily-briefing" "0 8 * * *" --handler briefing
+
+# Add a prompt job (LLM-routed)
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py cron add "weekly-summary" "0 9 * * 1" --prompt "Summarize this week" --model claude-cli/sonnet
+
+# Remove a job (prefix match on ID)
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py cron remove abc123
+
+# Enable/disable a job
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py cron enable abc123
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py cron disable abc123
+
+# Show job details
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py cron show abc123
+```
+
+### Schedule Formats
+
+| Format | Example | Meaning |
+|--------|---------|---------|
+| Cron | `"0 8 * * *"` | Daily at 08:00 |
+| Cron | `"*/30 * * * *"` | Every 30 minutes |
+| Interval | `30m` | Every 30 minutes |
+| One-shot | `2026-03-02T15:00` | Once at specific time |
+
+All times use Asia/Shanghai timezone.
+
+### Service Status & Reload
+
+```bash
+# Check if hub is running
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py status
+
+# Trigger hot-reload (after external changes to jobs.json)
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py reload
+```
+
+## Registered Handlers
+
+| Handler | Description | Managed by |
+|---------|-------------|------------|
+| `briefing` | Daily briefing pipeline (collect → generate → review → email) | BriefingPipeline |
+
+Handler jobs don't need a prompt — they invoke the registered pipeline directly.
+
+## What Requires Restart vs Not
+
+| Change | Needs restart? |
+|--------|---------------|
+| Cron jobs (add/remove/enable/disable) | **No** — hub_ctl.py auto-reloads |
+| `sources.yaml` (briefing search terms) | **No** — collector reads fresh each run |
+| `HEARTBEAT.md` | **No** — read fresh each heartbeat cycle |
+| `config.yaml` (credentials, LLM defaults) | **Yes** — tell user to run `hub.sh restart` |
+| Hub Python code (`main.py`, `feishu_bot.py`) | **Yes** — tell user to run `hub.sh restart` |
+| Python dependencies | **Yes** — tell user to run `hub.sh restart` |
+
+When restart IS needed, tell the user: "Service restart needed because [reason]. Please run: `hub.sh restart`"
