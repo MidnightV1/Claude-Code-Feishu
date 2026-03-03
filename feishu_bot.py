@@ -111,7 +111,6 @@ class PendingBatch:
     chat_id: str = ""
     chat_type: str = ""
     sender_id: str = ""
-    reaction_id: str | None = None
     timer: asyncio.Task | None = None
     pending_media: int = 0   # media items currently being analyzed
 
@@ -404,15 +403,13 @@ class FeishuBot:
         return f"group:{chat_id}:{sender_id}"
 
     async def _ensure_batch(self, key, message_id, chat_id, chat_type, sender_id):
-        """Create batch if needed — adds typing reaction for immediate feedback."""
+        """Create batch if needed. Thinking card in _flush provides processing feedback."""
         if key not in self._pending:
-            reaction_id = await self.dispatcher.add_reaction(message_id)
             self._pending[key] = PendingBatch(
                 first_message_id=message_id,
                 chat_id=chat_id,
                 chat_type=chat_type,
                 sender_id=sender_id,
-                reaction_id=reaction_id,
             )
         self._pending[key].message_ids.add(message_id)
         self._msg_to_key[message_id] = key
@@ -446,11 +443,6 @@ class FeishuBot:
         if batch:
             if batch.timer and not batch.timer.done():
                 batch.timer.cancel()
-            if batch.reaction_id:
-                await self.dispatcher.remove_reaction(
-                    batch.first_message_id, batch.reaction_id
-                )
-            # Clean up message_id → key mappings
             for mid in batch.message_ids:
                 self._msg_to_key.pop(mid, None)
 
@@ -465,10 +457,6 @@ class FeishuBot:
 
         batch = self._pending.pop(key)
         if not batch.parts:
-            if batch.reaction_id:
-                await self.dispatcher.remove_reaction(
-                    batch.first_message_id, batch.reaction_id
-                )
             for mid in batch.message_ids:
                 self._msg_to_key.pop(mid, None)
             return
@@ -478,6 +466,12 @@ class FeishuBot:
             f"user:{batch.sender_id}"
             if batch.chat_type == "p2p"
             else f"chat:{batch.chat_id}"
+        )
+
+        # Send "thinking" card as immediate feedback (replaces Typing reaction)
+        thinking_msg_id = await self.dispatcher.send_card_return_id(
+            batch.chat_id, "💭 正在思考…",
+            reply_to=batch.first_message_id,
         )
 
         try:
@@ -511,11 +505,16 @@ class FeishuBot:
                 result = await llm_task
             except asyncio.CancelledError:
                 log.info("LLM task cancelled for %s (user recalled)", key)
+                # Delete thinking card on cancel
+                if thinking_msg_id:
+                    await self.dispatcher.delete_message(thinking_msg_id)
                 return
             finally:
                 self._running_tasks.pop(key, None)
 
             if result.cancelled:
+                if thinking_msg_id:
+                    await self.dispatcher.delete_message(thinking_msg_id)
                 return
 
             if result.is_error:
@@ -541,7 +540,9 @@ class FeishuBot:
             else:
                 reply_text = None
 
-            # Send final reply as new message (triggers notification sound)
+            # Delete thinking card, then send final reply as new message (with sound)
+            if thinking_msg_id:
+                await self.dispatcher.delete_message(thinking_msg_id)
             if reply_text:
                 await self.dispatcher.send_text(
                     batch.chat_id, reply_text,
@@ -549,11 +550,10 @@ class FeishuBot:
                 )
         except Exception as e:
             log.error("Batch processing error: %s", e, exc_info=True)
+            # Clean up thinking card on error
+            if thinking_msg_id:
+                await self.dispatcher.delete_message(thinking_msg_id)
         finally:
-            if batch.reaction_id:
-                await self.dispatcher.remove_reaction(
-                    batch.first_message_id, batch.reaction_id
-                )
             for mid in batch.message_ids:
                 self._msg_to_key.pop(mid, None)
 
@@ -959,7 +959,7 @@ class FeishuBot:
         for t in tasks:
             status_icon = {
                 "planning": "🔧", "awaiting_approval": "⏳",
-                "executing": "🔄", "completed": ":DONE:",
+                "executing": "🔄", "completed": "✅",
                 "failed": "❌",
             }.get(t.status, "?")
             done = sum(1 for s in t.steps if s.status == "completed")

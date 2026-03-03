@@ -157,6 +157,23 @@ class Dispatcher:
                     await asyncio.sleep(2 ** attempt)
         return None
 
+    async def delete_message(self, message_id: str) -> bool:
+        """Delete a message by message_id. Returns success."""
+        try:
+            from lark_oapi.api.im.v1 import DeleteMessageRequest
+            req = DeleteMessageRequest.builder() \
+                .message_id(message_id) \
+                .build()
+            resp = await asyncio.to_thread(
+                self._client.im.v1.message.delete, req
+            )
+            if resp.success():
+                return True
+            log.debug("delete_message failed: code=%s msg=%s", resp.code, resp.msg)
+        except Exception as e:
+            log.debug("delete_message error: %s", e)
+        return False
+
     async def update_card(self, message_id: str, text: str) -> bool:
         """Update an existing card message via PATCH. Returns success."""
         content = json.dumps({
