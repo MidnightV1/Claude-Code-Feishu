@@ -303,6 +303,9 @@ class FeishuBot:
                 if msg.parent_id:
                     quoted = self._fetch_quoted_text(msg.parent_id)
                     if quoted:
+                        # Truncate very long quotes (e.g. quoting bot's full reply)
+                        if len(quoted) > 2000:
+                            quoted = quoted[:2000] + "\n...(截断)"
                         text = f"[用户引用的消息: {quoted}]\n\n{text}"
 
                 # Commands bypass debounce
@@ -1281,6 +1284,8 @@ class FeishuBot:
             return self._parse_post_content(content)
         elif msg_type == "markdown":
             return content.get("text", "")
+        elif msg_type == "interactive":
+            return self._parse_card_content(content)
         return ""
 
     def _parse_post_content(self, content: dict) -> str:
@@ -1324,6 +1329,28 @@ class FeishuBot:
             if parts:
                 lines.append("".join(parts))
         return "\n".join(lines)
+
+    @staticmethod
+    def _parse_card_content(content: dict) -> str:
+        """Extract text from an interactive card (JSON 2.0 schema).
+
+        Our cards wrap markdown in: body.elements[].tag=="markdown" → .content
+        """
+        parts = []
+        for el in content.get("body", {}).get("elements", []):
+            if el.get("tag") == "markdown":
+                parts.append(el.get("content", ""))
+        if parts:
+            return "\n".join(parts)
+        # Fallback: JSON 1.0 legacy cards
+        for el in content.get("elements", []):
+            if el.get("tag") == "markdown":
+                parts.append(el.get("content", ""))
+            elif el.get("tag") == "div":
+                text_obj = el.get("text", {})
+                if text_obj.get("tag") == "lark_md":
+                    parts.append(text_obj.get("content", ""))
+        return "\n".join(parts)
 
     def _fetch_quoted_text(self, parent_id: str) -> str:
         """Fetch the content of a quoted/replied-to message via API."""
