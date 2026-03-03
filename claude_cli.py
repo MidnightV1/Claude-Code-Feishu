@@ -1,14 +1,72 @@
 # -*- coding: utf-8 -*-
-"""Claude Code CLI subprocess wrapper."""
+"""Claude Code CLI subprocess wrapper with streaming progress support."""
 
 import asyncio
 import json
 import time
 import os
 import logging
+from pathlib import PurePosixPath
+from typing import Awaitable, Callable
+
 from models import LLMResult
 
 log = logging.getLogger("hub.claude_cli")
+
+# Tool name → human-readable label
+_TOOL_LABELS = {
+    "Read":      "📖 读取文件",
+    "Grep":      "🔍 搜索代码",
+    "Glob":      "📂 查找文件",
+    "Bash":      "⚡ 执行命令",
+    "Edit":      "✏️ 编辑文件",
+    "Write":     "📝 写入文件",
+    "Agent":     "🤖 子任务分析",
+    "WebFetch":  "🌐 获取网页",
+    "WebSearch": "🔎 搜索网页",
+}
+
+
+def _make_tool_label(tool_name: str, tool_input: dict) -> str:
+    """Map a tool_use event to a human-readable progress label."""
+    if tool_name == "Read":
+        path = tool_input.get("file_path", "")
+        name = PurePosixPath(path).name if path else ""
+        return f"📖 读取 {name}" if name else "📖 读取文件"
+
+    if tool_name == "Grep":
+        pat = tool_input.get("pattern", "")
+        return f"🔍 搜索 {pat[:30]}" if pat else "🔍 搜索代码"
+
+    if tool_name == "Glob":
+        pat = tool_input.get("pattern", "")
+        return f"📂 查找 {pat[:30]}" if pat else "📂 查找文件"
+
+    if tool_name == "Bash":
+        desc = tool_input.get("description", "")
+        return f"⚡ {desc[:40]}" if desc else "⚡ 执行命令"
+
+    if tool_name in ("Edit", "Write"):
+        path = tool_input.get("file_path", "")
+        name = PurePosixPath(path).name if path else ""
+        icon = "✏️" if tool_name == "Edit" else "📝"
+        return f"{icon} {name}" if name else f"{icon} 编辑文件"
+
+    if tool_name == "Agent":
+        desc = tool_input.get("description", "")
+        return f"🤖 {desc[:40]}" if desc else "🤖 子任务分析"
+
+    if tool_name in ("WebFetch", "WebSearch"):
+        query = tool_input.get("query", tool_input.get("prompt", ""))
+        return f"🌐 {query[:30]}" if query else "🌐 搜索网页"
+
+    if tool_name.startswith("mcp__"):
+        # mcp__brave-search__brave_web_search → brave 搜索
+        parts = tool_name.split("__")
+        server = parts[1] if len(parts) > 1 else "扩展"
+        return f"🔌 {server}"
+
+    return _TOOL_LABELS.get(tool_name, f"🔧 {tool_name}")
 
 
 class ClaudeCli:
@@ -26,11 +84,18 @@ class ClaudeCli:
         model: str | None = None,
         system_prompt: str | None = None,
         timeout_seconds: int | None = None,
+        on_activity: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResult:
-        """Execute Claude CLI. Retry logic is handled by the caller (LLMRouter)."""
+        """Execute Claude CLI with streaming progress.
+
+        Args:
+            on_activity: async callback receiving human-readable progress labels
+                         when CC uses tools (e.g. "📖 读取 feishu_bot.py").
+        """
         return await self._execute(
             prompt, session_id=session_id, model=model,
             system_prompt=system_prompt, timeout_seconds=timeout_seconds,
+            on_activity=on_activity,
         )
 
     async def _execute(
@@ -40,11 +105,13 @@ class ClaudeCli:
         model: str | None = None,
         system_prompt: str | None = None,
         timeout_seconds: int | None = None,
+        on_activity: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResult:
         timeout = timeout_seconds or self.default_timeout
         args = [
             self.path, "-p",
-            "--output-format", "json",
+            "--output-format", "stream-json",
+            "--verbose",
             "--dangerously-skip-permissions",
         ]
         # fallback-model must differ from main model
@@ -74,11 +141,60 @@ class ClaudeCli:
                 cwd=self.workspace_dir,
                 env=env,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode("utf-8")),
-                timeout=timeout,
-            )
+
+            # Send prompt and close stdin
+            proc.stdin.write(prompt.encode("utf-8"))
+            await proc.stdin.drain()
+            proc.stdin.close()
+
+            # Collect stderr in background
+            stderr_task = asyncio.create_task(proc.stderr.read())
+
+            # Stream stdout line by line, extracting tool events
+            text = ""
+            new_session_id = None
+            cost = 0.0
+
+            async def _read_stream():
+                nonlocal text, new_session_id, cost
+                async for raw_line in proc.stdout:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    evt_type = obj.get("type")
+
+                    if evt_type == "assistant":
+                        # Check for tool_use in content blocks
+                        content = obj.get("message", {}).get("content", [])
+                        for block in content:
+                            if block.get("type") == "tool_use" and on_activity:
+                                label = _make_tool_label(
+                                    block.get("name", ""),
+                                    block.get("input", {}),
+                                )
+                                try:
+                                    await on_activity(label)
+                                except Exception:
+                                    pass  # never let callback errors kill the stream
+
+                    elif evt_type == "result":
+                        text = obj.get("result", "")
+                        new_session_id = obj.get("session_id")
+                        cost = obj.get("total_cost_usd") or obj.get("cost_usd") or 0.0
+
+                await proc.wait()
+
+            await asyncio.wait_for(_read_stream(), timeout=timeout)
             duration = int((time.monotonic() - start) * 1000)
+
+            # Collect stderr
+            stderr_data = await stderr_task
+
         except asyncio.TimeoutError:
             duration = int((time.monotonic() - start) * 1000)
             proc.terminate()
@@ -111,40 +227,19 @@ class ClaudeCli:
                 duration_ms=duration, is_error=True,
             )
 
-        # Parse JSONL output - take last result entry
-        text = ""
-        new_session_id = None
-        cost = 0.0
-
-        raw = stdout.decode("utf-8", errors="replace").strip()
-        if not raw:
-            if stderr:
-                err = stderr.decode("utf-8", errors="replace").strip()
-                log.warning("Claude CLI empty stdout, stderr: %s", err[:500])
+        if not text:
+            if stderr_data:
+                err = stderr_data.decode("utf-8", errors="replace").strip()
+                log.warning("Claude CLI empty result, stderr: %s", err[:500])
                 return LLMResult(
                     text=f"[CLI error: {err[:500]}]",
                     duration_ms=duration, is_error=True,
                 )
-            log.warning("Claude CLI returned empty stdout (session=%s, model=%s)", session_id, model)
+            log.warning("Claude CLI returned empty result (session=%s, model=%s)", session_id, model)
             return LLMResult(text="", duration_ms=duration, is_error=True)
 
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                if obj.get("type") == "result":
-                    text = obj.get("result", "")
-                    new_session_id = obj.get("session_id")
-                    cost = obj.get("total_cost_usd") or obj.get("cost_usd") or 0.0
-            except json.JSONDecodeError:
-                # Non-JSON line, might be raw text fallback
-                if not text:
-                    text = line
-
         if proc.returncode != 0 and not text:
-            err = stderr.decode("utf-8", errors="replace").strip() if stderr else "unknown error"
+            err = stderr_data.decode("utf-8", errors="replace").strip() if stderr_data else "unknown error"
             return LLMResult(
                 text=f"[Exit code {proc.returncode}: {err[:500]}]",
                 duration_ms=duration, is_error=True,

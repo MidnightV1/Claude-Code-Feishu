@@ -10,6 +10,7 @@ Context strategy for Claude CLI sessions:
 
 import time
 import logging
+from typing import Awaitable, Callable
 from models import LLMConfig, LLMResult
 from claude_cli import ClaudeCli
 from gemini_cli import GeminiCli
@@ -227,12 +228,13 @@ class LLMRouter:
         session_key: str | None = None,
         files: list[str] | None = None,
         image_src: str | None = None,
+        on_activity: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResult:
         provider = llm_config.provider
         log.info("Routing to %s/%s (session=%s)", provider, llm_config.model, session_key)
 
         if provider == "claude-cli":
-            return await self._run_claude(prompt, llm_config, session_key)
+            return await self._run_claude(prompt, llm_config, session_key, on_activity)
 
         elif provider == "gemini-cli":
             return await self.gemini_cli.run(
@@ -262,6 +264,7 @@ class LLMRouter:
 
     async def _run_claude(
         self, prompt: str, llm_config: LLMConfig, session_key: str | None,
+        on_activity: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResult:
         """Claude CLI routing with resume → retry-with-context strategy.
 
@@ -279,6 +282,7 @@ class LLMRouter:
                 model=llm_config.model,
                 system_prompt=llm_config.system_prompt,
                 timeout_seconds=llm_config.timeout_seconds,
+                on_activity=on_activity,
             )
             if not result.is_error:
                 self._save_result(session_key, result, prompt)
@@ -303,6 +307,7 @@ class LLMRouter:
             model=llm_config.model,
             system_prompt=effective_system,
             timeout_seconds=llm_config.timeout_seconds,
+            on_activity=on_activity,
         )
 
         self._save_result(session_key, result, prompt)

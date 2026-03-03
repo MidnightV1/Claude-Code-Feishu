@@ -497,9 +497,24 @@ class FeishuBot:
                     thinking=llm_config.thinking,
                 )
 
+            # ── Progress callback: update thinking card with tool activity ──
+            _last_update = [0.0]  # mutable for closure; monotonic timestamp
+            _MIN_INTERVAL = 5.0   # seconds between card updates
+
+            async def _on_activity(label: str):
+                now = time.monotonic()
+                if now - _last_update[0] < _MIN_INTERVAL:
+                    return  # throttle
+                _last_update[0] = now
+                if thinking_msg_id:
+                    await self.dispatcher.update_card(thinking_msg_id, label)
+
+            on_act = _on_activity if thinking_msg_id else None
+
             # Wrap LLM call in a tracked task for cancel support
             llm_coro = self.router.run(
                 prompt=prompt, llm_config=llm_config, session_key=session_key,
+                on_activity=on_act,
             )
             llm_task = asyncio.create_task(llm_coro)
             self._running_tasks[key] = llm_task
