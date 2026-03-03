@@ -25,7 +25,7 @@
 |------|-----------|
 | 定时任务增删改 | **不需要** — hub_ctl.py 自动热加载（SIGUSR1） |
 | `sources.yaml`（日报搜索词） | **不需要** — collector 每次运行时读取 |
-| `HEARTBEAT.md` | **不需要** — 每个心跳周期重读 |
+| 飞书任务变更 | **不需要** — 心跳每周期重新拉取快照 |
 | `config.yaml`（凭据、模型默认值） | **需要** |
 | Hub Python 代码（main.py 等） | **需要** |
 | Python 依赖 | **需要** |
@@ -116,11 +116,11 @@
 | Provider | 调用方式 | 适用场景 |
 |----------|----------|----------|
 | `claude-cli` | `claude -p` subprocess | 需要工具能力的任务 |
-| `gemini-api` | `google-genai` SDK | 多模态、大文档、心跳 |
+| `gemini-api` | `google-genai` SDK | 多模态、大文档 |
 
 `gemini-cli` 接口已预留，因 tree-sitter 编译问题on the server暂不可用。
 
-心跳固定使用 `gemini-api/2.5-Flash-Lite`（最低成本）。
+心跳使用两层 Claude 模型：Haiku（triage）→ Sonnet（action，仅异常时触发）。
 
 ---
 
@@ -133,7 +133,7 @@
 | `briefing_plugin.py` | 日报 thin shim（subprocess launcher，60 行，不含逻辑） |
 | `scripts/briefing_run.py` | 日报 pipeline 独立脚本（采集→生成→审稿→邮件→关键词进化） |
 | `scheduler.py` | 进程内 cron 调度器（croniter + asyncio timer） |
-| `heartbeat.py` | 心跳监控（系统快照→LLM 判断→异常投递） |
+| `heartbeat.py` | 心跳监控（两层架构：Haiku triage → Sonnet action） |
 | `llm_router.py` | 多模型路由（claude-cli / gemini-api） |
 | `dispatcher.py` | 飞书消息发送（卡片 JSON 2.0 markdown，分块，重试，卡片更新） |
 | `file_store.py` | 会话级文件存储（图片/文件持久化 + 上下文注入） |

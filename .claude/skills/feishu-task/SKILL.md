@@ -101,23 +101,32 @@ The `--due` parameter accepts flexible time formats:
 
 ## Heartbeat Integration
 
-When enabled in config, the heartbeat periodically runs `task_ctl.py snapshot` and includes overdue/upcoming tasks in its monitoring prompt. The LLM then decides whether to alert.
+The heartbeat uses a two-layer architecture driven entirely by the task snapshot:
+
+1. **Triage (Haiku)**: Reads snapshot, judges OK vs anomaly
+2. **Action (Sonnet)**: Only triggered on anomaly — has full tool access to update tasks, create follow-ups, compose notifications
 
 Config:
 ```yaml
 heartbeat:
-  tasks:
-    enabled: true
-    alert_window_hours: 2  # alert for tasks due within N hours
+  triage:
+    provider: claude-cli
+    model: haiku
+  action:
+    provider: claude-cli
+    model: sonnet
+  alert_window_hours: 2  # alert for tasks due within N hours
 ```
 
-Snapshot output (empty if nothing to report):
+Snapshot output includes current time, assignee info, and open tasks without due dates:
 ```
-[任务快照]
+[任务快照] 2026-03-04 15:30 Tuesday
 逾期 (1):
-- "提交周报" (逾期 2h, 负责人: 张三)
+- "提交周报" | 逾期 2h | 负责人: 张三
 即将到期 (1):
-- "Review PR" (45min后到期, 负责人: John)
+- "Review PR" | 45min后到期 | 负责人: 未指派
+进行中 (1):
+- "调研竞品" | 负责人: 李四
 ```
 
 ## Behavior Notes
@@ -126,5 +135,5 @@ Snapshot output (empty if nothing to report):
 - `list` shows open tasks by default. Use `--completed` for done tasks.
 - `--assignee` resolves names via ContactStore (same as calendar skill).
 - Task timestamps use milliseconds (Feishu Task v2 API format). Time parsing handles this automatically.
-- `snapshot` exits silently (no output) if no overdue or upcoming tasks, keeping heartbeat noise-free.
+- `snapshot` exits silently (no output) if no open tasks, keeping heartbeat noise-free.
 - The bot uses `tenant_access_token`, so the global task list API is unavailable. All queries go through the dedicated tasklist endpoint.

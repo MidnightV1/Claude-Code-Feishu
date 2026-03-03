@@ -381,56 +381,84 @@ def cmd_tasklist_list(args, api, cfg, contacts):
         print(f"{tl.get('guid', '?'):<40} {tl.get('name', '?')}")
 
 
+def _get_assignees(api: FeishuAPI, task_guid: str,
+                    contacts: ContactStore) -> str:
+    """Fetch task details and return assignee names string."""
+    full = _fetch_task(api, task_guid)
+    if not full:
+        return "未知"
+    names = []
+    for m in full.get("members", []):
+        if m.get("role") == "assignee":
+            name = contacts.lookup_name(m.get("id", "")) or m.get("id", "?")[:8]
+            names.append(name)
+    return ", ".join(names) if names else "未指派"
+
+
 def cmd_snapshot(args, api, cfg, contacts):
-    """Output overdue/upcoming task snapshot for heartbeat integration."""
+    """Output task snapshot for heartbeat integration.
+
+    Includes: overdue, upcoming (within window), and open tasks without due date.
+    Each task shows assignee info for actionable notifications.
+    """
     tasklist_guid = cfg.get("feishu", {}).get("tasks", {}).get("tasklist_guid")
     if not tasklist_guid:
         return  # silently skip — not configured
 
     window_hours = args.window_hours
     if window_hours is None:
-        window_hours = cfg.get("heartbeat", {}).get("tasks", {}).get(
-            "alert_window_hours", 2)
+        window_hours = cfg.get("heartbeat", {}).get("alert_window_hours",
+                       cfg.get("heartbeat", {}).get("tasks", {}).get(
+                           "alert_window_hours", 2))
 
-    # Fetch tasks from tasklist (summary-level, includes due + completed_at)
     tasks = _list_tasklist_tasks(api, tasklist_guid)
     if not tasks:
         return
 
-    now_ms = int(datetime.now(TZ).timestamp() * 1000)
+    now = datetime.now(TZ)
+    now_ms = int(now.timestamp() * 1000)
     window_ms = window_hours * 3600 * 1000
 
     overdue = []
     upcoming = []
+    open_no_due = []
 
     for t in tasks:
-        # Skip completed
         if t.get("completed_at") and t["completed_at"] != "0":
             continue
 
+        guid = t.get("guid", "")
+        summary = t.get("summary", "?")
+        assignee = _get_assignees(api, guid, contacts)
+
         due = t.get("due")
         if not due or not due.get("timestamp"):
+            open_no_due.append(f'- "{summary}" | 负责人: {assignee}')
             continue
 
         due_ms = int(due["timestamp"])
         diff = due_ms - now_ms
-        summary = t.get("summary", "?")
 
         if diff < 0:
-            overdue.append(f'- "{summary}" (逾期 {_format_relative(-diff)})')
+            overdue.append(
+                f'- "{summary}" | 逾期 {_format_relative(-diff)} | 负责人: {assignee}')
         elif diff < window_ms:
-            upcoming.append(f'- "{summary}" ({_format_relative(diff)}后到期)')
+            upcoming.append(
+                f'- "{summary}" | {_format_relative(diff)}后到期 | 负责人: {assignee}')
 
-    if not overdue and not upcoming:
+    if not overdue and not upcoming and not open_no_due:
         return
 
-    lines = ["[任务快照]"]
+    lines = [f"[任务快照] {now.strftime('%Y-%m-%d %H:%M %A')}"]
     if overdue:
         lines.append(f"逾期 ({len(overdue)}):")
         lines.extend(overdue)
     if upcoming:
         lines.append(f"即将到期 ({len(upcoming)}):")
         lines.extend(upcoming)
+    if open_no_due:
+        lines.append(f"进行中 ({len(open_no_due)}):")
+        lines.extend(open_no_due)
 
     print("\n".join(lines))
 
