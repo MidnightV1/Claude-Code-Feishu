@@ -27,20 +27,11 @@ class ClaudeCli:
         system_prompt: str | None = None,
         timeout_seconds: int | None = None,
     ) -> LLMResult:
-        result = await self._execute(
+        """Execute Claude CLI. Retry logic is handled by the caller (LLMRouter)."""
+        return await self._execute(
             prompt, session_id=session_id, model=model,
             system_prompt=system_prompt, timeout_seconds=timeout_seconds,
         )
-        # Retry without --resume if session caused the error
-        if result.is_error and session_id:
-            log.warning("Retrying without --resume: %s", result.text[:200])
-            result = await self._execute(
-                prompt, session_id=None, model=model,
-                system_prompt=system_prompt, timeout_seconds=timeout_seconds,
-            )
-            if not result.is_error:
-                log.info("Retry without --resume succeeded (new session: %s)", result.session_id)
-        return result
 
     async def _execute(
         self,

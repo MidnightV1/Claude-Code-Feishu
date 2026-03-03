@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
-"""Unified LLM router - dispatches to Claude CLI, Gemini CLI, or Gemini API."""
+"""Unified LLM router - dispatches to Claude CLI, Gemini CLI, or Gemini API.
+
+Context strategy for Claude CLI sessions:
+- Always try --resume if session_id exists (no TTL gating)
+- Resume failed → retry with history injected via system prompt (not user prompt)
+- History compression: Sonnet (primary) → Gemini 3-Flash (fallback) → raw text
+- Router owns retry logic; claude_cli.py is a simple executor
+"""
 
 import time
 import logging
@@ -11,10 +18,39 @@ from store import load_json, save_json
 
 log = logging.getLogger("hub.router")
 
-SESSION_TTL = 7200  # 2h — don't resume stale sessions (saves cost + avoids failures)
-HISTORY_ROUNDS = 8  # keep last N rounds as context fallback for new sessions
+HISTORY_ROUNDS = 8       # keep last N rounds for context fallback
 HISTORY_TRUNCATE = 2000  # max chars per message in history
-SUMMARY_THRESHOLD = 4  # summarize when history exceeds this many rounds
+SUMMARY_THRESHOLD = 4    # rounds beyond this → compress older portion
+
+# ═══ Context Recovery Templates ═══
+
+RECOVERY_PREAMBLE = (
+    "## 会话恢复\n\n"
+    "你的上一个 CLI session 已结束，以下是之前对话的压缩上下文。\n"
+    "注意：之前的工具调用记录（文件读写、命令执行）不可访问。"
+    "如需操作之前涉及的文件，请重新读取确认当前状态。\n"
+)
+
+SUMMARY_PROMPT = (
+    "将以下 Claude Code 飞书对话历史压缩为结构化摘要。\n\n"
+    "## 输出格式\n\n"
+    "### 对话主题\n一句话概括\n\n"
+    "### 关键决策\n- 具体决策（保留文件路径、配置值、技术选型）\n\n"
+    "### 当前状态\n"
+    "- 已完成：...\n"
+    "- 进行中：...\n"
+    "- 待确认：...\n\n"
+    "### 涉及的文件与系统\n- 文件路径、服务名\n\n"
+    "### 用户偏好\n- 偏好和约束（如有）\n\n"
+    "## 要求\n"
+    "- 500字以内\n"
+    "- 保留具体文件路径、命令、配置值——恢复后需要\n"
+    "- 丢弃寒暄、重复、已否决方案、过程性试错\n"
+    "- 代码修改只记录改了哪些文件的什么方面，不记录代码本身\n\n"
+    "对话历史：\n{raw}"
+)
+
+SUMMARY_SYSTEM = "你是对话压缩器。严格按格式输出结构化摘要，不添加额外解释。"
 
 
 class LLMRouter:
@@ -38,15 +74,9 @@ class LLMRouter:
         await save_json(self.sessions_path, self._sessions)
 
     def get_session_id(self, session_key: str) -> str | None:
+        """Get session_id for resume. No TTL — always try resume, let CLI handle failures."""
         entry = self._sessions.get(session_key)
         if not entry or not entry.get("session_id"):
-            return None
-        # Expire stale sessions — avoids expensive context reads and resume failures
-        updated = entry.get("updated_at", 0)
-        if time.time() - updated > SESSION_TTL:
-            log.info("Session expired for %s (age=%.0fs), starting fresh",
-                     session_key, time.time() - updated)
-            entry.pop("session_id", None)
             return None
         return entry["session_id"]
 
@@ -65,10 +95,16 @@ class LLMRouter:
         """Clear session but preserve history for context carryover."""
         entry = self._sessions.get(session_key)
         if entry:
-            history = entry.get("history", [])
-            self._sessions[session_key] = {"history": history} if history else {}
+            preserved = {}
+            if entry.get("history"):
+                preserved["history"] = entry["history"]
+            if entry.get("llm_config"):
+                preserved["llm_config"] = entry["llm_config"]
+            self._sessions[session_key] = preserved if preserved else {}
         else:
             self._sessions.pop(session_key, None)
+
+    # ═══ History Management ═══
 
     def _append_history(self, session_key: str, user_msg: str, assistant_msg: str):
         """Append a round to session history, keeping last N rounds."""
@@ -88,40 +124,6 @@ class LLMRouter:
         if len(history) > max_msgs:
             entry["history"] = history[-max_msgs:]
 
-    async def _summarize_history(self, history: list[dict]) -> str | None:
-        """Compress older history into a structured summary using Gemini 3-Flash.
-
-        Only summarizes the older portion; recent rounds are kept raw by the caller.
-        """
-        lines = []
-        for msg in history:
-            role = "用户" if msg["role"] == "user" else "助手"
-            lines.append(f"{role}: {msg['text']}")
-        raw = "\n".join(lines)
-
-        prompt = (
-            "请将以下对话历史压缩为结构化摘要（中文，500字以内）。\n"
-            "要求：\n"
-            "- 保留所有关键决策、结论、待办事项\n"
-            "- 保留用户明确的需求和偏好\n"
-            "- 丢弃寒暄、重复、过程性试错\n"
-            "- 用「用户要求：…」「已确认：…」「待办：…」等标签组织\n\n"
-            f"对话历史：\n{raw}"
-        )
-        try:
-            result = await self.gemini_api.run(
-                prompt, model="3-Flash", temperature=0.2, timeout_seconds=30,
-            )
-            if result.is_error or not result.text.strip():
-                log.warning("History summarization failed: %s", result.text[:200])
-                return None
-            log.info("History summarized: %d chars → %d chars (cost=$%.4f)",
-                     len(raw), len(result.text), result.cost_usd)
-            return result.text.strip()
-        except Exception as e:
-            log.warning("History summarization error: %s", e)
-            return None
-
     def _format_raw_history(self, history: list[dict]) -> str:
         """Format history messages as raw text lines."""
         lines = []
@@ -130,37 +132,93 @@ class LLMRouter:
             lines.append(f"{role}: {msg['text']}")
         return "\n".join(lines)
 
-    async def _build_context_prompt(self, session_key: str, prompt: str) -> str:
-        """Prepend recent history to prompt when starting a fresh session.
+    # ═══ Context Recovery ═══
 
-        Strategy: split history at SUMMARY_THRESHOLD boundary.
-        - Recent N rounds (N=SUMMARY_THRESHOLD): kept as raw text for precision
-        - Older rounds: compressed via Gemini 3-Flash summary
-        - Fallback: all raw if summarization fails
+    async def _compress_history(self, history: list[dict]) -> str | None:
+        """Compress conversation history. Sonnet primary, Gemini 3-Flash fallback."""
+        lines = []
+        for msg in history:
+            role = "用户" if msg["role"] == "user" else "助手"
+            lines.append(f"{role}: {msg['text']}")
+        raw = "\n".join(lines)
+
+        prompt = SUMMARY_PROMPT.format(raw=raw)
+
+        # Primary: Sonnet — understands CC conversation patterns
+        try:
+            result = await self.claude.run(
+                prompt, model="sonnet",
+                system_prompt=SUMMARY_SYSTEM,
+                timeout_seconds=60,
+            )
+            if not result.is_error and result.text.strip():
+                log.info("History compressed via Sonnet: %d → %d chars",
+                         len(raw), len(result.text))
+                return result.text.strip()
+            log.warning("Sonnet compression failed: %s", result.text[:200])
+        except Exception as e:
+            log.warning("Sonnet compression error: %s", e)
+
+        # Fallback: Gemini 3-Flash
+        try:
+            result = await self.gemini_api.run(
+                prompt, model="3-Flash",
+                temperature=0.2, timeout_seconds=30,
+            )
+            if not result.is_error and result.text.strip():
+                log.info("History compressed via Gemini fallback: %d → %d chars",
+                         len(raw), len(result.text))
+                return result.text.strip()
+        except Exception as e:
+            log.warning("Gemini compression fallback error: %s", e)
+
+        return None
+
+    async def _build_recovery_context(self, session_key: str) -> str | None:
+        """Build recovery context for system prompt injection when session is lost.
+
+        Returns context string for --append-system-prompt, or None if no history.
+        Strategy: recent rounds raw + older rounds compressed.
         """
         entry = self._sessions.get(session_key, {})
         history = entry.get("history", [])
         if not history:
-            return prompt
+            return None
 
         rounds = len(history) // 2
-        recent_msgs = SUMMARY_THRESHOLD * 2  # messages to keep raw
+        recent_msgs = SUMMARY_THRESHOLD * 2
+
+        parts = [RECOVERY_PREAMBLE]
 
         if rounds > SUMMARY_THRESHOLD:
             older = history[:-recent_msgs]
             recent = history[-recent_msgs:]
-            summary = await self._summarize_history(older)
+            summary = await self._compress_history(older)
             if summary:
-                parts = [f"[早期对话摘要（由 AI 压缩）]\n{summary}"]
-                parts.append(f"\n[近期对话上下文]\n{self._format_raw_history(recent)}")
-                parts.append(f"\n[当前消息]\n{prompt}")
-                return "\n".join(parts)
-            # Summarization failed — fall through to all-raw
+                parts.append(f"### 早期对话摘要\n{summary}")
+            else:
+                # Compression failed — use raw for everything
+                parts.append(f"### 对话历史\n{self._format_raw_history(history)}")
+                return "\n\n".join(parts)
+            parts.append(f"### 近期对话\n{self._format_raw_history(recent)}")
+        else:
+            parts.append(f"### 对话历史\n{self._format_raw_history(history)}")
 
-        return (
-            f"[近期对话上下文]\n{self._format_raw_history(history)}"
-            f"\n\n[当前消息]\n{prompt}"
-        )
+        return "\n\n".join(parts)
+
+    def _save_result(self, session_key: str, result: LLMResult, prompt: str):
+        """Save session_id and history after a successful call."""
+        if not session_key or result.is_error:
+            return
+        if session_key not in self._sessions:
+            self._sessions[session_key] = {}
+        if result.session_id:
+            self._sessions[session_key]["session_id"] = result.session_id
+            self._sessions[session_key]["updated_at"] = time.time()
+        if result.text:
+            self._append_history(session_key, prompt, result.text)
+
+    # ═══ Routing ═══
 
     async def run(
         self,
@@ -174,41 +232,18 @@ class LLMRouter:
         log.info("Routing to %s/%s (session=%s)", provider, llm_config.model, session_key)
 
         if provider == "claude-cli":
-            session_id = self.get_session_id(session_key) if session_key else None
-            # No session to resume — inject history as context
-            effective_prompt = prompt
-            if not session_id and session_key:
-                effective_prompt = await self._build_context_prompt(session_key, prompt)
-            result = await self.claude.run(
-                effective_prompt,
-                session_id=session_id,
-                model=llm_config.model,
-                system_prompt=llm_config.system_prompt,
-                timeout_seconds=llm_config.timeout_seconds,
-            )
-            # Save session + history
-            if session_key and not result.is_error:
-                if session_key not in self._sessions:
-                    self._sessions[session_key] = {}
-                if result.session_id:
-                    self._sessions[session_key]["session_id"] = result.session_id
-                    self._sessions[session_key]["updated_at"] = time.time()
-                if result.text:
-                    self._append_history(session_key, prompt, result.text)
-                await self.save_sessions()
-            return result
+            return await self._run_claude(prompt, llm_config, session_key)
 
         elif provider == "gemini-cli":
-            result = await self.gemini_cli.run(
+            return await self.gemini_cli.run(
                 prompt,
                 model=llm_config.model,
                 system_prompt=llm_config.system_prompt,
                 timeout_seconds=llm_config.timeout_seconds,
             )
-            return result
 
         elif provider == "gemini-api":
-            result = await self.gemini_api.run(
+            return await self.gemini_api.run(
                 prompt,
                 system_prompt=llm_config.system_prompt,
                 model=llm_config.model,
@@ -218,10 +253,58 @@ class LLMRouter:
                 files=files,
                 image_src=image_src,
             )
-            return result
 
         else:
             return LLMResult(
                 text=f"[Unknown provider: {provider}]",
                 is_error=True,
             )
+
+    async def _run_claude(
+        self, prompt: str, llm_config: LLMConfig, session_key: str | None,
+    ) -> LLMResult:
+        """Claude CLI routing with resume → retry-with-context strategy.
+
+        1. If session_id exists → try --resume
+        2. If resume fails → retry as fresh session with history via system prompt
+        3. If no session_id → start fresh with history via system prompt
+        """
+        session_id = self.get_session_id(session_key) if session_key else None
+
+        # ── Step 1: Try resume ──
+        if session_id:
+            result = await self.claude.run(
+                prompt,
+                session_id=session_id,
+                model=llm_config.model,
+                system_prompt=llm_config.system_prompt,
+                timeout_seconds=llm_config.timeout_seconds,
+            )
+            if not result.is_error:
+                self._save_result(session_key, result, prompt)
+                await self.save_sessions()
+                return result
+            # Resume failed — fall through to fresh session with context
+            log.warning("Resume failed for %s: %s", session_key, result.text[:200])
+
+        # ── Step 2: Fresh session with recovery context via system prompt ──
+        effective_system = llm_config.system_prompt
+        if session_key:
+            recovery = await self._build_recovery_context(session_key)
+            if recovery:
+                parts = [recovery]
+                if effective_system:
+                    parts.append(effective_system)
+                effective_system = "\n\n".join(parts)
+
+        result = await self.claude.run(
+            prompt,
+            session_id=None,
+            model=llm_config.model,
+            system_prompt=effective_system,
+            timeout_seconds=llm_config.timeout_seconds,
+        )
+
+        self._save_result(session_key, result, prompt)
+        await self.save_sessions()
+        return result
