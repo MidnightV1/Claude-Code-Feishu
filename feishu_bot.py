@@ -281,9 +281,9 @@ class FeishuBot:
                 if not mentioned_bot:
                     return
 
-            # Parse text for text/post types
+            # Parse text for text/post/markdown types
             text = ""
-            if msg_type in ("text", "post"):
+            if msg_type in ("text", "post", "markdown"):
                 text = self._parse_content(msg.content, msg_type)
                 # Strip @mentions
                 if chat_type == "group" and msg.mentions:
@@ -1267,37 +1267,52 @@ class FeishuBot:
         if msg_type == "text":
             return content.get("text", "")
         elif msg_type == "post":
-            lines = []
-            for lang_content in content.values():
-                if not isinstance(lang_content, dict):
-                    continue
-                title = lang_content.get("title")
-                if title:
-                    lines.append(title)
-                for para in lang_content.get("content", []):
-                    parts = []
-                    for elem in para:
-                        tag = elem.get("tag", "")
-                        if tag in ("text", "md"):
-                            parts.append(elem.get("text", ""))
-                        elif tag == "a":
-                            text = elem.get("text", "")
-                            href = elem.get("href", "")
-                            parts.append(f"[{text}]({href})" if href else text)
-                        elif tag == "at":
-                            parts.append(elem.get("name", elem.get("key", "")))
-                        elif tag == "code_block":
-                            lang = elem.get("language", "")
-                            parts.append(f"```{lang}\n{elem.get('text', '')}\n```")
-                        elif tag == "emotion":
-                            parts.append(f":{elem.get('emoji_type', '')}:")
-                        # img/media/hr — skip, no text content
-                    if parts:
-                        lines.append("".join(parts))
-                if lines:
-                    break  # use first available language
-            return "\n".join(lines)
+            return self._parse_post_content(content)
+        elif msg_type == "markdown":
+            return content.get("text", "")
         return ""
+
+    def _parse_post_content(self, content: dict) -> str:
+        """Parse post message content, handling both flat and multi-language structures."""
+        # Detect structure: flat {title, content: [[...]]} vs multi-lang {zh_cn: {title, content}}
+        if "content" in content and isinstance(content["content"], list):
+            # Flat structure (most common from Feishu client)
+            return self._extract_post_body(content)
+        # Multi-language structure — use first available language
+        for lang_content in content.values():
+            if isinstance(lang_content, dict) and "content" in lang_content:
+                return self._extract_post_body(lang_content)
+        return ""
+
+    def _extract_post_body(self, post: dict) -> str:
+        """Extract text from a single post body {title, content: [[elements]]}."""
+        lines = []
+        title = post.get("title")
+        if title:
+            lines.append(title)
+        for para in post.get("content", []):
+            if not isinstance(para, list):
+                continue
+            parts = []
+            for elem in para:
+                tag = elem.get("tag", "")
+                if tag in ("text", "md"):
+                    parts.append(elem.get("text", ""))
+                elif tag == "a":
+                    text = elem.get("text", "")
+                    href = elem.get("href", "")
+                    parts.append(f"[{text}]({href})" if href else text)
+                elif tag == "at":
+                    parts.append(elem.get("name", elem.get("key", "")))
+                elif tag == "code_block":
+                    lang = elem.get("language", "")
+                    parts.append(f"```{lang}\n{elem.get('text', '')}\n```")
+                elif tag == "emotion":
+                    parts.append(f":{elem.get('emoji_type', '')}:")
+                # img/media/hr — skip, no text content
+            if parts:
+                lines.append("".join(parts))
+        return "\n".join(lines)
 
     def _fetch_quoted_text(self, parent_id: str) -> str:
         """Fetch the content of a quoted/replied-to message via API."""
