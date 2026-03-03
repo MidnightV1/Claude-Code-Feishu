@@ -138,6 +138,7 @@ class ClaudeCli:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                limit=1024 * 1024,  # 1MB; default 64KB is too small for large stream-json lines
                 cwd=self.workspace_dir,
                 env=env,
             )

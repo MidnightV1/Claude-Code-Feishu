@@ -16,6 +16,7 @@ from heartbeat import HeartbeatMonitor
 from dispatcher import Dispatcher
 from file_store import FileStore
 from feishu_api import FeishuAPI
+from store import load_json_sync, save_json_sync
 
 log = logging.getLogger("hub.feishu_bot")
 
@@ -148,6 +149,12 @@ class FeishuBot:
         self._sender_cache: dict[str, tuple[str, float]] = {}
         self._bot_open_id: str | None = None
         self._feishu_api = FeishuAPI(self.app_id, self.app_secret, self.domain)
+        self._reply_cache_path = os.path.join(
+            os.path.dirname(__file__), "data", "reply_cache.json"
+        )
+        self._reply_cache: dict[str, str] = load_json_sync(
+            self._reply_cache_path, default={}
+        )  # bot message_id → reply text (persistent)
 
     def register_command(self, prefix: str, handler, help_lines: str | None = None):
         """Register a plugin command handler. handler: async (cmd, args) -> str"""
@@ -572,10 +579,13 @@ class FeishuBot:
             if thinking_msg_id:
                 await self.dispatcher.delete_message(thinking_msg_id)
             if reply_text:
-                await self.dispatcher.send_text(
+                reply_mid = await self.dispatcher.send_text(
                     batch.chat_id, reply_text,
                     reply_to=batch.first_message_id,
                 )
+                # Cache bot reply for quote lookup (API returns degraded content for cards)
+                if reply_mid:
+                    self._cache_reply(reply_mid, reply_text)
         except Exception as e:
             log.error("Batch processing error: %s", e, exc_info=True)
             # Clean up thinking card on error
@@ -1278,6 +1288,9 @@ class FeishuBot:
         except json.JSONDecodeError:
             return content_str if isinstance(content_str, str) else ""
 
+        if not isinstance(content, dict):
+            return str(content) if content else ""
+
         if msg_type == "text":
             return content.get("text", "")
         elif msg_type == "post":
@@ -1335,25 +1348,60 @@ class FeishuBot:
         """Extract text from an interactive card (JSON 2.0 schema).
 
         Our cards wrap markdown in: body.elements[].tag=="markdown" → .content
+        API may return a degraded format with nested lists (like post content).
         """
         parts = []
+        # JSON 2.0: body.elements[].tag=="markdown"
         for el in content.get("body", {}).get("elements", []):
-            if el.get("tag") == "markdown":
+            if isinstance(el, dict) and el.get("tag") == "markdown":
                 parts.append(el.get("content", ""))
         if parts:
             return "\n".join(parts)
-        # Fallback: JSON 1.0 legacy cards
+        # Fallback: JSON 1.0 legacy cards or degraded API format
         for el in content.get("elements", []):
-            if el.get("tag") == "markdown":
-                parts.append(el.get("content", ""))
-            elif el.get("tag") == "div":
-                text_obj = el.get("text", {})
-                if text_obj.get("tag") == "lark_md":
-                    parts.append(text_obj.get("content", ""))
+            if isinstance(el, list):
+                # Degraded format: nested paragraphs [[{tag,text},...]]
+                for inline in el:
+                    if isinstance(inline, dict) and inline.get("tag") == "text":
+                        t = inline.get("text", "")
+                        if t:
+                            parts.append(t)
+            elif isinstance(el, dict):
+                if el.get("tag") == "markdown":
+                    parts.append(el.get("content", ""))
+                elif el.get("tag") == "div":
+                    text_obj = el.get("text", {})
+                    if text_obj.get("tag") == "lark_md":
+                        parts.append(text_obj.get("content", ""))
         return "\n".join(parts)
 
+    # Feishu API returns this placeholder for interactive cards
+    _DEGRADED_PLACEHOLDER = "请升级至最新版本客户端，以查看内容"
+
+    def _cache_reply(self, message_id: str, text: str):
+        """Cache bot reply text and persist to disk."""
+        self._reply_cache[message_id] = text
+        # Evict oldest entries if over capacity
+        max_size = 500
+        if len(self._reply_cache) > max_size:
+            excess = len(self._reply_cache) - max_size
+            it = iter(self._reply_cache)
+            for _ in range(excess):
+                self._reply_cache.pop(next(it), None)
+        try:
+            save_json_sync(self._reply_cache_path, self._reply_cache)
+        except Exception as e:
+            log.warning("Failed to persist reply cache: %s", e)
+
     def _fetch_quoted_text(self, parent_id: str) -> str:
-        """Fetch the content of a quoted/replied-to message via API."""
+        """Fetch the content of a quoted/replied-to message.
+
+        Checks persistent reply cache first (bot card replies return degraded
+        content from API), then falls back to API fetch.
+        """
+        # Check persistent cache — bot card replies can't be fetched via API
+        if parent_id in self._reply_cache:
+            return self._reply_cache[parent_id]
         try:
             resp = self._feishu_api.get(f"/open-apis/im/v1/messages/{parent_id}")
             if resp.get("code") != 0:
@@ -1366,7 +1414,12 @@ class FeishuBot:
             item = items[0]
             msg_type = item.get("msg_type", "")
             body = item.get("body", {}).get("content", "")
-            return self._parse_content(body, msg_type)
+            text = self._parse_content(body, msg_type)
+            # Discard Feishu's degraded placeholder for card messages
+            if self._DEGRADED_PLACEHOLDER in text:
+                log.info("Discarded degraded content for parent %s", parent_id)
+                return ""
+            return text
         except Exception as e:
             log.warning("Error fetching parent message %s: %s", parent_id, e)
             return ""

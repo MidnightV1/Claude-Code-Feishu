@@ -40,10 +40,13 @@ class Dispatcher:
         chat_id: str,
         text: str,
         reply_to: str | None = None,
-    ) -> bool:
-        """Send markdown text via Feishu interactive card (JSON 2.0)."""
+    ) -> str | None:
+        """Send markdown text via Feishu interactive card (JSON 2.0).
+
+        Returns the message_id of the first sent message, or None on failure.
+        """
         if not text.strip():
-            return True
+            return None
 
         # Chunk if too long
         if len(text) > MAX_MSG_LEN:
@@ -51,11 +54,11 @@ class Dispatcher:
 
         return await self._send_card(chat_id, text, reply_to)
 
-    async def send_to_delivery_target(self, text: str) -> bool:
+    async def send_to_delivery_target(self, text: str) -> str | None:
         """Send to the configured delivery chat (for heartbeat/cron results)."""
         if not self.delivery_chat_id:
             log.warning("No delivery_chat_id configured, skipping delivery")
-            return False
+            return None
         return await self.send_text(self.delivery_chat_id, text)
 
     async def add_reaction(self, message_id: str, emoji: str = "Typing") -> str | None:
@@ -211,8 +214,11 @@ class Dispatcher:
 
     async def _send_card(
         self, chat_id: str, text: str, reply_to: str | None = None,
-    ) -> bool:
-        """Send markdown content as Feishu interactive card (JSON 2.0 schema)."""
+    ) -> str | None:
+        """Send markdown content as Feishu interactive card (JSON 2.0 schema).
+
+        Returns message_id on success, None on failure.
+        """
         import lark_oapi as lark
         from lark_oapi.api.im.v1 import (
             CreateMessageRequest, CreateMessageRequestBody,
@@ -258,7 +264,8 @@ class Dispatcher:
                     )
 
                 if resp.success():
-                    return True
+                    mid = getattr(resp.data, "message_id", None) if resp.data else None
+                    return mid or ""
                 log.warning("Feishu send failed: code=%s msg=%s", resp.code, resp.msg)
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt)
@@ -267,25 +274,27 @@ class Dispatcher:
                 if attempt < 2:
                     await asyncio.sleep(2 ** attempt)
 
-        return False
+        return None
 
     async def _send_chunked(
         self, chat_id: str, text: str, reply_to: str | None = None,
-    ) -> bool:
-        """Split long text and send as multiple messages."""
+    ) -> str | None:
+        """Split long text and send as multiple messages.
+
+        Returns the message_id of the first chunk, or None if first chunk failed.
+        """
         chunks = self._chunk_text(text)
-        success = True
+        first_mid = None
         for i, chunk in enumerate(chunks):
-            # Only reply_to on first chunk
-            ok = await self._send_card(
+            mid = await self._send_card(
                 chat_id, chunk,
                 reply_to=reply_to if i == 0 else None,
             )
-            if not ok:
-                success = False
+            if i == 0:
+                first_mid = mid
             if i < len(chunks) - 1:
                 await asyncio.sleep(0.5)  # rate limit courtesy
-        return success
+        return first_mid
 
     @staticmethod
     def _chunk_text(text: str) -> list[str]:
