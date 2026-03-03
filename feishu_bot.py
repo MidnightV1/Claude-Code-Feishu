@@ -67,7 +67,7 @@ FEISHU_SYSTEM_PROMPT = """\
 
 **会话管理**
 - DM 按 open_id 独立 session / 群聊按 chat_id 共享 session
-- `#reset` 重置 / `#model provider/model` 切换模型
+- `#reset` 重置 / `#opus` `#sonnet` 切换模型 / `#think` 开关推理 / `#usage` 查配额
 
 **Skills**
 - `#plan` / `#review` / `#analyze` — Opus + 专属提示词
@@ -97,7 +97,6 @@ SKILL_ROUTES = {
         "你是分析师。基于对话上下文，做深度分析。"
         "厘清本质问题，给出有洞察的结论和可执行建议。"
     )),
-    "#opus": ("claude-cli", "opus", None),
     "#flash": ("gemini-api", "3-Flash", None),
 }
 
@@ -637,273 +636,109 @@ class FeishuBot:
 
         parts = text.split(None, 1)
         cmd = parts[0].lower()
-        args = parts[1] if len(parts) > 1 else ""
 
         if cmd == "#help":
             return self._cmd_help()
-        elif cmd == "#model":
-            return await self._cmd_model(args, sender_id, chat_id)
         elif cmd == "#reset":
             return self._cmd_reset(sender_id, chat_id)
-        elif cmd == "#files":
-            return self._cmd_files(args, sender_id)
-        elif cmd.startswith("#cron"):
-            return await self._cmd_cron(cmd, args)
-        elif cmd.startswith("#heartbeat"):
-            return await self._cmd_heartbeat(cmd, args)
-        elif cmd == "#server":
-            return await self._cmd_server(args)
-        elif cmd == "#task":
-            return await self._cmd_task(args, chat_id, sender_id)
         elif cmd == "#usage":
-            return await self._cmd_quota()
+            return await self._cmd_usage()
+        elif cmd == "#jobs":
+            return self._cmd_jobs()
+        elif cmd == "#restart":
+            asyncio.create_task(self._do_server_restart())
+            return "服务将在 3 秒后重启..."
+        elif cmd == "#opus":
+            return self._cmd_switch_model("opus", sender_id)
+        elif cmd == "#sonnet":
+            return self._cmd_switch_model("sonnet", sender_id)
+        elif cmd == "#think":
+            return self._cmd_think(sender_id)
         else:
             # Plugin commands: check registered handlers
             for prefix, handler in self._command_handlers.items():
                 if cmd.startswith(prefix):
+                    args = parts[1] if len(parts) > 1 else ""
                     return await handler(cmd, args)
         return None
 
     def _cmd_help(self) -> str:
         base = (
             "**nas-claude-hub commands**\n\n"
-            "**Skills** (one-shot model upgrade, keeps session context)\n"
-            "| Prefix | Model | Description |\n"
-            "|--------|-------|-------------|\n"
-            "| `#plan <text>` | Opus | Architecture/planning |\n"
-            "| `#review <text>` | Opus | Code/design review |\n"
-            "| `#analyze <text>` | Opus | Deep analysis |\n"
-            "| `#opus <text>` | Opus | One-shot Opus |\n"
-            "| `#flash <text>` | 3-Flash | Quick Gemini response |\n\n"
-            "**Management**\n"
-            "| Command | Description |\n"
-            "|---------|-------------|\n"
-            "| `#model` | Show current model |\n"
-            "| `#model <provider/model>` | Switch default model |\n"
-            "| `#reset` | Reset conversation session |\n"
-            "| `#files` | List uploaded files in this session |\n"
-            "| `#cron list` | List scheduled jobs |\n"
-            "| `#cron add <name> <cron> <prompt> [--model X]` | Add job |\n"
-            "| `#cron remove/run/enable/disable <id>` | Manage job |\n"
-            "| `#heartbeat status/run` | Heartbeat info/trigger |\n"
-            "| `#task <目标>` | Create long-running task |\n"
-            "| `#task list/status/cancel <id>` | Manage tasks |\n"
-            "| `#usage` | Check Claude Max subscription quota |\n"
-            "| `#server restart` | Restart hub service |\n"
-            "| `#help` | This help |"
+            "**模型**\n"
+            "| 命令 | 说明 |\n"
+            "|------|------|\n"
+            "| `#opus` | 切换到 Opus |\n"
+            "| `#sonnet` | 切换到 Sonnet |\n"
+            "| `#think` | 开/关深度推理 |\n\n"
+            "**运维**\n"
+            "| 命令 | 说明 |\n"
+            "|------|------|\n"
+            "| `#usage` | 查看配额 |\n"
+            "| `#jobs` | 查看定时任务 |\n"
+            "| `#reset` | 重置会话 |\n"
+            "| `#restart` | 重启服务 |\n\n"
+            "**Skills** (手动输入，附带内容)\n"
+            "| 命令 | 模型 | 说明 |\n"
+            "|------|------|------|\n"
+            "| `#plan <text>` | Opus | 架构/方案设计 |\n"
+            "| `#review <text>` | Opus | 代码/方案审查 |\n"
+            "| `#analyze <text>` | Opus | 深度分析 |\n"
+            "| `#flash <text>` | Gemini | 快速回复 |"
         )
         if self._help_sections:
             base += "\n" + "\n".join(self._help_sections)
         return base
 
-    async def _cmd_model(self, args: str, sender_id: str, chat_id: str) -> str:
-        session_key = f"user:{sender_id}"
-        if not args.strip():
-            current = self.router.get_session_llm(session_key)
-            if current:
-                return f"Current model: `{current['provider']}/{current['model']}`"
-            return f"Current model: `{self.default_llm.provider}/{self.default_llm.model}` (default)"
-
-        parts = args.strip().split("/", 1)
-        if len(parts) != 2:
-            return "Format: `#model provider/model` (e.g. `#model claude-cli/opus`)"
-
-        provider, model = parts
-        valid_providers = ("claude-cli", "gemini-cli", "gemini-api")
-        if provider not in valid_providers:
-            return f"Unknown provider `{provider}`. Valid: {', '.join(valid_providers)}"
-
-        self.router.set_session_llm(session_key, {"provider": provider, "model": model})
-        asyncio.create_task(self.router.save_sessions())
-        return f"Model switched to `{provider}/{model}`"
-
     def _cmd_reset(self, sender_id: str, chat_id: str) -> str:
         session_key = f"user:{sender_id}"
         self.router.clear_session(session_key)
         asyncio.create_task(self.router.save_sessions())
-        return "Session reset. Next message starts a fresh conversation."
+        return "会话已重置，下条消息开始新对话。"
 
-    def _cmd_files(self, args: str, sender_id: str) -> str:
-        """List uploaded files in the current session."""
+    def _cmd_switch_model(self, model: str, sender_id: str) -> str:
+        """Switch session default model."""
         session_key = f"user:{sender_id}"
-        files = self.file_store.list_files(session_key)
-        if not files:
-            return "当前会话没有文件。"
+        current = self.router.get_session_llm(session_key) or {}
+        current["provider"] = "claude-cli"
+        current["model"] = model
+        self.router.set_session_llm(session_key, current)
+        asyncio.create_task(self.router.save_sessions())
+        return f"已切换到 **{model.capitalize()}**"
 
-        session_dir = self.file_store._session_dir(session_key)
-        lines = [f"**文件列表** ({len(files)})\n"]
-        for f in files:
-            size = f.get("size_bytes", 0)
-            size_str = f"{size / 1024:.0f}KB" if size < 1048576 else f"{size / 1048576:.1f}MB"
-            analysis = ""
-            if f.get("analysis"):
-                preview = f["analysis"][:60].replace("\n", " ")
-                analysis = f" — {preview}..."
-            lines.append(
-                f"- `{f['original_name']}` ({f['type']}, {size_str},"
-                f" {f['timestamp'][:16]}){analysis}"
-            )
-        lines.append(f"\n路径: `{session_dir}/`")
+    def _cmd_think(self, sender_id: str) -> str:
+        """Toggle effort between low (think off) and None (CLI decides)."""
+        session_key = f"user:{sender_id}"
+        current = self.router.get_session_llm(session_key) or {}
+        is_low = current.get("effort") == "low"
+        if is_low:
+            current.pop("effort", None)
+            self.router.set_session_llm(session_key, current)
+            asyncio.create_task(self.router.save_sessions())
+            return "深度推理 **已开启**（默认模式）"
+        else:
+            current["effort"] = "low"
+            self.router.set_session_llm(session_key, current)
+            asyncio.create_task(self.router.save_sessions())
+            return "深度推理 **已关闭**（低消耗模式）"
+
+    def _cmd_jobs(self) -> str:
+        """List scheduled jobs."""
+        jobs = self.scheduler.list_jobs(include_disabled=True)
+        if not jobs:
+            return "当前没有定时任务。"
+        lines = ["**定时任务**\n"]
+        for j in jobs:
+            status = ":DONE:" if j.enabled else ":WARNING:"
+            sched = j.schedule.expr or f"{j.schedule.every_seconds}s"
+            next_run = ""
+            if j.state.next_run_at:
+                from datetime import datetime
+                next_run = datetime.fromtimestamp(j.state.next_run_at).strftime("%m-%d %H:%M")
+            lines.append(f"{status} **{j.name}** `{sched}` → {next_run}")
         return "\n".join(lines)
 
-    async def _cmd_cron(self, cmd: str, args: str) -> str:
-        after_prefix = cmd.replace("#cron", "").strip()
-        if after_prefix:
-            subcmd = after_prefix.split()[0]
-            rest = args
-        elif args:
-            parts = args.split(None, 1)
-            subcmd = parts[0]
-            rest = parts[1] if len(parts) > 1 else ""
-        else:
-            subcmd = "list"
-            rest = ""
-
-        if subcmd == "list":
-            jobs = self.scheduler.list_jobs(include_disabled=True)
-            if not jobs:
-                return "No scheduled jobs."
-            lines = ["**Scheduled Jobs**\n"]
-            for j in jobs:
-                status = "+" if j.enabled else "-"
-                sched = j.schedule.expr or f"{j.schedule.every_seconds}s" or j.schedule.at_time
-                next_run = ""
-                if j.state.next_run_at:
-                    from datetime import datetime
-                    next_run = datetime.fromtimestamp(j.state.next_run_at).strftime(
-                        "%m-%d %H:%M"
-                    )
-                runner = f"handler:{j.handler}" if j.handler else f"{j.llm.provider}/{j.llm.model}"
-                lines.append(
-                    f"| `{j.id[:8]}` | {status} | {j.name} | `{sched}` | "
-                    f"{runner} | next: {next_run} |"
-                )
-            return "\n".join(lines)
-
-        elif subcmd == "add":
-            return await self._cron_add(rest)
-
-        elif subcmd == "remove":
-            job_id = rest.strip()
-            ok = await self.scheduler.remove_job(job_id)
-            return f"Job `{job_id}` removed." if ok else f"Job `{job_id}` not found."
-
-        elif subcmd == "run":
-            job_id = rest.strip()
-            text = await self.scheduler.run_job(job_id)
-            return f"Job result:\n\n{text[:3000]}"
-
-        elif subcmd in ("enable", "disable"):
-            job_id = rest.strip()
-            enabled = subcmd == "enable"
-            job = await self.scheduler.update_job(job_id, enabled=enabled)
-            if job:
-                return f"Job `{job_id}` {'enabled' if enabled else 'disabled'}."
-            return f"Job `{job_id}` not found."
-
-        return f"Unknown cron subcommand: `{subcmd}`. Try `#cron list`."
-
-    async def _cron_add(self, args: str) -> str:
-        # Parse --model and --handler flags
-        model_override = None
-        model_match = re.search(r'--model\s+(\S+)', args)
-        if model_match:
-            model_override = model_match.group(1)
-            args = args[:model_match.start()] + args[model_match.end():]
-
-        handler_name = ""
-        handler_match = re.search(r'--handler\s+(\S+)', args)
-        if handler_match:
-            handler_name = handler_match.group(1)
-            args = args[:handler_match.start()] + args[handler_match.end():]
-
-        parts = self._parse_quoted_args(args.strip())
-
-        # Handler jobs: only need name + schedule
-        if handler_name:
-            if len(parts) < 2:
-                return (
-                    "Usage: `#cron add <name> <schedule> --handler <handler_name>`\n"
-                    'Example: `#cron add daily-briefing "0 8 * * *" --handler briefing`'
-                )
-            name, schedule = parts[0], parts[1]
-            try:
-                job = await self.scheduler.add_job(
-                    name, schedule, handler=handler_name,
-                )
-                from datetime import datetime
-                next_str = ""
-                if job.state.next_run_at:
-                    next_str = datetime.fromtimestamp(job.state.next_run_at).strftime(
-                        "%Y-%m-%d %H:%M"
-                    )
-                return (
-                    f"Job created: `{job.id[:8]}`\n"
-                    f"- Name: {job.name}\n"
-                    f"- Schedule: `{schedule}`\n"
-                    f"- Handler: `{handler_name}`\n"
-                    f"- Next run: {next_str}"
-                )
-            except Exception as e:
-                return f"Failed to create job: {e}"
-
-        # Prompt jobs: need name + schedule + prompt
-        if len(parts) < 3:
-            return (
-                "Usage: `#cron add <name> <schedule> <prompt> [--model provider/model]`\n"
-                "Or: `#cron add <name> <schedule> --handler <handler_name>`\n"
-                'Example: `#cron add "daily report" "0 9 * * *" "Summarize today\'s tasks"`'
-            )
-
-        name, schedule, prompt = parts[0], parts[1], " ".join(parts[2:])
-
-        llm = None
-        if model_override:
-            p = model_override.split("/", 1)
-            if len(p) == 2:
-                llm = LLMConfig(provider=p[0], model=p[1])
-
-        try:
-            job = await self.scheduler.add_job(name, schedule, prompt, llm=llm)
-            from datetime import datetime
-            next_str = ""
-            if job.state.next_run_at:
-                next_str = datetime.fromtimestamp(job.state.next_run_at).strftime(
-                    "%Y-%m-%d %H:%M"
-                )
-            return (
-                f"Job created: `{job.id[:8]}`\n"
-                f"- Name: {job.name}\n"
-                f"- Schedule: `{schedule}`\n"
-                f"- Model: {job.llm.provider}/{job.llm.model}\n"
-                f"- Next run: {next_str}"
-            )
-        except Exception as e:
-            return f"Failed to create job: {e}"
-
-    async def _cmd_heartbeat(self, cmd: str, args: str) -> str:
-        subcmd = cmd.replace("#heartbeat", "").strip() or (
-            args.split()[0] if args else "status"
-        )
-
-        if subcmd == "status":
-            s = self.heartbeat.status()
-            return (
-                f"**Heartbeat Status**\n"
-                f"- Enabled: {s['enabled']}\n"
-                f"- Interval: {s['interval_seconds']}s\n"
-                f"- Model: {s['model']}\n"
-                f"- Active hours: {s['active_hours']}\n"
-                f"- Last sent: {s.get('last_sent_at', 'never')}\n"
-                f"- Last preview: {s.get('last_text_preview', 'none')}"
-            )
-        elif subcmd == "run":
-            result = await self.heartbeat.run_once(reason="manual-feishu")
-            return f"Heartbeat result: **{result}**"
-
-        return "Unknown heartbeat subcommand. Try `#heartbeat status` or `#heartbeat run`."
-
-    async def _cmd_quota(self) -> str:
+    async def _cmd_usage(self) -> str:
         """Check Claude Max quota via API headers."""
         try:
             import subprocess as _sp
@@ -917,15 +752,6 @@ class FeishuBot:
             return result.stdout.strip()
         except Exception as e:
             return f"Quota check error: {e}"
-
-    async def _cmd_server(self, args: str) -> str:
-        subcmd = args.strip().split()[0].lower() if args.strip() else "status"
-        if subcmd == "restart":
-            asyncio.create_task(self._do_server_restart())
-            return "服务将在 3 秒后重启..."
-        elif subcmd == "status":
-            return "服务运行中（你能收到这条消息就说明正常）"
-        return "Usage: `#server restart` or `#server status`"
 
     async def _do_server_restart(self):
         """Wait for reply delivery, then trigger hub restart in a detached process."""
@@ -965,72 +791,6 @@ class FeishuBot:
             return f"收到反馈，正在重新规划任务 `{task.task_id}`..."
         return None
 
-    async def _cmd_task(self, args: str, chat_id: str, sender_id: str) -> str | None:
-        """Handle #task command — create long-running task or manage existing ones."""
-        if not self.task_runner:
-            return "长程任务功能未启用。"
-
-        if not args.strip():
-            return self._cmd_task_list()
-
-        subcmd = args.strip().split(None, 1)[0].lower()
-        rest = args.strip().split(None, 1)[1] if len(args.strip().split(None, 1)) > 1 else ""
-
-        if subcmd == "list":
-            return self._cmd_task_list()
-        elif subcmd == "cancel":
-            task_id = rest.strip()
-            ok = await self.task_runner.cancel_task(task_id)
-            return f"任务 `{task_id}` 已取消。" if ok else f"任务 `{task_id}` 未找到或已结束。"
-        elif subcmd == "status":
-            task_id = rest.strip()
-            task = self.task_runner.get_task(task_id)
-            if not task:
-                return f"任务 `{task_id}` 未找到。"
-            return task.progress_text()
-        else:
-            # Treat entire args as the task goal
-            session_key = (
-                f"user:{sender_id}" if chat_id.startswith("oc_") is False
-                else f"chat:{chat_id}"
-            )
-            # Check for existing active task
-            existing = self.task_runner.get_awaiting_task(session_key)
-            if existing:
-                return (
-                    f"已有等待确认的任务 `{existing.task_id}`：{existing.goal[:60]}...\n"
-                    f"请先回复 **ok** 确认或 **取消** (`#task cancel {existing.task_id}`)。"
-                )
-            task = await self.task_runner.create_task(
-                goal=args.strip(),
-                session_key=session_key,
-                chat_id=chat_id,
-                sender_id=sender_id,
-            )
-            return f"任务已创建 `{task.task_id}`，正在生成执行计划..."
-
-    def _cmd_task_list(self) -> str:
-        """List all tasks."""
-        tasks = self.task_runner.list_all()
-        if not tasks:
-            return "没有任务记录。"
-        # Show most recent 10
-        tasks = sorted(tasks, key=lambda t: t.created_at, reverse=True)[:10]
-        lines = ["**任务列表**\n"]
-        for t in tasks:
-            status_icon = {
-                "planning": "🔧", "awaiting_approval": "⏳",
-                "executing": "🔄", "completed": "✅",
-                "failed": "❌",
-            }.get(t.status, "?")
-            done = sum(1 for s in t.steps if s.status == "completed")
-            total = len(t.steps)
-            progress = f" ({done}/{total})" if total > 0 else ""
-            lines.append(
-                f"| `{t.task_id}` | {status_icon} {t.status} | "
-                f"{t.goal[:40]}{'...' if len(t.goal) > 40 else ''}{progress} |"
-            )
-        return "\n".join(lines)
 
     # ═══ Media Processing ═══
 
@@ -1454,22 +1214,3 @@ class FeishuBot:
     def _record_message(self, message_id: str):
         self._dedup[message_id] = time.time()
 
-    @staticmethod
-    def _parse_quoted_args(text: str) -> list[str]:
-        args = []
-        current = ""
-        in_quote = None
-        for ch in text:
-            if ch in ('"', "'") and not in_quote:
-                in_quote = ch
-            elif ch == in_quote:
-                in_quote = None
-            elif ch == " " and not in_quote:
-                if current:
-                    args.append(current)
-                    current = ""
-            else:
-                current += ch
-        if current:
-            args.append(current)
-        return args

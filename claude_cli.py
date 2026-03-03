@@ -84,18 +84,20 @@ class ClaudeCli:
         model: str | None = None,
         system_prompt: str | None = None,
         timeout_seconds: int | None = None,
+        effort: str | None = None,
         on_activity: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResult:
         """Execute Claude CLI with streaming progress.
 
         Args:
+            effort: Reasoning effort level ("low", "medium", "high", or None for CLI default).
             on_activity: async callback receiving human-readable progress labels
                          when CC uses tools (e.g. "📖 读取 feishu_bot.py").
         """
         return await self._execute(
             prompt, session_id=session_id, model=model,
             system_prompt=system_prompt, timeout_seconds=timeout_seconds,
-            on_activity=on_activity,
+            effort=effort, on_activity=on_activity,
         )
 
     async def _execute(
@@ -105,6 +107,7 @@ class ClaudeCli:
         model: str | None = None,
         system_prompt: str | None = None,
         timeout_seconds: int | None = None,
+        effort: str | None = None,
         on_activity: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResult:
         timeout = timeout_seconds or self.default_timeout
@@ -126,6 +129,8 @@ class ClaudeCli:
             args.extend(["--model", model])
         if system_prompt:
             args.extend(["--append-system-prompt", system_prompt])
+        if effort:
+            args.extend(["--effort", effort])
 
         # Prevent "nested session" error: strip all Claude Code session markers
         _strip = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"}

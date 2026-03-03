@@ -17,6 +17,7 @@ class LLMConfig:
     system_prompt: Optional[str] = None
     temperature: float = 1.0           # gemini default
     thinking: Optional[str] = None     # gemini thinking level: minimal/low/medium/high
+    effort: Optional[str] = None        # claude-cli effort: low/medium/high (None = CLI decides)
 
 
 @dataclass

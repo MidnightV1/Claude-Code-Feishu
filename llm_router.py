@@ -291,6 +291,7 @@ class LLMRouter:
                 model=llm_config.model,
                 system_prompt=llm_config.system_prompt,
                 timeout_seconds=llm_config.timeout_seconds,
+                effort=llm_config.effort,
                 on_activity=on_activity,
             )
             if not result.is_error:
@@ -316,6 +317,7 @@ class LLMRouter:
             model=llm_config.model,
             system_prompt=effective_system,
             timeout_seconds=llm_config.timeout_seconds,
+            effort=llm_config.effort,
             on_activity=on_activity,
         )
 
