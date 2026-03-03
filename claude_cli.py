@@ -100,6 +100,18 @@ class ClaudeCli:
                 text=f"[Timeout after {timeout}s]",
                 duration_ms=duration, is_error=True,
             )
+        except asyncio.CancelledError:
+            duration = int((time.monotonic() - start) * 1000)
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                proc.kill()
+            log.info("Claude CLI cancelled after %dms", duration)
+            return LLMResult(
+                text="[Cancelled]",
+                duration_ms=duration, is_error=True, cancelled=True,
+            )
         except Exception as e:
             duration = int((time.monotonic() - start) * 1000)
             log.error("Claude CLI exec error: %s", e)

@@ -107,6 +107,7 @@ class PendingBatch:
     parts: list = field(default_factory=list)
     footers: list = field(default_factory=list)
     first_message_id: str = ""
+    message_ids: set = field(default_factory=set)  # all message_ids in this batch
     chat_id: str = ""
     chat_type: str = ""
     sender_id: str = ""
@@ -140,6 +141,8 @@ class FeishuBot:
         self._command_handlers: dict[str, callable] = {}
         self._help_sections: list[str] = []
         self._pending: dict[str, PendingBatch] = {}  # debounce buffers
+        self._running_tasks: dict[str, asyncio.Task] = {}  # key → LLM task (for cancel)
+        self._msg_to_key: dict[str, str] = {}  # message_id → debounce key (for recall)
         self._ws_client = None
         self._loop = None
         self._dedup: dict[str, float] = {}
@@ -155,12 +158,13 @@ class FeishuBot:
 
     async def start(self):
         import lark_oapi as lark
-        from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
+        from lark_oapi.api.im.v1 import P2ImMessageReceiveV1, P2ImMessageRecalledV1
 
         await self._fetch_bot_open_id()
 
         handler = lark.EventDispatcherHandler.builder("", "") \
             .register_p2_im_message_receive_v1(self._on_message_event) \
+            .register_p2_im_message_recalled_v1(self._on_recall_event) \
             .build()
 
         self._loop = asyncio.get_event_loop()
@@ -205,11 +209,46 @@ class FeishuBot:
         log.info("Feishu bot stopping")
         self._ws_client = None
 
-    # ═══ Event Handler ═══
+    # ═══ Event Handlers ═══
 
     def _on_message_event(self, data):
         """Called by lark_oapi in its own thread. Bridge to asyncio."""
         asyncio.run_coroutine_threadsafe(self._handle_message(data), self._loop)
+
+    def _on_recall_event(self, data):
+        """Called when a message is recalled. Bridge to asyncio."""
+        asyncio.run_coroutine_threadsafe(self._handle_recall(data), self._loop)
+
+    async def _handle_recall(self, data):
+        """Cancel pending/running processing for a recalled message."""
+        try:
+            event = data.event
+            message_id = event.message_id
+            if not message_id:
+                return
+
+            key = self._msg_to_key.pop(message_id, None)
+            if not key:
+                log.debug("Recall for unknown message %s (already processed or not ours)", message_id)
+                return
+
+            # Case A: still in debounce → cancel batch
+            if key in self._pending:
+                log.info("Recall: cancelling debounce batch %s", key)
+                await self._cancel_batch(key)
+                return
+
+            # Case B: LLM running → cancel task
+            running = self._running_tasks.get(key)
+            if running and not running.done():
+                log.info("Recall: cancelling running LLM task %s", key)
+                running.cancel()
+                # Cleanup is handled in _flush via CancelledError
+                return
+
+            log.debug("Recall: message %s already completed for key %s", message_id, key)
+        except Exception as e:
+            log.warning("Recall handler error: %s", e)
 
     async def _handle_message(self, data):
         try:
@@ -375,6 +414,8 @@ class FeishuBot:
                 sender_id=sender_id,
                 reaction_id=reaction_id,
             )
+        self._pending[key].message_ids.add(message_id)
+        self._msg_to_key[message_id] = key
         return self._pending[key]
 
     async def _enqueue(self, key, part, footer, message_id, chat_id, chat_type, sender_id):
@@ -409,6 +450,9 @@ class FeishuBot:
                 await self.dispatcher.remove_reaction(
                     batch.first_message_id, batch.reaction_id
                 )
+            # Clean up message_id → key mappings
+            for mid in batch.message_ids:
+                self._msg_to_key.pop(mid, None)
 
     async def _flush(self, key):
         """Process the accumulated batch: combine parts → LLM → reply."""
@@ -425,6 +469,8 @@ class FeishuBot:
                 await self.dispatcher.remove_reaction(
                     batch.first_message_id, batch.reaction_id
                 )
+            for mid in batch.message_ids:
+                self._msg_to_key.pop(mid, None)
             return
 
         combined = "\n\n".join(batch.parts)
@@ -432,6 +478,12 @@ class FeishuBot:
             f"user:{batch.sender_id}"
             if batch.chat_type == "p2p"
             else f"chat:{batch.chat_id}"
+        )
+
+        # Send "thinking" progress card (will be replaced with final reply)
+        progress_msg_id = await self.dispatcher.send_card_return_id(
+            batch.chat_id, "💭 正在思考…",
+            reply_to=batch.first_message_id,
         )
 
         try:
@@ -454,18 +506,34 @@ class FeishuBot:
                     thinking=llm_config.thinking,
                 )
 
-            result = await self.router.run(
+            # Wrap LLM call in a tracked task for cancel support
+            llm_coro = self.router.run(
                 prompt=prompt, llm_config=llm_config, session_key=session_key,
             )
+            llm_task = asyncio.create_task(llm_coro)
+            self._running_tasks[key] = llm_task
+
+            try:
+                result = await llm_task
+            except asyncio.CancelledError:
+                log.info("LLM task cancelled for %s (user recalled)", key)
+                # Update progress card to show cancellation
+                if progress_msg_id:
+                    await self.dispatcher.update_card(progress_msg_id, "⏹️ 已取消")
+                return
+            finally:
+                self._running_tasks.pop(key, None)
+
+            if result.cancelled:
+                if progress_msg_id:
+                    await self.dispatcher.update_card(progress_msg_id, "⏹️ 已取消")
+                return
 
             if result.is_error:
                 log.warning("LLM error (session=%s): %s", session_key, result.text[:200])
                 self.router.clear_session(session_key)
                 asyncio.create_task(self.router.save_sessions())
-                await self.dispatcher.send_text(
-                    batch.chat_id, "处理出错，已重置会话。请重新发送。",
-                    reply_to=batch.first_message_id,
-                )
+                reply_text = "处理出错，已重置会话。请重新发送。"
             elif result.text:
                 # Check if Claude created long-task requests via task_ctl.py
                 if self.task_runner:
@@ -480,11 +548,24 @@ class FeishuBot:
                         f" | ${result.cost_usd:.4f} | {result.duration_ms}ms`"
                     )
                 footer = ("\n\n" + "\n".join(footer_parts)) if footer_parts else ""
-                await self.dispatcher.send_text(
-                    batch.chat_id,
-                    result.text + footer,
-                    reply_to=batch.first_message_id,
-                )
+                reply_text = result.text + footer
+            else:
+                reply_text = None
+
+            # Replace progress card with final reply, or send as new message
+            if reply_text:
+                if progress_msg_id:
+                    ok = await self.dispatcher.update_card(progress_msg_id, reply_text)
+                    if not ok:
+                        await self.dispatcher.send_text(
+                            batch.chat_id, reply_text,
+                            reply_to=batch.first_message_id,
+                        )
+                else:
+                    await self.dispatcher.send_text(
+                        batch.chat_id, reply_text,
+                        reply_to=batch.first_message_id,
+                    )
         except Exception as e:
             log.error("Batch processing error: %s", e, exc_info=True)
         finally:
@@ -492,6 +573,8 @@ class FeishuBot:
                 await self.dispatcher.remove_reaction(
                     batch.first_message_id, batch.reaction_id
                 )
+            for mid in batch.message_ids:
+                self._msg_to_key.pop(mid, None)
 
     # ═══ Skill & Command Router ═══
 

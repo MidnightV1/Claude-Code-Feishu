@@ -84,10 +84,16 @@ class FeishuReporter:
 
     async def _update_progress_card(self, task) -> None:
         """Update the in-place progress card."""
-        msg_id = self._card_ids.get(task.task_id)
-        if not msg_id:
-            return
         text = task.progress_text()
-        ok = await self.dispatcher.update_card(msg_id, text)
-        if not ok:
-            log.debug("Progress card update failed for task %s", task.task_id)
+        msg_id = self._card_ids.get(task.task_id)
+        if msg_id:
+            ok = await self.dispatcher.update_card(msg_id, text)
+            if not ok:
+                log.debug("Progress card update failed for task %s", task.task_id)
+        else:
+            # No card yet — send a new one and store its id for future updates
+            new_id = await self.dispatcher.send_card_return_id(task.chat_id, text)
+            if new_id:
+                self._card_ids[task.task_id] = new_id
+            else:
+                await self.dispatcher.send_text(task.chat_id, text)

@@ -73,7 +73,7 @@ class TaskPlan:
         lines = [f"**{self.goal}**\n"]
         for i, step in enumerate(self.steps):
             if step.status == "completed":
-                icon = ":DONE:"
+                icon = "✅"
             elif step.status == "running":
                 icon = "🔄"
             elif step.status == "failed":

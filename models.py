@@ -25,6 +25,7 @@ class LLMResult:
     session_id: Optional[str] = None
     duration_ms: int = 0
     is_error: bool = False
+    cancelled: bool = False
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
