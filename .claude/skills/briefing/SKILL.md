@@ -39,10 +39,14 @@ All commands accept `--config config.yaml` (defaults to hub config).
 ```
 ~/briefing/
   config/
-    email.json          # Global email config (fallback for domains without own config)
-    sources.yaml        # Legacy global sources (deprecated, use per-domain)
+    email.json          # Global fallback email config (only user's own email)
   engine/
-    notify.py           # Email sending script (called by pipeline)
+    collector.py        # Domain-aware RSS/API collector
+    notify.py           # Domain-aware email sender
+    prompt_init.py      # Prompt initialization and evolution
+  templates/
+    generate_base.md    # Base template for generation prompts
+    review_base.md      # Base template for review prompts
   domains/<name>/
     domain.yaml         # Core config: models, distribution, keyword_evolution, schedule
     sources.yaml        # Keywords (by supply-chain layer) + source definitions (RSS, API)
