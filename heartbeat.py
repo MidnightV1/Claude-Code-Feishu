@@ -33,12 +33,11 @@ ACK_MAX_CHARS = 300
 
 class HeartbeatMonitor:
     def __init__(self, config: dict, router: LLMRouter, dispatcher: Dispatcher,
-                 workspace_dir: str, task_runner=None):
+                 workspace_dir: str):
         self.enabled = config.get("enabled", True)
         self.interval = config.get("interval_seconds", 1800)
         self.prompt_template = config.get("prompt") or DEFAULT_PROMPT_TEMPLATE
         self.workspace_dir = workspace_dir
-        self.task_runner = task_runner
 
         # LLM config for heartbeat (default: cheap gemini)
         llm_cfg = config.get("llm", {})
@@ -207,27 +206,11 @@ class HeartbeatMonitor:
             return False
         return text.strip() == self._last_text.strip()
 
-    def _collect_task_snapshot(self) -> str:
-        """Collect active task pool status for heartbeat prompt injection."""
-        if not self.task_runner:
-            return ""
-        tasks = self.task_runner.list_active()
-        if not tasks:
-            return ""
-        lines = ["## 活跃任务"]
-        for t in tasks:
-            age = self._format_duration(time.time() - t.updated_at)
-            done = sum(1 for s in t.steps if s.status == "completed")
-            total = len(t.steps)
-            progress = f"Step {done}/{total}" if total > 0 else ""
-            lines.append(
-                f"- [{t.status}] {t.goal[:60]} ({progress}, {age}前更新)"
-            )
-        lines.append("")
-        lines.append("判断规则：")
-        lines.append("- executing 状态超过 15 分钟无更新 → 可能卡住，需要报告")
-        lines.append("- awaiting_approval 超过 2 小时 → 提醒用户确认")
-        return "\n".join(lines)
+    @staticmethod
+    def _collect_task_snapshot() -> str:
+        """Placeholder — long-task orchestrator removed; progress is now
+        streamed via CC's native TodoWrite events on the thinking card."""
+        return ""
 
     @staticmethod
     def _format_duration(seconds: float) -> str:

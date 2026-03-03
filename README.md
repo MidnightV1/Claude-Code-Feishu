@@ -26,7 +26,7 @@ Key components:
 | `feishu_bot.py` | WebSocket event handler, debounce batching, multimodal input |
 | `llm_router.py` | Session management, resume-or-fallback, history compression |
 | `dispatcher.py` | Feishu card rendering, chunking, retry, real-time updates |
-| `task_runner.py` | Long-running task orchestration with progress cards |
+| `claude_cli.py` | Claude CLI wrapper with streaming TodoWrite progress |
 | `scheduler.py` | In-process cron scheduler (croniter + asyncio) |
 | `heartbeat.py` | System health monitoring via LLM judgment |
 
@@ -97,7 +97,6 @@ Skills are modular capabilities in `.claude/skills/`. Each has a `SKILL.md` with
 | `briefing` | Daily news briefing pipeline | Gemini API key, domain configs |
 | `feishu-cal` | Calendar event management | `feishu.calendar.calendar_id` |
 | `feishu-doc` | Document CRUD, search, comments | `feishu.docs.shared_folders` |
-| `long-task` | Multi-step task orchestration | (built-in) |
 
 Each skill's `SKILL.md` contains an `ONBOARDING` section with a prerequisites checklist. The agent walks through this on first use, then removes the section once setup is confirmed.
 

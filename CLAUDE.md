@@ -69,7 +69,6 @@
 | `feishu-cal` | `.claude/skills/feishu-cal/` | 日历日程 CRUD、参会人管理、联系人 |
 | `feishu-doc` | `.claude/skills/feishu-doc/` | 飞书文档创建、读取、追加内容 |
 | `feishu-task` | `.claude/skills/feishu-task/` | 飞书任务 CRUD、子任务、任务列表 |
-| `long-task` | `.claude/skills/long-task/` | 长程任务 plan→execute→report 协议 |
 
 参考：https://code.claude.com/docs/en/skills
 
@@ -137,8 +136,6 @@
 | `heartbeat.py` | 心跳监控（系统快照→LLM 判断→异常投递） |
 | `llm_router.py` | 多模型路由（claude-cli / gemini-api） |
 | `dispatcher.py` | 飞书消息发送（卡片 JSON 2.0 markdown，分块，重试，卡片更新） |
-| `task_runner.py` | 长程任务编排器（状态机 + 持久化 + ProgressReporter 协议） |
-| `feishu_reporter.py` | 飞书进度通知适配器（实现 ProgressReporter，卡片实时更新） |
 | `file_store.py` | 会话级文件存储（图片/文件持久化 + 上下文注入） |
 | `claude_cli.py` | Claude CLI subprocess 封装 |
 | `gemini_api.py` | Gemini API SDK 封装（多模态 + Files API） |

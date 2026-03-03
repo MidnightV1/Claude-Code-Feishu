@@ -73,6 +73,7 @@ class ClaudeCli:
         timeout_seconds: int | None = None,
         effort: str | None = None,
         on_activity: Callable[[str], Awaitable[None]] | None = None,
+        on_todo: Callable[[list[dict]], Awaitable[None]] | None = None,
     ) -> LLMResult:
         """Execute Claude CLI with streaming progress.
 
@@ -80,11 +81,13 @@ class ClaudeCli:
             effort: Reasoning effort level ("low", "medium", "high", or None for CLI default).
             on_activity: async callback receiving human-readable progress labels
                          when CC uses tools (e.g. "📖 读取 feishu_bot.py").
+            on_todo: async callback receiving the full todo list whenever CC
+                     calls TodoWrite (list of {content, status, activeForm}).
         """
         return await self._execute(
             prompt, session_id=session_id, model=model,
             system_prompt=system_prompt, timeout_seconds=timeout_seconds,
-            effort=effort, on_activity=on_activity,
+            effort=effort, on_activity=on_activity, on_todo=on_todo,
         )
 
     async def _execute(
@@ -96,6 +99,7 @@ class ClaudeCli:
         timeout_seconds: int | None = None,
         effort: str | None = None,
         on_activity: Callable[[str], Awaitable[None]] | None = None,
+        on_todo: Callable[[list[dict]], Awaitable[None]] | None = None,
     ) -> LLMResult:
         timeout = timeout_seconds or self.default_timeout
         args = [
@@ -165,11 +169,19 @@ class ClaudeCli:
                         # Check for tool_use in content blocks
                         content = obj.get("message", {}).get("content", [])
                         for block in content:
-                            if block.get("type") == "tool_use" and on_activity:
-                                label = _make_tool_label(
-                                    block.get("name", ""),
-                                    block.get("input", {}),
-                                )
+                            if block.get("type") != "tool_use":
+                                continue
+                            name = block.get("name", "")
+                            inp = block.get("input", {})
+                            # TodoWrite → forward full todo list
+                            if name == "TodoWrite" and on_todo:
+                                try:
+                                    await on_todo(inp.get("todos", []))
+                                except Exception:
+                                    pass
+                            # All tool_use → activity label
+                            if on_activity:
+                                label = _make_tool_label(name, inp)
                                 try:
                                     await on_activity(label)
                                 except Exception:

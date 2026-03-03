@@ -75,7 +75,6 @@ FEISHU_SYSTEM_PROMPT = """\
 **Skills**
 - `#plan` / `#review` / `#analyze` — Opus + 专属提示词
 - hub-ops skill — 定时任务管理
-- long-task skill — 多步骤+长耗时任务走任务模式（用户不应干等），详见 `.claude/skills/long-task/SKILL.md`
 
 ### 回复规范
 
@@ -125,7 +124,6 @@ class FeishuBot:
         dispatcher: Dispatcher,
         default_llm: LLMConfig,
         file_store: FileStore,
-        task_runner=None,
     ):
         self.app_id = config.get("app_id", "")
         self.app_secret = config.get("app_secret", "")
@@ -136,7 +134,6 @@ class FeishuBot:
         self.dispatcher = dispatcher
         self.default_llm = default_llm
         self.file_store = file_store
-        self.task_runner = task_runner
         self._command_handlers: dict[str, callable] = {}
         self._help_sections: list[str] = []
         self._pending: dict[str, PendingBatch] = {}  # debounce buffers
@@ -320,21 +317,6 @@ class FeishuBot:
                             )
                             return
 
-                # Check if user has a task awaiting approval
-                if self.task_runner:
-                    session_key = (
-                        f"user:{sender_id}" if chat_type == "p2p"
-                        else f"chat:{chat_id}"
-                    )
-                    awaiting = self.task_runner.get_awaiting_task(session_key)
-                    if awaiting:
-                        resp = await self._handle_task_approval(awaiting, text)
-                        if resp:
-                            await self.dispatcher.send_text(
-                                chat_id, resp, reply_to=message_id
-                            )
-                            return
-
                 log.info("Message from %s in %s: %s", sender_id[:8], chat_type, text[:100])
                 key = self._debounce_key(chat_type, chat_id, sender_id)
                 await self._enqueue(key, text, "", message_id, chat_id, chat_type, sender_id)
@@ -509,9 +491,10 @@ class FeishuBot:
                     parts.append(file_context)
                 llm_config = replace(llm_config, system_prompt="\n\n".join(parts))
 
-            # ── Progress: tool activity callback + idle pulse ──
+            # ── Progress: tool activity + todo progress on thinking card ──
             _last_activity = [time.monotonic()]  # tracks last real tool event
             _MIN_INTERVAL = 5.0
+            _todos: list[dict] = []  # latest TodoWrite snapshot
 
             _IDLE_PHASES = [
                 (10, "💭 仍在思考…"),
@@ -520,6 +503,20 @@ class FeishuBot:
                 (70, "💭 仍在努力中…"),
                 (110, "💭 快了，还在整理…"),
             ]
+
+            def _render_card(activity: str = "") -> str:
+                """Build card content from todo list + current activity."""
+                if not _todos:
+                    return activity or "💭 正在思考…"
+                _icons = {"completed": "✅", "in_progress": "🔄", "pending": "⬜"}
+                lines = []
+                for t in _todos:
+                    icon = _icons.get(t.get("status", "pending"), "⬜")
+                    label = t.get("activeForm") if t.get("status") == "in_progress" else t.get("content", "")
+                    lines.append(f"{icon} {label}")
+                if activity:
+                    lines.append(f"\n{activity}")
+                return "\n".join(lines)
 
             def _idle_label(elapsed: float) -> str:
                 label = "💭 正在思考…"
@@ -530,13 +527,20 @@ class FeishuBot:
                 ts = f"{m}m{s:02d}s" if m else f"{s}s"
                 return f"{label} {ts}"
 
+            async def _on_todo(todos: list[dict]):
+                _todos.clear()
+                _todos.extend(todos)
+                _last_activity[0] = time.monotonic()
+                if thinking_msg_id:
+                    await self.dispatcher.update_card(thinking_msg_id, _render_card())
+
             async def _on_activity(label: str):
                 now = time.monotonic()
                 if now - _last_activity[0] < _MIN_INTERVAL:
                     return
                 _last_activity[0] = now
                 if thinking_msg_id:
-                    await self.dispatcher.update_card(thinking_msg_id, label)
+                    await self.dispatcher.update_card(thinking_msg_id, _render_card(label))
 
             async def _pulse():
                 """Background heartbeat: update card when idle."""
@@ -547,20 +551,23 @@ class FeishuBot:
                     since_activity = time.monotonic() - _last_activity[0]
                     if since_activity >= 6 and thinking_msg_id:
                         try:
+                            idle = _idle_label(elapsed)
                             await self.dispatcher.update_card(
-                                thinking_msg_id, _idle_label(elapsed),
+                                thinking_msg_id,
+                                _render_card(idle) if _todos else idle,
                             )
                         except Exception:
                             pass
                     await asyncio.sleep(8)
 
             on_act = _on_activity if thinking_msg_id else None
+            on_td = _on_todo if thinking_msg_id else None
             pulse_task = asyncio.create_task(_pulse()) if thinking_msg_id else None
 
             # Wrap LLM call in a tracked task for cancel support
             llm_coro = self.router.run(
                 prompt=prompt, llm_config=llm_config, session_key=session_key,
-                on_activity=on_act,
+                on_activity=on_act, on_todo=on_td,
             )
             llm_task = asyncio.create_task(llm_coro)
             self._running_tasks[key] = llm_task
@@ -592,12 +599,6 @@ class FeishuBot:
                 asyncio.create_task(self.router.save_sessions())
                 reply_text = "处理出错，已重置会话。请重新发送。"
             elif result.text:
-                # Check if Claude created long-task requests via task_ctl.py
-                if self.task_runner:
-                    await self.task_runner.check_pending_requests(
-                        session_key, batch.chat_id, batch.sender_id,
-                    )
-
                 footer_parts = [f for f in batch.footers if f]
                 if llm_config.provider == "gemini-api" and result.cost_usd > 0:
                     footer_parts.append(
@@ -820,30 +821,6 @@ class FeishuBot:
                 stdout=lf,
                 stderr=lf,
             )
-
-    async def _handle_task_approval(self, task, text: str) -> str | None:
-        """Handle user response to a task awaiting approval.
-        Returns response text, or None to fall through to normal routing.
-        """
-        text_lower = text.strip().lower()
-        # Approve keywords
-        if text_lower in ("ok", "好", "确认", "开始", "执行", "go", "yes", "可以"):
-            ok = await self.task_runner.approve_task(task.task_id)
-            if ok:
-                log.info("Task %s approved by user", task.task_id)
-                return f"任务 `{task.task_id}` 已批准，开始执行..."
-            return "任务状态异常，无法批准。"
-        # Cancel keywords
-        if text_lower in ("取消", "cancel", "算了", "不要了"):
-            await self.task_runner.cancel_task(task.task_id)
-            return f"任务 `{task.task_id}` 已取消。"
-        # Otherwise treat as feedback for replan
-        ok = await self.task_runner.reject_task(task.task_id, feedback=text)
-        if ok:
-            log.info("Task %s rejected with feedback, replanning", task.task_id)
-            return f"收到反馈，正在重新规划任务 `{task.task_id}`..."
-        return None
-
 
     # ═══ Media Processing ═══
 
