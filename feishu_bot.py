@@ -261,6 +261,9 @@ class FeishuBot:
             sender_id = sender.sender_id.open_id if sender.sender_id else ""
             msg_type = msg.message_type
 
+            log.info("Msg recv: type=%s parent_id=%s root_id=%s",
+                     msg_type, msg.parent_id or "(none)", msg.root_id or "(none)")
+
             # Dedup
             if self._is_duplicate(message_id):
                 return
