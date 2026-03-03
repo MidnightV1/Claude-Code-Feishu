@@ -6,7 +6,6 @@ import time
 import asyncio
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 
 from models import LLMConfig, llm_config_from_dict
@@ -22,7 +21,6 @@ log = logging.getLogger("hub.feishu_bot")
 
 DEDUP_TTL = 86400       # 24h
 DEDUP_MAX_SIZE = 1000
-SENDER_CACHE_TTL = 600  # 10 min
 DEBOUNCE_SECONDS = 3    # debounce window for multi-part messages
 
 # ═══ Feishu Channel System Prompt ═══
@@ -71,9 +69,7 @@ FEISHU_SYSTEM_PROMPT = """\
 
 **Skills**
 - `#plan` / `#review` / `#analyze` — Opus + 专属提示词
-- `#flash` — Gemini 3-Flash
 - hub-ops skill — 定时任务管理
-
 - long-task skill — 多步骤+长耗时任务走任务模式（用户不应干等），详见 `.claude/skills/long-task/SKILL.md`
 
 ### 回复规范
@@ -144,7 +140,6 @@ class FeishuBot:
         self._ws_client = None
         self._loop = None
         self._dedup: dict[str, float] = {}
-        self._sender_cache: dict[str, tuple[str, float]] = {}
         self._bot_open_id: str | None = None
         self._feishu_api = FeishuAPI(self.app_id, self.app_secret, self.domain)
         self._reply_cache_path = os.path.join(
@@ -318,7 +313,7 @@ class FeishuBot:
                     first_word = text.split(None, 1)[0].lower()
                     if first_word not in SKILL_ROUTES:
                         log.info("Command from %s: %s", sender_id[:8], text[:60])
-                        cmd_result = await self._route_command(text, chat_id, sender_id)
+                        cmd_result = await self._route_command(text, chat_id, chat_type, sender_id)
                         if cmd_result is not None:
                             await self.dispatcher.send_text(
                                 chat_id, cmd_result, reply_to=message_id
@@ -661,7 +656,7 @@ class FeishuBot:
             timeout_seconds=self.default_llm.timeout_seconds,
         ), prompt
 
-    async def _route_command(self, text: str, chat_id: str, sender_id: str) -> str | None:
+    async def _route_command(self, text: str, chat_id: str, chat_type: str, sender_id: str) -> str | None:
         """Route #commands. Returns response text or None if not a command."""
         text = text.strip()
         if not text.startswith("#"):
@@ -672,11 +667,12 @@ class FeishuBot:
 
         parts = text.split(None, 1)
         cmd = parts[0].lower()
+        session_key = f"user:{sender_id}" if chat_type == "p2p" else f"chat:{chat_id}"
 
         if cmd == "#help":
             return self._cmd_help()
         elif cmd == "#reset":
-            return self._cmd_reset(sender_id, chat_id)
+            return self._cmd_reset(session_key)
         elif cmd == "#usage":
             return await self._cmd_usage()
         elif cmd == "#jobs":
@@ -685,11 +681,11 @@ class FeishuBot:
             asyncio.create_task(self._do_server_restart())
             return "服务将在 3 秒后重启..."
         elif cmd == "#opus":
-            return self._cmd_switch_model("opus", sender_id)
+            return self._cmd_switch_model("opus", session_key)
         elif cmd == "#sonnet":
-            return self._cmd_switch_model("sonnet", sender_id)
+            return self._cmd_switch_model("sonnet", session_key)
         elif cmd == "#think":
-            return self._cmd_think(sender_id)
+            return self._cmd_think(session_key)
         else:
             # Plugin commands: check registered handlers
             for prefix, handler in self._command_handlers.items():
@@ -725,15 +721,13 @@ class FeishuBot:
             base += "\n" + "\n".join(self._help_sections)
         return base
 
-    def _cmd_reset(self, sender_id: str, chat_id: str) -> str:
-        session_key = f"user:{sender_id}"
+    def _cmd_reset(self, session_key: str) -> str:
         self.router.clear_session(session_key)
         asyncio.create_task(self.router.save_sessions())
         return "会话已重置，下条消息开始新对话。"
 
-    def _cmd_switch_model(self, model: str, sender_id: str) -> str:
+    def _cmd_switch_model(self, model: str, session_key: str) -> str:
         """Switch session default model."""
-        session_key = f"user:{sender_id}"
         current = self.router.get_session_llm(session_key) or {}
         current["provider"] = "claude-cli"
         current["model"] = model
@@ -741,9 +735,8 @@ class FeishuBot:
         asyncio.create_task(self.router.save_sessions())
         return f"已切换到 **{model.capitalize()}**"
 
-    def _cmd_think(self, sender_id: str) -> str:
+    def _cmd_think(self, session_key: str) -> str:
         """Toggle effort between low (think off) and None (CLI decides)."""
-        session_key = f"user:{sender_id}"
         current = self.router.get_session_llm(session_key) or {}
         is_low = current.get("effort") == "low"
         if is_low:
@@ -759,6 +752,7 @@ class FeishuBot:
 
     def _cmd_jobs(self) -> str:
         """List scheduled jobs."""
+        from datetime import datetime
         jobs = self.scheduler.list_jobs(include_disabled=True)
         if not jobs:
             return "当前没有定时任务。"
@@ -768,7 +762,6 @@ class FeishuBot:
             sched = j.schedule.expr or f"{j.schedule.every_seconds}s"
             next_run = ""
             if j.state.next_run_at:
-                from datetime import datetime
                 next_run = datetime.fromtimestamp(j.state.next_run_at).strftime("%m-%d %H:%M")
             lines.append(f"{status} **{j.name}** `{sched}` → {next_run}")
         return "\n".join(lines)

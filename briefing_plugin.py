@@ -48,46 +48,6 @@ class BriefingPlugin:
     async def _handler_default(self):
         return await self.run(self.default_domain)
 
-    async def handle_command(self, cmd: str, args: str) -> str:
-        after_prefix = cmd.replace("#briefing", "").strip()
-        if after_prefix:
-            subcmd = after_prefix.split()[0]
-            rest = args
-        elif args:
-            parts = args.split(None, 1)
-            subcmd = parts[0]
-            rest = parts[1] if len(parts) > 1 else ""
-        else:
-            subcmd = "run"
-            rest = ""
-
-        domain = self.default_domain
-        date_str = None
-        parts = rest.strip().split()
-        for i, p in enumerate(parts):
-            if p == "--domain" and i + 1 < len(parts):
-                domain = parts[i + 1]
-            elif not p.startswith("--"):
-                date_str = p
-
-        if subcmd == "status":
-            result = await self._spawn("status", domain)
-            return self._format_status(result)
-
-        if subcmd == "domains":
-            result = await self._spawn("domains", domain)
-            return self._format_domains(result)
-
-        if subcmd in ("run", "#briefing"):
-            asyncio.ensure_future(self._run_safe(domain, date_str))
-            return f"日报 pipeline 已启动：{domain}" + (f" ({date_str})" if date_str else "")
-
-        if subcmd == "evolve":
-            asyncio.ensure_future(self._run_safe(domain, date_str, step="evolve"))
-            return f"关键词进化已启动：{domain}"
-
-        return f"Unknown: `{subcmd}`. Try `run`, `status`, `domains`, `evolve`."
-
     async def run(self, domain: str = None, date_str: str = None) -> str:
         """Entry point for cron handlers."""
         domain = domain or self.default_domain
@@ -97,13 +57,6 @@ class BriefingPlugin:
             return f"[{data.get('domain')}] {data.get('date')} | {data.get('status')}"
         except (json.JSONDecodeError, TypeError):
             return result or "Pipeline completed"
-
-    async def _run_safe(self, domain: str, date_str: str = None, step: str = None):
-        try:
-            command = step or "run"
-            await self._spawn(command, domain, date_str=date_str)
-        except Exception:
-            log.exception("Briefing pipeline error [%s]", domain)
 
     async def _spawn(self, command: str, domain: str,
                      date_str: str = None, timeout: int = 900) -> str:
@@ -132,40 +85,3 @@ class BriefingPlugin:
                 log.info("[briefing_run] %s", line)
 
         return stdout.decode("utf-8", errors="replace").strip()
-
-    @staticmethod
-    def _format_status(raw: str) -> str:
-        try:
-            s = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return raw or "No data"
-        if s.get("status") == "no data":
-            return "No briefing has run yet."
-        from datetime import datetime
-        started = datetime.fromtimestamp(s["started_at"]).strftime("%H:%M:%S") if s.get("started_at") else "?"
-        return (
-            f"**Last briefing run**\n"
-            f"- Domain: {s.get('domain', '?')}\n"
-            f"- Date: {s.get('date', '?')}\n"
-            f"- Status: {s.get('status', '?')}\n"
-            f"- Started: {started}\n"
-            f"- Elapsed: {s.get('elapsed_s', '?')}s\n"
-            f"- Generate: {s.get('model', '?')}\n"
-            f"- Review: {s.get('review_model', 'off')}\n"
-            f"- Cost: ${s.get('cost_usd', 0):.4f}\n"
-            + (f"- Errors: {', '.join(s.get('errors', []))}" if s.get("errors") else "")
-        )
-
-    @staticmethod
-    def _format_domains(raw: str) -> str:
-        try:
-            domains = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
-            return raw or "No domains"
-        if not domains:
-            return "No domains configured."
-        lines = []
-        for d in domains:
-            evo = " 🔄" if d.get("evolution") else ""
-            lines.append(f"- **{d['name']}**: {d['display_name']} `{d.get('schedule', '')}`{evo}")
-        return "**Available domains:**\n" + "\n".join(lines)

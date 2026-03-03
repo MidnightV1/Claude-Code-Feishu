@@ -244,13 +244,6 @@ class ClaudeCli:
             log.warning("Claude CLI returned empty result (session=%s, model=%s)", session_id, model)
             return LLMResult(text="", duration_ms=duration, is_error=True)
 
-        if proc.returncode != 0 and not text:
-            err = stderr_data.decode("utf-8", errors="replace").strip() if stderr_data else "unknown error"
-            return LLMResult(
-                text=f"[Exit code {proc.returncode}: {err[:500]}]",
-                duration_ms=duration, is_error=True,
-            )
-
         return LLMResult(
             text=text,
             session_id=new_session_id,
