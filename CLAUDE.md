@@ -30,6 +30,26 @@
 | Hub Python 代码（main.py 等） | **需要** |
 | Python 依赖 | **需要** |
 
+### 对话上下文保持
+
+两层架构保持对话连续性：
+
+| 层 | 触发条件 | 上下文量 |
+|---|---------|---------|
+| **主路径** | `--resume` 有效（2h 内活跃） | Claude CLI 完整上下文窗口 |
+| **降级路径** | session 过期/错误/重启 | 最近 8 轮历史，>4 轮时 Gemini 3-Flash 摘要压缩 |
+
+关键参数（`llm_router.py`）：
+
+| 参数 | 值 | 含义 |
+|------|---|------|
+| `SESSION_TTL` | 7200s (2h) | session 过期时间 |
+| `HISTORY_ROUNDS` | 8 | 保留最近 N 轮对话 |
+| `HISTORY_TRUNCATE` | 2000 字 | 单条消息截断长度 |
+| `SUMMARY_THRESHOLD` | 4 轮 | 超过此阈值触发摘要压缩 |
+
+降级触发场景：30 min+ 无活动 → session 过期、LLM 报错 → session 清除、`#reset` → 主动清除、服务重启 → CLI session 失效。
+
 ---
 
 ## Skills 优先

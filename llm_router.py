@@ -11,9 +11,10 @@ from store import load_json, save_json
 
 log = logging.getLogger("hub.router")
 
-SESSION_TTL = 1800  # 30 min — don't resume stale sessions (saves cost + avoids failures)
-HISTORY_ROUNDS = 2  # keep last N rounds as context fallback for new sessions
-HISTORY_TRUNCATE = 800  # max chars per message in history
+SESSION_TTL = 7200  # 2h — don't resume stale sessions (saves cost + avoids failures)
+HISTORY_ROUNDS = 8  # keep last N rounds as context fallback for new sessions
+HISTORY_TRUNCATE = 2000  # max chars per message in history
+SUMMARY_THRESHOLD = 4  # summarize when history exceeds this many rounds
 
 
 class LLMRouter:
@@ -87,12 +88,60 @@ class LLMRouter:
         if len(history) > max_msgs:
             entry["history"] = history[-max_msgs:]
 
-    def _build_context_prompt(self, session_key: str, prompt: str) -> str:
-        """Prepend recent history to prompt when starting a fresh session."""
+    async def _summarize_history(self, history: list[dict]) -> str | None:
+        """Compress history into a structured summary using Gemini 3-Flash."""
+        lines = []
+        for msg in history:
+            role = "用户" if msg["role"] == "user" else "助手"
+            lines.append(f"{role}: {msg['text']}")
+        raw = "\n".join(lines)
+
+        prompt = (
+            "请将以下对话历史压缩为结构化摘要（中文，500字以内）。\n"
+            "要求：\n"
+            "- 保留所有关键决策、结论、待办事项\n"
+            "- 保留用户明确的需求和偏好\n"
+            "- 丢弃寒暄、重复、过程性试错\n"
+            "- 用「用户要求：…」「已确认：…」「待办：…」等标签组织\n\n"
+            f"对话历史：\n{raw}"
+        )
+        try:
+            result = await self.gemini_api.run(
+                prompt, model="3-Flash", temperature=0.2, timeout_seconds=30,
+            )
+            if result.is_error or not result.text.strip():
+                log.warning("History summarization failed: %s", result.text[:200])
+                return None
+            log.info("History summarized: %d chars → %d chars (cost=$%.4f)",
+                     len(raw), len(result.text), result.cost_usd)
+            return result.text.strip()
+        except Exception as e:
+            log.warning("History summarization error: %s", e)
+            return None
+
+    async def _build_context_prompt(self, session_key: str, prompt: str) -> str:
+        """Prepend recent history to prompt when starting a fresh session.
+
+        When history exceeds SUMMARY_THRESHOLD rounds, compress via Gemini.
+        Falls back to truncated raw history if summarization fails.
+        """
         entry = self._sessions.get(session_key, {})
         history = entry.get("history", [])
         if not history:
             return prompt
+
+        rounds = len(history) // 2
+
+        # Try summarization for long histories
+        if rounds > SUMMARY_THRESHOLD:
+            summary = await self._summarize_history(history)
+            if summary:
+                return (
+                    f"[对话上下文摘要（由 AI 压缩）]\n{summary}"
+                    f"\n\n[当前消息]\n{prompt}"
+                )
+            # Summarization failed — fall through to raw injection
+
         lines = ["[近期对话上下文]"]
         for msg in history:
             role = "用户" if msg["role"] == "user" else "助手"
@@ -116,7 +165,7 @@ class LLMRouter:
             # No session to resume — inject history as context
             effective_prompt = prompt
             if not session_id and session_key:
-                effective_prompt = self._build_context_prompt(session_key, prompt)
+                effective_prompt = await self._build_context_prompt(session_key, prompt)
             result = await self.claude.run(
                 effective_prompt,
                 session_id=session_id,
