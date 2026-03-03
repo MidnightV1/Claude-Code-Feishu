@@ -89,7 +89,10 @@ class LLMRouter:
             entry["history"] = history[-max_msgs:]
 
     async def _summarize_history(self, history: list[dict]) -> str | None:
-        """Compress history into a structured summary using Gemini 3-Flash."""
+        """Compress older history into a structured summary using Gemini 3-Flash.
+
+        Only summarizes the older portion; recent rounds are kept raw by the caller.
+        """
         lines = []
         for msg in history:
             role = "用户" if msg["role"] == "user" else "助手"
@@ -119,11 +122,21 @@ class LLMRouter:
             log.warning("History summarization error: %s", e)
             return None
 
+    def _format_raw_history(self, history: list[dict]) -> str:
+        """Format history messages as raw text lines."""
+        lines = []
+        for msg in history:
+            role = "用户" if msg["role"] == "user" else "助手"
+            lines.append(f"{role}: {msg['text']}")
+        return "\n".join(lines)
+
     async def _build_context_prompt(self, session_key: str, prompt: str) -> str:
         """Prepend recent history to prompt when starting a fresh session.
 
-        When history exceeds SUMMARY_THRESHOLD rounds, compress via Gemini.
-        Falls back to truncated raw history if summarization fails.
+        Strategy: split history at SUMMARY_THRESHOLD boundary.
+        - Recent N rounds (N=SUMMARY_THRESHOLD): kept as raw text for precision
+        - Older rounds: compressed via Gemini 3-Flash summary
+        - Fallback: all raw if summarization fails
         """
         entry = self._sessions.get(session_key, {})
         history = entry.get("history", [])
@@ -131,23 +144,23 @@ class LLMRouter:
             return prompt
 
         rounds = len(history) // 2
+        recent_msgs = SUMMARY_THRESHOLD * 2  # messages to keep raw
 
-        # Try summarization for long histories
         if rounds > SUMMARY_THRESHOLD:
-            summary = await self._summarize_history(history)
+            older = history[:-recent_msgs]
+            recent = history[-recent_msgs:]
+            summary = await self._summarize_history(older)
             if summary:
-                return (
-                    f"[对话上下文摘要（由 AI 压缩）]\n{summary}"
-                    f"\n\n[当前消息]\n{prompt}"
-                )
-            # Summarization failed — fall through to raw injection
+                parts = [f"[早期对话摘要（由 AI 压缩）]\n{summary}"]
+                parts.append(f"\n[近期对话上下文]\n{self._format_raw_history(recent)}")
+                parts.append(f"\n[当前消息]\n{prompt}")
+                return "\n".join(parts)
+            # Summarization failed — fall through to all-raw
 
-        lines = ["[近期对话上下文]"]
-        for msg in history:
-            role = "用户" if msg["role"] == "user" else "助手"
-            lines.append(f"{role}: {msg['text']}")
-        lines.append(f"\n[当前消息]\n{prompt}")
-        return "\n".join(lines)
+        return (
+            f"[近期对话上下文]\n{self._format_raw_history(history)}"
+            f"\n\n[当前消息]\n{prompt}"
+        )
 
     async def run(
         self,
