@@ -140,7 +140,8 @@ class FeishuBot:
         self._command_handlers: dict[str, callable] = {}
         self._help_sections: list[str] = []
         self._pending: dict[str, PendingBatch] = {}  # debounce buffers
-        self._running_tasks: dict[str, asyncio.Task] = {}  # key → LLM task (for cancel)
+        self._running_tasks: dict[str, asyncio.Task] = {}  # key → flush/LLM task (for cancel)
+        self._thinking_cards: dict[str, str] = {}  # key → thinking card message_id
         self._msg_to_key: dict[str, str] = {}  # message_id → debounce key (for recall)
         self._ws_client = None
         self._loop = None
@@ -210,6 +211,7 @@ class FeishuBot:
 
     def _on_recall_event(self, data):
         """Called when a message is recalled. Bridge to asyncio."""
+        log.info("Recall event received: %s", data)
         asyncio.run_coroutine_threadsafe(self._handle_recall(data), self._loop)
 
     async def _handle_recall(self, data):
@@ -217,6 +219,7 @@ class FeishuBot:
         try:
             event = data.event
             message_id = event.message_id
+            log.info("Recall: message_id=%s", message_id)
             if not message_id:
                 return
 
@@ -231,12 +234,16 @@ class FeishuBot:
                 await self._cancel_batch(key)
                 return
 
-            # Case B: LLM running → cancel task
+            # Case B: flush/LLM running → cancel task + clean up thinking card
             running = self._running_tasks.get(key)
             if running and not running.done():
-                log.info("Recall: cancelling running LLM task %s", key)
+                log.info("Recall: cancelling running task %s", key)
                 running.cancel()
-                # Cleanup is handled in _flush via CancelledError
+                # _flush CancelledError handler will delete thinking card,
+                # but also clean up here in case of race
+                thinking_mid = self._thinking_cards.pop(key, None)
+                if thinking_mid:
+                    asyncio.create_task(self._safe_delete_card(thinking_mid))
                 return
 
             # Case C: already completed → remove last history round
@@ -449,6 +456,13 @@ class FeishuBot:
             for mid in batch.message_ids:
                 self._msg_to_key.pop(mid, None)
 
+    async def _safe_delete_card(self, message_id: str):
+        """Fire-and-forget card deletion (safe in CancelledError context)."""
+        try:
+            await self.dispatcher.delete_message(message_id)
+        except Exception:
+            pass
+
     async def _flush(self, key):
         """Process the accumulated batch: combine parts → LLM → reply."""
         batch = self._pending.get(key)
@@ -464,6 +478,9 @@ class FeishuBot:
                 self._msg_to_key.pop(mid, None)
             return
 
+        # Register flush task early for recall support (covers setup gap before llm_task)
+        self._running_tasks[key] = asyncio.current_task()
+
         combined = "\n\n".join(batch.parts)
         session_key = (
             f"user:{batch.sender_id}"
@@ -476,6 +493,8 @@ class FeishuBot:
             batch.chat_id, "💭 正在思考…",
             reply_to=batch.first_message_id,
         )
+        if thinking_msg_id:
+            self._thinking_cards[key] = thinking_msg_id
 
         try:
             llm_config, prompt = self._resolve_skill(combined, session_key)
@@ -601,6 +620,11 @@ class FeishuBot:
                 # Cache bot reply for quote lookup (API returns degraded content for cards)
                 if reply_mid:
                     self._cache_reply(reply_mid, reply_text)
+        except asyncio.CancelledError:
+            # Cancelled during setup phase (before LLM task started)
+            log.info("Flush cancelled for %s during setup (user recalled)", key)
+            if thinking_msg_id:
+                asyncio.create_task(self._safe_delete_card(thinking_msg_id))
         except Exception as e:
             log.error("Batch processing error: %s", e, exc_info=True)
             # Clean up thinking card and notify user
@@ -614,6 +638,8 @@ class FeishuBot:
             except Exception:
                 pass
         finally:
+            self._thinking_cards.pop(key, None)
+            self._running_tasks.pop(key, None)
             # Keep _msg_to_key entries for recall-after-completion support.
             # Evict oldest if too many (dict is insertion-ordered).
             if len(self._msg_to_key) > 200:
