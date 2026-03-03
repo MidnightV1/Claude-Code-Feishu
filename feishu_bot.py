@@ -655,6 +655,8 @@ class FeishuBot:
             return await self._cmd_server(args)
         elif cmd == "#task":
             return await self._cmd_task(args, chat_id, sender_id)
+        elif cmd == "#usage":
+            return await self._cmd_quota()
         else:
             # Plugin commands: check registered handlers
             for prefix, handler in self._command_handlers.items():
@@ -686,6 +688,7 @@ class FeishuBot:
             "| `#heartbeat status/run` | Heartbeat info/trigger |\n"
             "| `#task <目标>` | Create long-running task |\n"
             "| `#task list/status/cancel <id>` | Manage tasks |\n"
+            "| `#usage` | Check Claude Max subscription quota |\n"
             "| `#server restart` | Restart hub service |\n"
             "| `#help` | This help |"
         )
@@ -899,6 +902,21 @@ class FeishuBot:
             return f"Heartbeat result: **{result}**"
 
         return "Unknown heartbeat subcommand. Try `#heartbeat status` or `#heartbeat run`."
+
+    async def _cmd_quota(self) -> str:
+        """Check Claude Max quota via API headers."""
+        try:
+            import subprocess as _sp
+            result = _sp.run(
+                ["python3", "scripts/check_quota.py", "--feishu"],
+                capture_output=True, text=True, timeout=20,
+                cwd=os.path.expanduser("~/workspace/nas-claude-hub"),
+            )
+            if result.returncode != 0:
+                return f"Quota check failed: {result.stderr.strip()}"
+            return result.stdout.strip()
+        except Exception as e:
+            return f"Quota check error: {e}"
 
     async def _cmd_server(self, args: str) -> str:
         subcmd = args.strip().split()[0].lower() if args.strip() else "status"
