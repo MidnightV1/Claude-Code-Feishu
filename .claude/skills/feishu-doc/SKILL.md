@@ -10,7 +10,7 @@ description: Create, read, edit, comment on, and analyze Feishu documents. Use w
 
 ### Prerequisites
 
-- [ ] **Feishu app permissions**: `docx:document` (read/write docs), `drive:drive` (list/manage files)
+- [ ] **Feishu app permissions**: `docx:document` (read/write docs), `drive:drive` (list/manage files), `drive:drive:permission` (transfer ownership)
 - [ ] **`feishu.docs.enabled: true`** in `config.yaml`
 - [ ] **Shared folders** (for list/search): User shares one or more folders with the bot app, then adds them to `config.yaml`:
   ```yaml
@@ -54,6 +54,7 @@ python3 .claude/skills/feishu-doc/scripts/doc_ctl.py <command> [args]
 python3 .claude/skills/feishu-doc/scripts/doc_ctl.py create "文档标题"
 python3 .claude/skills/feishu-doc/scripts/doc_ctl.py create "会议纪要" --content "# 议题\n讨论内容\n# 结论\n决定事项"
 python3 .claude/skills/feishu-doc/scripts/doc_ctl.py create "项目方案" --share ou_xxxxx
+python3 .claude/skills/feishu-doc/scripts/doc_ctl.py create "项目方案" --owner ou_xxxxx  # create + transfer ownership
 
 # Read a document (by ID or URL)
 python3 .claude/skills/feishu-doc/scripts/doc_ctl.py read Ojo1de7diofBVxxCaEHcL7GnnFf
@@ -61,6 +62,9 @@ python3 .claude/skills/feishu-doc/scripts/doc_ctl.py read "https://xxx.feishu.cn
 
 # Append content to existing document
 python3 .claude/skills/feishu-doc/scripts/doc_ctl.py append <doc_id> "新增内容"
+
+# Transfer document ownership (bot must be current owner)
+python3 .claude/skills/feishu-doc/scripts/doc_ctl.py transfer_owner <doc_id_or_url> <open_id>
 
 # List documents in all shared folders (or a specific folder)
 python3 .claude/skills/feishu-doc/scripts/doc_ctl.py list
@@ -137,10 +141,12 @@ Default: only unresolved comments. Use `--all` for full history.
 
 ## Behavior Notes
 
-- Documents are created in the app's space by default. Use `--share` to grant access to a user.
+- Documents created by the bot are owned by the app. Use `--owner` to transfer ownership to a user after creation (recommended for user-requested docs).
+- Use `--share` to grant access without transferring ownership. `--owner` and `--share` can be used together (different users).
 - Use `--folder` to specify a target folder token. Configure `feishu.docs.default_folder` in config.yaml.
 - The `read` command accepts both raw document IDs and full Feishu URLs.
 - Created documents return a clickable Feishu URL.
+- `transfer_owner` requires the bot to be the current owner (true for bot-created docs). Requires `drive:drive:permission` scope.
 - Comment commands default to `--file-type docx`. Use `--file-type sheet` for spreadsheets etc.
 
 ## Document Discovery

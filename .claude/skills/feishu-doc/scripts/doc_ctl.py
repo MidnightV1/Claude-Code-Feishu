@@ -2,9 +2,10 @@
 """Feishu Document CLI — create, read, write, list, search, comment, analyze documents.
 
 Usage:
-    doc_ctl.py create "title" [--content "text"] [--folder TOKEN] [--share OPEN_ID]
+    doc_ctl.py create "title" [--content "text"] [--folder TOKEN] [--share OPEN_ID] [--owner OPEN_ID]
     doc_ctl.py read <doc_id_or_url>
     doc_ctl.py append <doc_id> "content"
+    doc_ctl.py transfer_owner <doc_id_or_url> <open_id> [--file-type TYPE]
     doc_ctl.py list [--folder TOKEN]
     doc_ctl.py search "keyword" [--folder TOKEN]
     doc_ctl.py comments <doc_id_or_url>
@@ -55,6 +56,22 @@ def _share_doc(api: FeishuAPI, doc_id: str, open_id: str):
         params={"type": "docx", "need_notification": "true"},
     )
     return resp.get("code") == 0
+
+
+def _transfer_owner(api: FeishuAPI, doc_id: str, open_id: str,
+                    file_type: str = "docx") -> tuple[bool, str]:
+    """Transfer document ownership to a user. Bot must be current owner."""
+    resp = api.post(
+        f"/open-apis/drive/v1/permissions/{doc_id}/members/transfer_owner",
+        body={
+            "member_type": "openid",
+            "member_id": open_id,
+        },
+        params={"type": file_type, "need_notification": "true"},
+    )
+    if resp.get("code") == 0:
+        return True, ""
+    return False, resp.get("msg", "unknown error")
 
 
 def _text_to_blocks(text: str) -> list[dict]:
@@ -125,13 +142,22 @@ def cmd_create(args, api, cfg):
             else:
                 print(f"  Content error: {resp2.get('msg')}", file=sys.stderr)
 
-    # Auto-share
+    # Transfer ownership (must happen before removing bot's own access)
+    owner_id = getattr(args, "owner", None)
+    if owner_id:
+        ok, err = _transfer_owner(api, doc_id, owner_id)
+        if ok:
+            print(f"  Owner: {owner_id}")
+        else:
+            print(f"  Transfer owner failed: {err}", file=sys.stderr)
+
+    # Auto-share (skip if same as owner — already has full access)
     share_to = args.share
     if not share_to:
         share_list = cfg.get("feishu", {}).get("docs", {}).get("share_to", [])
         if share_list:
             share_to = share_list[0] if isinstance(share_list, list) else share_list
-    if share_to:
+    if share_to and share_to != owner_id:
         if _share_doc(api, doc_id, share_to):
             print(f"  Shared to: {share_to}")
         else:
@@ -441,6 +467,17 @@ def cmd_list(args, api, cfg):
         _print_files(files, name, token)
 
 
+def cmd_transfer_owner(args, api, cfg):
+    """Transfer document ownership to another user."""
+    doc_id = _extract_doc_id(args.doc_id)
+    file_type = getattr(args, "file_type", None) or "docx"
+    ok, err = _transfer_owner(api, doc_id, args.open_id, file_type=file_type)
+    if not ok:
+        print(f"ERROR: {err}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Ownership of {doc_id} transferred to {args.open_id}")
+
+
 def cmd_search(args, api, cfg):
     """Search files by keyword in name across all configured folders."""
     keyword = args.keyword.lower()
@@ -483,6 +520,7 @@ def main():
     cr.add_argument("--content", help="Initial content (plain text / markdown headings)")
     cr.add_argument("--folder", help="Folder token")
     cr.add_argument("--share", help="Open ID to share with")
+    cr.add_argument("--owner", help="Open ID to transfer ownership to after creation")
 
     rd = sub.add_parser("read")
     rd.add_argument("doc_id", help="Document ID or URL")
@@ -493,6 +531,12 @@ def main():
 
     ls = sub.add_parser("list")
     ls.add_argument("--folder", help="Folder token")
+
+    to = sub.add_parser("transfer_owner")
+    to.add_argument("doc_id", help="Document ID or URL")
+    to.add_argument("open_id", help="Open ID of the new owner")
+    to.add_argument("--file-type", dest="file_type", default="docx",
+                    help="File type (docx, doc, sheet, etc.)")
 
     sr = sub.add_parser("search")
     sr.add_argument("keyword", help="Search keyword (matches file name)")
@@ -531,6 +575,7 @@ def main():
         "create": cmd_create,
         "read": cmd_read,
         "append": cmd_append,
+        "transfer_owner": cmd_transfer_owner,
         "list": cmd_list,
         "search": cmd_search,
         "comments": cmd_comments,
