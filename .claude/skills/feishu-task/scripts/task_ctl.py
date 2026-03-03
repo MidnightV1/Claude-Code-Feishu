@@ -125,30 +125,26 @@ def _fetch_task(api: FeishuAPI, guid: str) -> dict | None:
 
 
 def _list_tasklist_tasks(api: FeishuAPI, tasklist_guid: str,
-                         completed: bool = False,
-                         max_pages: int = 10) -> list[str]:
-    """List task guids in a tasklist. Returns list of guid strings."""
-    guids = []
+                         max_pages: int = 10) -> list[dict]:
+    """List tasks in a tasklist. Returns task dicts (summary-level fields)."""
+    tasks = []
     page_token = None
     for _ in range(max_pages):
         params = {"page_size": "50", "user_id_type": "open_id"}
         if page_token:
             params["page_token"] = page_token
         resp = api.get(
-            f"/open-apis/task/v2/tasklists/{tasklist_guid}/activities",
+            f"/open-apis/task/v2/tasklists/{tasklist_guid}/tasks",
             params=params,
         )
         if resp.get("code") != 0:
             print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
             break
-        for item in resp.get("data", {}).get("items", []):
-            guid = item.get("guid") or item.get("task_guid") or ""
-            if guid:
-                guids.append(guid)
+        tasks.extend(resp.get("data", {}).get("items", []))
         if not resp.get("data", {}).get("has_more"):
             break
         page_token = resp["data"].get("page_token")
-    return guids
+    return tasks
 
 
 def _format_relative(ms: int) -> str:
@@ -197,18 +193,11 @@ def cmd_create(args, api, cfg, contacts):
 
 def cmd_list(args, api, cfg, contacts):
     tasklist_guid = _get_tasklist_guid(cfg)
-    guids = _list_tasklist_tasks(api, tasklist_guid)
+    tasks = _list_tasklist_tasks(api, tasklist_guid)
 
-    if not guids:
+    if not tasks:
         print("No tasks found.")
         return
-
-    # Fetch full details for each task
-    tasks = []
-    for guid in guids:
-        t = _fetch_task(api, guid)
-        if t:
-            tasks.append(t)
 
     # Filter completed/open
     if not args.completed:
@@ -218,14 +207,17 @@ def cmd_list(args, api, cfg, contacts):
         tasks = [t for t in tasks
                  if t.get("completed_at") and t["completed_at"] != "0"]
 
-    # Filter by assignee
+    # Filter by assignee — need full details for member info
     if args.assignee:
         target_oid = contacts.lookup(args.assignee)
         if target_oid:
-            tasks = [t for t in tasks if any(
-                m.get("id") == target_oid
-                for m in t.get("members", [])
-            )]
+            detailed = []
+            for t in tasks:
+                full = _fetch_task(api, t.get("guid", ""))
+                if full and any(m.get("id") == target_oid
+                                for m in full.get("members", [])):
+                    detailed.append(full)
+            tasks = detailed
 
     if not tasks:
         print("No tasks found.")
@@ -238,15 +230,8 @@ def cmd_list(args, api, cfg, contacts):
         icon = "✅" if done else "⬜"
 
         parts = [f"{icon} {summary}"]
-        if t.get("due"):
+        if t.get("due") and t["due"].get("timestamp"):
             parts.append(f"due: {_ms_to_str(t['due']['timestamp'])}")
-        assignees = []
-        for m in t.get("members", []):
-            if m.get("role") == "assignee":
-                name = contacts.lookup_name(m.get("id", "")) or m.get("id", "?")[:8]
-                assignees.append(name)
-        if assignees:
-            parts.append(f"by: {', '.join(assignees)}")
         parts.append(f"({guid[:8]})")
         print("  ".join(parts))
 
@@ -374,9 +359,9 @@ def cmd_snapshot(args, api, cfg, contacts):
         window_hours = cfg.get("heartbeat", {}).get("tasks", {}).get(
             "alert_window_hours", 2)
 
-    # Fetch task guids from tasklist
-    guids = _list_tasklist_tasks(api, tasklist_guid)
-    if not guids:
+    # Fetch tasks from tasklist (summary-level, includes due + completed_at)
+    tasks = _list_tasklist_tasks(api, tasklist_guid)
+    if not tasks:
         return
 
     now_ms = int(datetime.now(TZ).timestamp() * 1000)
@@ -385,11 +370,7 @@ def cmd_snapshot(args, api, cfg, contacts):
     overdue = []
     upcoming = []
 
-    for guid in guids:
-        t = _fetch_task(api, guid)
-        if not t:
-            continue
-
+    for t in tasks:
         # Skip completed
         if t.get("completed_at") and t["completed_at"] != "0":
             continue
@@ -400,23 +381,12 @@ def cmd_snapshot(args, api, cfg, contacts):
 
         due_ms = int(due["timestamp"])
         diff = due_ms - now_ms
-
-        assignees = []
-        for m in t.get("members", []):
-            if m.get("role") == "assignee":
-                name = contacts.lookup_name(m.get("id", "")) or m.get("id", "?")[:8]
-                assignees.append(name)
-        assignee_str = ", ".join(assignees) if assignees else "unassigned"
         summary = t.get("summary", "?")
 
         if diff < 0:
-            overdue.append(
-                f'- "{summary}" (逾期 {_format_relative(-diff)}, '
-                f'负责人: {assignee_str})')
+            overdue.append(f'- "{summary}" (逾期 {_format_relative(-diff)})')
         elif diff < window_ms:
-            upcoming.append(
-                f'- "{summary}" ({_format_relative(diff)}后到期, '
-                f'负责人: {assignee_str})')
+            upcoming.append(f'- "{summary}" ({_format_relative(diff)}后到期)')
 
     if not overdue and not upcoming:
         return
