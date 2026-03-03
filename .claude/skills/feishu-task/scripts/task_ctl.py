@@ -303,6 +303,39 @@ def cmd_complete(args, api, cfg, contacts):
     print(f"Completed: {args.task_guid}")
 
 
+def cmd_assign(args, api, cfg, contacts):
+    members = _resolve_members(args.names, contacts)
+    if not members:
+        print("ERROR: no valid contacts resolved", file=sys.stderr)
+        sys.exit(1)
+    resp = api.post(
+        f"/open-apis/task/v2/tasks/{args.task_guid}/add_members",
+        {"members": members},
+        params={"user_id_type": "open_id"},
+    )
+    if resp.get("code") != 0:
+        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+        sys.exit(1)
+    names = [m.get("id", "?")[:8] for m in members]
+    print(f"Assigned {', '.join(args.names.split(','))} to {args.task_guid[:8]}")
+
+
+def cmd_unassign(args, api, cfg, contacts):
+    members = _resolve_members(args.names, contacts)
+    if not members:
+        print("ERROR: no valid contacts resolved", file=sys.stderr)
+        sys.exit(1)
+    resp = api.post(
+        f"/open-apis/task/v2/tasks/{args.task_guid}/remove_members",
+        {"members": members},
+        params={"user_id_type": "open_id"},
+    )
+    if resp.get("code") != 0:
+        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Unassigned {', '.join(args.names.split(','))} from {args.task_guid[:8]}")
+
+
 def cmd_delete(args, api, cfg, contacts):
     resp = api.delete(f"/open-apis/task/v2/tasks/{args.task_guid}")
     if resp.get("code") != 0:
@@ -436,6 +469,15 @@ def main():
     cp = sub.add_parser("complete")
     cp.add_argument("task_guid")
 
+    # assign / unassign
+    asg = sub.add_parser("assign")
+    asg.add_argument("task_guid")
+    asg.add_argument("names", help="Comma-separated assignee names")
+
+    uasg = sub.add_parser("unassign")
+    uasg.add_argument("task_guid")
+    uasg.add_argument("names", help="Comma-separated names to remove")
+
     # delete
     dl = sub.add_parser("delete")
     dl.add_argument("task_guid")
@@ -469,6 +511,8 @@ def main():
         ("get", None): cmd_get,
         ("update", None): cmd_update,
         ("complete", None): cmd_complete,
+        ("assign", None): cmd_assign,
+        ("unassign", None): cmd_unassign,
         ("delete", None): cmd_delete,
         ("snapshot", None): cmd_snapshot,
         ("tasklist", "create"): cmd_tasklist_create,

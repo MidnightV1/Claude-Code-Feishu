@@ -75,6 +75,10 @@ task_ctl.py update <task_guid> --due "2026-03-10 18:00" --desc "Updated descript
 # Mark task as done
 task_ctl.py complete <task_guid>
 
+# Assign / unassign members
+task_ctl.py assign <task_guid> "张三,李四"
+task_ctl.py unassign <task_guid> "张三"
+
 # Delete a task
 task_ctl.py delete <task_guid>
 
