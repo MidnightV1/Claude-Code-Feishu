@@ -507,21 +507,56 @@ class FeishuBot:
                     system_prompt="\n\n".join(parts),
                     temperature=llm_config.temperature,
                     thinking=llm_config.thinking,
+                    effort=llm_config.effort,
                 )
 
-            # ── Progress callback: update thinking card with tool activity ──
-            _last_update = [0.0]  # mutable for closure; monotonic timestamp
-            _MIN_INTERVAL = 5.0   # seconds between card updates
+            # ── Progress: tool activity callback + idle pulse ──
+            _last_activity = [time.monotonic()]  # tracks last real tool event
+            _MIN_INTERVAL = 5.0
+
+            _IDLE_PHASES = [
+                (10, "💭 仍在思考…"),
+                (20, "💭 正在深入分析…"),
+                (40, "💭 问题有些复杂，还在处理…"),
+                (70, "💭 仍在努力中…"),
+                (110, "💭 快了，还在整理…"),
+            ]
+
+            def _idle_label(elapsed: float) -> str:
+                label = "💭 正在思考…"
+                for threshold, text in _IDLE_PHASES:
+                    if elapsed >= threshold:
+                        label = text
+                m, s = divmod(int(elapsed), 60)
+                ts = f"{m}m{s:02d}s" if m else f"{s}s"
+                return f"{label} {ts}"
 
             async def _on_activity(label: str):
                 now = time.monotonic()
-                if now - _last_update[0] < _MIN_INTERVAL:
-                    return  # throttle
-                _last_update[0] = now
+                if now - _last_activity[0] < _MIN_INTERVAL:
+                    return
+                _last_activity[0] = now
                 if thinking_msg_id:
                     await self.dispatcher.update_card(thinking_msg_id, label)
 
+            async def _pulse():
+                """Background heartbeat: update card when idle."""
+                start = time.monotonic()
+                await asyncio.sleep(8)  # first pulse after 8s
+                while True:
+                    elapsed = time.monotonic() - start
+                    since_activity = time.monotonic() - _last_activity[0]
+                    if since_activity >= 6 and thinking_msg_id:
+                        try:
+                            await self.dispatcher.update_card(
+                                thinking_msg_id, _idle_label(elapsed),
+                            )
+                        except Exception:
+                            pass
+                    await asyncio.sleep(8)
+
             on_act = _on_activity if thinking_msg_id else None
+            pulse_task = asyncio.create_task(_pulse()) if thinking_msg_id else None
 
             # Wrap LLM call in a tracked task for cancel support
             llm_coro = self.router.run(
@@ -544,6 +579,8 @@ class FeishuBot:
                 return
             finally:
                 self._running_tasks.pop(key, None)
+                if pulse_task:
+                    pulse_task.cancel()
 
             if result.cancelled:
                 if thinking_msg_id:
