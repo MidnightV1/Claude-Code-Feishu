@@ -97,7 +97,6 @@ SKILL_ROUTES = {
         "你是分析师。基于对话上下文，做深度分析。"
         "厘清本质问题，给出有洞察的结论和可执行建议。"
     )),
-    "#flash": ("gemini-api", "3-Flash", None),
 }
 
 
@@ -668,8 +667,8 @@ class FeishuBot:
             "**模型**\n"
             "| 命令 | 说明 |\n"
             "|------|------|\n"
-            "| `#opus` | 切换到 Opus |\n"
-            "| `#sonnet` | 切换到 Sonnet |\n"
+            "| `#opus` | 切换主模型到 Opus |\n"
+            "| `#sonnet` | 切换主模型到 Sonnet |\n"
             "| `#think` | 开/关深度推理 |\n\n"
             "**运维**\n"
             "| 命令 | 说明 |\n"
@@ -683,8 +682,7 @@ class FeishuBot:
             "|------|------|------|\n"
             "| `#plan <text>` | Opus | 架构/方案设计 |\n"
             "| `#review <text>` | Opus | 代码/方案审查 |\n"
-            "| `#analyze <text>` | Opus | 深度分析 |\n"
-            "| `#flash <text>` | Gemini | 快速回复 |"
+            "| `#analyze <text>` | Opus | 深度分析 |"
         )
         if self._help_sections:
             base += "\n" + "\n".join(self._help_sections)

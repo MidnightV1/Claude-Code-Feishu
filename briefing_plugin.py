@@ -37,15 +37,6 @@ class BriefingPlugin:
                         "fn": self._make_handler(name),
                     })
         return {
-            "commands": [{
-                "prefix": "#briefing",
-                "handler": self.handle_command,
-                "help": (
-                    "| `#briefing run [date] [--domain X]` | Run briefing pipeline |\n"
-                    "| `#briefing status [--domain X]` | Last run info |\n"
-                    "| `#briefing domains` | List available domains |"
-                ),
-            }],
             "handlers": handlers,
         }
 
