@@ -308,6 +308,10 @@ class BriefingPipeline:
                     f"⚠️ **{self.dc.display_name}** 生成成功，邮件失败\n```\n{email_out[-300:]}\n```"
                 )
 
+        # ── Step 5: Keyword Evolution (fire-and-forget) ──
+        if self.dc.keyword_evolution.get("enabled", False):
+            asyncio.ensure_future(self._evolve_keywords_safe(date_str, briefing_md))
+
         elapsed = time.time() - start
         self._last_run.update({
             "status": "ok" if not errors else "partial",
@@ -455,3 +459,301 @@ class BriefingPipeline:
         existing.update(new_entities)
         self.dc.data_dir.joinpath("entities.json").write_text(
             json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ── Keyword Evolution ─────────────────────────────────
+
+    EVOLUTION_SYSTEM = (
+        "You are a keyword optimization analyst for an industry intelligence briefing.\n\n"
+        "Your job: analyze today's briefing output, rejected articles, and keyword performance "
+        "to improve the keyword list — discover new terms and flag low-quality ones.\n\n"
+        "## Key Principles\n"
+        "- New keywords come from TWO sources: rejected articles that look relevant, "
+        "AND new entities/terms discovered in the briefing content itself\n"
+        "- A keyword is low-quality if it's too generic (high matches, low signal) "
+        "OR too niche (zero matches for weeks). Both should be flagged\n"
+        "- Prefer specific multi-word phrases over single generic words\n"
+        "- Consider both Chinese and English terms\n"
+        "- Max 5 new suggestions per cycle\n\n"
+        "## Output Format\n"
+        "```json\n"
+        '{"add": [{"keyword": "...", "layer": "...", "reason": "..."}], '
+        '"deprecate": [{"keyword": "...", "reason": "..."}], '
+        '"observations": "..."}\n'
+        "```\n"
+        "If no changes needed: {\"add\": [], \"deprecate\": [], \"observations\": \"...\"}"
+    )
+
+    async def _evolve_keywords_safe(self, date_str: str, briefing_md: str):
+        try:
+            await self._evolve_keywords(date_str, briefing_md)
+        except Exception:
+            log.exception("[%s] Keyword evolution failed", self.domain_name)
+
+    async def _evolve_keywords(self, date_str: str, briefing_md: str):
+        log.info("[%s] %s: running keyword evolution...", self.domain_name, date_str)
+        evo_cfg = self.dc.keyword_evolution
+
+        # Load feedback
+        feedback_path = self.dc.data_dir / "keyword_feedback.json"
+        if not feedback_path.exists():
+            log.info("[%s] No keyword feedback yet, skipping", self.domain_name)
+            return
+        feedback = json.loads(feedback_path.read_text(encoding="utf-8"))
+        daily = feedback.get("daily", {})
+        if len(daily) < 3:
+            log.info("[%s] Only %d days of data, need 3+", self.domain_name, len(daily))
+            return
+
+        # Idempotency
+        meta_path = self.dc.data_dir / "keywords_meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
+        if meta.get("last_evolution_date") == date_str:
+            log.info("[%s] Evolution already ran for %s", self.domain_name, date_str)
+            return
+
+        # Load dynamic keywords
+        dynamic_path = self.dc.dir / "keywords_dynamic.yaml"
+        dynamic = yaml.safe_load(dynamic_path.read_text(encoding="utf-8")) if dynamic_path.exists() else {}
+        dynamic.setdefault("keywords", {})
+
+        # Load static keywords
+        sources_cfg = yaml.safe_load((self.dc.dir / "sources.yaml").read_text(encoding="utf-8"))
+        static_kws = set()
+        for kws in sources_cfg.get("keywords", {}).values():
+            for kw in kws:
+                static_kws.add(kw.lower())
+
+        # Build prompt and call Sonnet
+        prompt = self._build_evolution_prompt(
+            date_str, briefing_md, daily, dynamic, static_kws, evo_cfg)
+        result = await self.claude.run(
+            prompt, model="sonnet",
+            system_prompt=self.EVOLUTION_SYSTEM,
+            timeout_seconds=120,
+        )
+        if result.is_error:
+            log.warning("[%s] Evolution LLM failed: %s", self.domain_name, result.text[:200])
+            return
+
+        # Parse response
+        changes = self._parse_evolution_response(result.text)
+
+        # Apply Sonnet's add suggestions
+        added = self._apply_additions(dynamic, changes.get("add", []), static_kws, date_str)
+
+        # Apply Sonnet's deprecate suggestions (model-driven quality judgment)
+        model_deprecated = self._apply_deprecations(dynamic, changes.get("deprecate", []), date_str)
+
+        # Run lifecycle transitions (data-driven: candidate→active, zero-streak→deprecated)
+        transitions = self._run_lifecycle(dynamic, daily, date_str)
+
+        # Save dynamic keywords
+        dynamic_path.write_text(
+            yaml.dump(dynamic, allow_unicode=True, default_flow_style=False, sort_keys=False),
+            encoding="utf-8")
+
+        # Update meta
+        history_entry = {
+            "date": date_str,
+            "added": added,
+            "promoted": transitions.get("promoted", []),
+            "deprecated": model_deprecated + transitions.get("deprecated", []),
+            "observations": changes.get("observations", ""),
+            "cost_usd": result.cost_usd,
+        }
+        meta.setdefault("evolution_history", []).append(history_entry)
+        meta["evolution_history"] = meta["evolution_history"][-30:]
+        meta["last_evolution_date"] = date_str
+        meta["last_evolution_at"] = datetime.now().isoformat()
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # Notify
+        all_deprecated = model_deprecated + transitions.get("deprecated", [])
+        promoted = transitions.get("promoted", [])
+        if added or promoted or all_deprecated:
+            await self._notify_evolution(date_str, added, promoted, all_deprecated, result.cost_usd)
+
+        log.info("[%s] Evolution done: +%d added, %d promoted, %d deprecated",
+                 self.domain_name, len(added), len(promoted), len(all_deprecated))
+
+    def _build_evolution_prompt(self, date_str, briefing_md, daily, dynamic, static_kws, cfg):
+        today = daily.get(date_str, {})
+        rejected = today.get("rejected_titles", [])
+        kw_hits = today.get("keyword_hits", {})
+
+        # Zero-hit streaks across days
+        all_dates = sorted(daily.keys())
+        zero_streaks = {}
+        for kw in kw_hits:
+            streak = 0
+            for d in reversed(all_dates):
+                if daily[d].get("keyword_hits", {}).get(kw, {}).get("hits", 0) == 0:
+                    streak += 1
+                else:
+                    break
+            if streak >= 3:
+                zero_streaks[kw] = streak
+
+        # High-hit keywords (potential noise — let Sonnet judge quality)
+        high_hit = {kw: info for kw, info in kw_hits.items() if info.get("hits", 0) >= 10}
+
+        # Supply chain layers
+        sc = self.dc._cfg.get("supply_chain", [])
+        layers = "\n".join(f"- {s['key']}: {s['name']} — {s['scope'][:80]}" for s in sc)
+
+        # Active dynamic keywords
+        dyn_active = []
+        for layer, entries in dynamic.get("keywords", {}).items():
+            for e in entries:
+                if e.get("status") in ("candidate", "active"):
+                    dyn_active.append(f"  - `{e['keyword']}` ({layer}, {e['status']})")
+
+        sections = [
+            f"# Keyword Evolution | {date_str}\n",
+            f"## Supply Chain Layers\n{layers}\n",
+            f"## Today's Briefing (for entity/topic discovery)\n{briefing_md[:3000]}\n",
+        ]
+
+        if rejected:
+            lines = [f"- [{r['source']}] {r['title']}" for r in rejected[:30]]
+            sections.append(f"## Rejected Articles (missed by keywords)\n" + "\n".join(lines) + "\n")
+
+        if zero_streaks:
+            lines = [f"- `{kw}`: {d} days zero hits" for kw, d in
+                     sorted(zero_streaks.items(), key=lambda x: -x[1])[:20]]
+            sections.append(f"## Long Zero-Hit Streaks\n" + "\n".join(lines) + "\n")
+
+        if high_hit:
+            lines = [f"- `{kw}` ({info['layer']}): {info['hits']} hits today"
+                     for kw, info in sorted(high_hit.items(), key=lambda x: -x[1]["hits"])[:15]]
+            sections.append(f"## High-Hit Keywords (check if too generic)\n" + "\n".join(lines) + "\n")
+
+        if dyn_active:
+            sections.append(f"## Current Dynamic Keywords\n" + "\n".join(dyn_active) + "\n")
+
+        sections.append(
+            f"## Static Keywords ({len(static_kws)} total)\n"
+            f"Sample: {', '.join(list(static_kws)[:25])}...\n"
+            f"Do NOT suggest duplicates of these.\n"
+        )
+
+        max_add = cfg.get("max_auto_additions_per_cycle", 5)
+        sections.append(
+            f"Suggest up to {max_add} new keywords AND flag any keywords to deprecate "
+            f"(zero-match OR high-noise). Be conservative — only suggest with clear evidence."
+        )
+        return "\n".join(sections)
+
+    @staticmethod
+    def _parse_evolution_response(text: str) -> dict:
+        m = re.search(r'```json\s*\n(\{.*?\})\s*\n```', text, re.DOTALL)
+        if not m:
+            m = re.search(r'(\{"add".*?\})\s*$', text, re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(1))
+            except json.JSONDecodeError:
+                pass
+        return {"add": [], "deprecate": [], "observations": ""}
+
+    def _apply_additions(self, dynamic, suggestions, static_kws, date_str) -> list:
+        kw_section = dynamic["keywords"]
+        existing = set()
+        for entries in kw_section.values():
+            for e in entries:
+                existing.add(e["keyword"].lower())
+
+        added = []
+        valid_layers = {"infra", "content", "distribution", "regulation", "market"}
+        for s in suggestions:
+            kw = s.get("keyword", "").strip()
+            layer = s.get("layer", "content")
+            if not kw or layer not in valid_layers:
+                continue
+            if kw.lower() in static_kws or kw.lower() in existing:
+                continue
+            kw_section.setdefault(layer, []).append({
+                "keyword": kw,
+                "status": "candidate",
+                "added": date_str,
+                "reason": s.get("reason", ""),
+                "match_days": 0,
+                "no_match_streak": 0,
+            })
+            added.append({"keyword": kw, "layer": layer, "reason": s.get("reason", "")})
+            existing.add(kw.lower())
+        return added
+
+    def _apply_deprecations(self, dynamic, deprecations, date_str) -> list:
+        """Apply Sonnet's deprecation suggestions (quality-based, not just zero-match)."""
+        deprecated = []
+        targets = {d.get("keyword", "").lower(): d.get("reason", "") for d in deprecations}
+        for layer, entries in dynamic.get("keywords", {}).items():
+            for entry in entries:
+                if entry["status"] == "deprecated":
+                    continue
+                if entry["keyword"].lower() in targets:
+                    entry["status"] = "deprecated"
+                    entry["deprecated_at"] = date_str
+                    entry["deprecation_reason"] = targets[entry["keyword"].lower()]
+                    deprecated.append({
+                        "keyword": entry["keyword"], "layer": layer,
+                        "reason": entry["deprecation_reason"],
+                    })
+        return deprecated
+
+    def _run_lifecycle(self, dynamic, daily, date_str) -> dict:
+        """Data-driven transitions: candidate→active (3d matches), *→deprecated (14d zero)."""
+        transitions = {"promoted": [], "deprecated": []}
+        all_dates = sorted(daily.keys())
+
+        for layer, entries in dynamic.get("keywords", {}).items():
+            for entry in entries:
+                if entry["status"] == "deprecated":
+                    continue
+                kw = entry["keyword"].lower()
+
+                match_days, streak = 0, 0
+                for d in all_dates:
+                    if d < entry.get("added", "1970-01-01"):
+                        continue
+                    hits = daily[d].get("keyword_hits", {}).get(kw, {}).get("hits", 0)
+                    if hits > 0:
+                        match_days += 1
+                        streak = 0
+                    else:
+                        streak += 1
+
+                entry["match_days"] = match_days
+                entry["no_match_streak"] = streak
+
+                if entry["status"] == "candidate" and match_days >= 3:
+                    entry["status"] = "active"
+                    transitions["promoted"].append({"keyword": entry["keyword"], "layer": layer})
+
+                if streak >= 14:
+                    entry["status"] = "deprecated"
+                    entry["deprecated_at"] = date_str
+                    entry["deprecation_reason"] = f"0 matches for {streak} consecutive days"
+                    transitions["deprecated"].append({
+                        "keyword": entry["keyword"], "layer": layer,
+                        "reason": entry["deprecation_reason"],
+                    })
+        return transitions
+
+    async def _notify_evolution(self, date_str, added, promoted, deprecated, cost):
+        parts = [f"🔄 **Keyword Evolution** | {self.dc.display_name} | {date_str}"]
+        if added:
+            parts.append("\n**New Candidates:**")
+            for a in added:
+                parts.append(f"- `{a['keyword']}` ({a['layer']}) — {a['reason'][:80]}")
+        if promoted:
+            parts.append("\n**Promoted → Active:**")
+            for p in promoted:
+                parts.append(f"- `{p['keyword']}` ({p['layer']})")
+        if deprecated:
+            parts.append("\n**Deprecated:**")
+            for d in deprecated:
+                parts.append(f"- ~~`{d['keyword']}`~~ ({d['layer']}) — {d['reason'][:80]}")
+        parts.append(f"\nCost: ${cost:.4f}")
+        await self.dispatcher.send_to_delivery_target("\n".join(parts))
