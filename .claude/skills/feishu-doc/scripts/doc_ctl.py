@@ -60,7 +60,21 @@ def _share_doc(api: FeishuAPI, doc_id: str, open_id: str):
 
 def _transfer_owner(api: FeishuAPI, doc_id: str, open_id: str,
                     file_type: str = "docx") -> tuple[bool, str]:
-    """Transfer document ownership to a user. Bot must be current owner."""
+    """Transfer document ownership to a user. Bot must be current owner.
+
+    Before transferring, adds the bot app as a collaborator so it retains
+    edit access after losing ownership.
+    """
+    # Ensure bot retains access after ownership transfer
+    api.post(
+        f"/open-apis/drive/v1/permissions/{doc_id}/members",
+        body={
+            "member_type": "appid",
+            "member_id": api.app_id,
+            "perm": "full_access",
+        },
+        params={"type": file_type},
+    )
     resp = api.post(
         f"/open-apis/drive/v1/permissions/{doc_id}/members/transfer_owner",
         body={
