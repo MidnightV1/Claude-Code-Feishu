@@ -37,7 +37,7 @@ Key components:
 - **Calendar** — Create, list, update Feishu calendar events; manage contacts
 - **Documents** — Create, read, search, comment on Feishu documents
 - **Daily Briefings** — Multi-domain news pipeline: collect → generate → review → email/Feishu
-- **Long Tasks** — Multi-step task execution with real-time progress cards
+- **Progress Tracking** — Real-time TodoWrite progress on thinking cards for complex tasks
 - **Cron Jobs** — Scheduled tasks with hot-reload (no restart needed)
 - **Heartbeat** — Periodic system health checks with anomaly alerts
 - **Session Continuity** — `--resume` first, fallback to compressed history injection

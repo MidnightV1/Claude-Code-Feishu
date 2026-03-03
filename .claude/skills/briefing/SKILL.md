@@ -10,8 +10,8 @@ description: Manage daily briefing pipelines — run briefings, check status, li
 
 ### Prerequisites
 
-- [ ] **Gemini API key** in `config.yaml` → `gemini-api.api_key` (used for collection and generation)
-- [ ] **Claude CLI** available (used for review step)
+- [ ] **Gemini API key** in `config.yaml` → `gemini-api.api_key` (used for collection and generation). If missing, generation falls back to Claude (`fallback_model` in domain.yaml, default: sonnet)
+- [ ] **Claude CLI** available (used for review step and generation fallback)
 - [ ] **Brave Search MCP** configured (used for web collection)
 - [ ] **At least one domain** created under `~/briefing/domains/<name>/` with:
   - `domain.yaml` — models, distribution, keyword_evolution config
@@ -127,7 +127,7 @@ To change recipients for a specific domain, edit its `domains/<name>/config/emai
 
 ```yaml
 models:
-  generate: { model: "3-Flash", thinking: medium }
+  generate: { model: "3-Flash", thinking: medium, fallback_model: sonnet }
   review: { enabled: true, model: sonnet }
 distribution:
   email: { enabled: true, subject_template: "{name} | {date}" }

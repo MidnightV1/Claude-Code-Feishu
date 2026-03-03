@@ -67,8 +67,7 @@
 | `hub-ops` | `.claude/skills/hub-ops/` | 定时任务 CRUD、服务状态、热加载 |
 | `briefing` | `.claude/skills/briefing/` | 日报 pipeline 管理、域管理、关键词进化 |
 | `feishu-cal` | `.claude/skills/feishu-cal/` | 日历日程 CRUD、参会人管理、联系人 |
-| `feishu-doc` | `.claude/skills/feishu-doc/` | 飞书文档创建、读取、追加内容 |
-| `feishu-task` | `.claude/skills/feishu-task/` | 飞书任务 CRUD、子任务、任务列表 |
+| `feishu-doc` | `.claude/skills/feishu-doc/` | 文档 CRUD、搜索、评论分析、所有权转移 |
 
 参考：https://code.claude.com/docs/en/skills
 
@@ -137,7 +136,7 @@
 | `llm_router.py` | 多模型路由（claude-cli / gemini-api） |
 | `dispatcher.py` | 飞书消息发送（卡片 JSON 2.0 markdown，分块，重试，卡片更新） |
 | `file_store.py` | 会话级文件存储（图片/文件持久化 + 上下文注入） |
-| `claude_cli.py` | Claude CLI subprocess 封装 |
+| `claude_cli.py` | Claude CLI subprocess 封装（stream-json + TodoWrite 进度流） |
 | `gemini_api.py` | Gemini API SDK 封装（多模态 + Files API） |
 | `models.py` | 共享数据结构 |
 | `feishu_api.py` | 飞书 API 客户端（token 缓存 + HTTP + 联系人映射） |

@@ -36,7 +36,7 @@ Ask the user: "Do you have a shared calendar set up for the bot? I need the cale
 
 # Feishu Calendar
 
-Manage the user's Feishu calendar via the shared calendar "📅 小谁的工作日历".
+Manage the user's Feishu calendar via a shared calendar.
 
 ## Tool
 
