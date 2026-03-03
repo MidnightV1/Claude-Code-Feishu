@@ -107,6 +107,9 @@ class BriefingRunner:
         self.gen_model = gen_cfg.get("model", "3-Flash")
         self.gen_thinking = gen_cfg.get("thinking", None)
         self.gen_timeout = gen_cfg.get("timeout_seconds", 180)
+        self._gen_fallback = gen_cfg.get("fallback_model", "sonnet")
+        self._gen_provider = (f"Gemini {self.gen_model}" if gemini.api_key
+                              else f"Claude {self._gen_fallback}")  # updated by _generate()
 
         rev_cfg = self.dc.models.get("review", {})
         self.review_enabled = rev_cfg.get("enabled", False)
@@ -139,7 +142,7 @@ class BriefingRunner:
         review_tag = f" → Claude {self.review_model} 审稿" if self.review_enabled else ""
         await self.dispatcher.send_to_delivery_target(
             f"📋 **{self.dc.display_name}** | {date_str}\n"
-            f"采集 → Gemini {self.gen_model} 生成{review_tag} → 分发"
+            f"采集 → {self._gen_provider} 生成{review_tag} → 分发"
         )
 
         # ── Step 1: Collect ──
@@ -166,7 +169,7 @@ class BriefingRunner:
             log.info("[%s] %s: sparse day (%d articles)", self.domain_name, date_str, article_count)
 
         # ── Step 2: Generate ──
-        log.info("[%s] %s: generating via Gemini %s...", self.domain_name, date_str, self.gen_model)
+        log.info("[%s] %s: generating via %s...", self.domain_name, date_str, self._gen_provider)
         gen_result = await self._generate(date_str)
         if gen_result.is_error:
             msg = f"❌ **生成失败** | {self.dc.display_name}\n{gen_result.text[:500]}"
@@ -208,7 +211,7 @@ class BriefingRunner:
             if email_ok:
                 await self.dispatcher.send_to_delivery_target(
                     f"✅ **{self.dc.display_name}** | {date_str}\n"
-                    f"生成: Gemini {self.gen_model} ({gen_result.duration_ms / 1000:.1f}s)"
+                    f"生成: {self._gen_provider} ({gen_result.duration_ms / 1000:.1f}s)"
                     + (f" | 审稿: Claude {review_model_used}" if review_model_used != "off" else "")
                     + f"\n总成本: ${total_cost:.4f}"
                 )
@@ -229,14 +232,14 @@ class BriefingRunner:
         status.update({
             "status": "ok" if not errors else "partial",
             "elapsed_s": round(elapsed, 1),
-            "model": self.gen_model,
+            "model": self._gen_provider,
             "review_model": review_model_used,
             "cost_usd": total_cost,
             "errors": errors,
         })
         self._save_status(status)
 
-        summary = (f"[{self.domain_name}] {date_str} | {self.gen_model}"
+        summary = (f"[{self.domain_name}] {date_str} | {self._gen_provider}"
                    + (f"+{review_model_used}" if review_model_used != "off" else "")
                    + f" | {elapsed:.0f}s | ${total_cost:.4f}")
         log.info(summary)
@@ -310,11 +313,26 @@ class BriefingRunner:
             f"{sparse_hint}"
             f"Generate the daily briefing following the system instructions precisely."
         )
-        return await self.gemini.run(
+        # Try Gemini first; fall back to Claude if unavailable or failed
+        if self.gemini.api_key:
+            result = await self.gemini.run(
+                prompt=user_prompt, system_prompt=system_prompt,
+                model=self.gen_model, thinking=self.gen_thinking,
+                timeout_seconds=self.gen_timeout,
+            )
+            if not result.is_error:
+                self._gen_provider = f"Gemini {self.gen_model}"
+                return result
+            log.warning("[%s] Gemini generation failed, falling back to Claude: %s",
+                        self.domain_name, result.text[:200])
+
+        log.info("[%s] Generating via Claude %s (fallback)...", self.domain_name, self._gen_fallback)
+        result = await self.claude.run(
             prompt=user_prompt, system_prompt=system_prompt,
-            model=self.gen_model, thinking=self.gen_thinking,
-            timeout_seconds=self.gen_timeout,
+            model=self._gen_fallback, timeout_seconds=self.gen_timeout,
         )
+        self._gen_provider = f"Claude {self._gen_fallback}"
+        return result
 
     async def _review(self, draft: str, date_str: str) -> LLMResult:
         yesterday = (datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
