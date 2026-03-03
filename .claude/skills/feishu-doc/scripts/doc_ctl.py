@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Feishu Document CLI — create, read, write, comment on documents.
+"""Feishu Document CLI — create, read, write, comment, analyze documents.
 
 Usage:
     doc_ctl.py create "title" [--content "text"] [--folder TOKEN] [--share OPEN_ID]
@@ -8,6 +8,7 @@ Usage:
     doc_ctl.py list [--folder TOKEN]
     doc_ctl.py comments <doc_id_or_url>
     doc_ctl.py reply <doc_id_or_url> <comment_id> "reply text"
+    doc_ctl.py analyze <doc_id_or_url> [--all] [--context-chars N]
 """
 
 import argparse
@@ -246,6 +247,125 @@ def cmd_reply(args, api, cfg):
     print(f"Replied to comment {args.comment_id} (reply_id: {resp['data']['reply_id']})")
 
 
+def cmd_analyze(args, api, cfg):
+    """Assemble document content + comments into structured analysis context."""
+    doc_id = _extract_doc_id(args.doc_id)
+    file_type = args.file_type or "docx"
+    ctx_chars = args.context_chars or 200
+
+    # 1. Pull document content
+    resp = api.get(f"/open-apis/docx/v1/documents/{doc_id}/raw_content")
+    if resp.get("code") != 0:
+        print(f"ERROR fetching doc content: {resp.get('msg')}", file=sys.stderr)
+        sys.exit(1)
+    doc_content = resp["data"]["content"]
+
+    # Pull document title
+    meta_resp = api.get(f"/open-apis/docx/v1/documents/{doc_id}")
+    doc_title = meta_resp.get("data", {}).get("document", {}).get("title", doc_id)
+
+    # 2. Pull comments
+    items = []
+    page_token = None
+    while True:
+        params = {"file_type": file_type, "page_size": "50"}
+        if page_token:
+            params["page_token"] = page_token
+        resp = api.get(f"/open-apis/drive/v1/files/{doc_id}/comments", params=params)
+        if resp.get("code") != 0:
+            print(f"ERROR fetching comments: {resp.get('msg')}", file=sys.stderr)
+            sys.exit(1)
+        items.extend(resp.get("data", {}).get("items", []))
+        if not resp.get("data", {}).get("has_more"):
+            break
+        page_token = resp["data"].get("page_token")
+
+    # Filter: unresolved only unless --all
+    if not args.show_all:
+        items = [c for c in items if not c.get("is_solved")]
+
+    if not items:
+        print(json.dumps({"doc_id": doc_id, "title": doc_title,
+                          "annotations": [], "message": "No comments found."}))
+        return
+
+    # 3. Anchor each comment to document content
+    annotations = []
+    for c in items:
+        quote = c.get("quote", "")
+        context = _anchor_quote(doc_content, quote, ctx_chars)
+
+        # Extract thread
+        thread = []
+        for r in c.get("reply_list", {}).get("replies", []):
+            thread.append({
+                "user_id": r.get("user_id", "?"),
+                "text": _extract_reply_text(r),
+                "time": int(r.get("create_time", 0)),
+            })
+
+        annotations.append({
+            "comment_id": c["comment_id"],
+            "resolved": bool(c.get("is_solved")),
+            "quote": quote,
+            "context": context,
+            "thread": thread,
+        })
+
+    # 4. Output structured result
+    result = {
+        "doc_id": doc_id,
+        "title": doc_title,
+        "stats": {
+            "total_comments": len(items) if args.show_all else None,
+            "shown": len(annotations),
+            "filter": "all" if args.show_all else "unresolved",
+        },
+        "annotations": annotations,
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def _anchor_quote(doc_content: str, quote: str, ctx_chars: int) -> dict:
+    """Find quote in document and extract surrounding context."""
+    if not quote:
+        return {"before": "", "quoted": "", "after": "", "matched": False}
+
+    # Normalize for matching (collapse whitespace)
+    norm_content = re.sub(r"\s+", " ", doc_content)
+    norm_quote = re.sub(r"\s+", " ", quote.strip())
+
+    pos = norm_content.find(norm_quote)
+
+    # Fallback: try matching first 40 chars of quote (doc may have been edited)
+    if pos == -1 and len(norm_quote) > 40:
+        pos = norm_content.find(norm_quote[:40])
+
+    if pos == -1:
+        return {"before": "", "quoted": quote, "after": "", "matched": False}
+
+    # Extract surrounding context
+    start = max(0, pos - ctx_chars)
+    end = min(len(norm_content), pos + len(norm_quote) + ctx_chars)
+
+    before = norm_content[start:pos].strip()
+    matched_text = norm_content[pos:pos + len(norm_quote)]
+    after = norm_content[pos + len(norm_quote):end].strip()
+
+    # Add ellipsis indicators
+    if start > 0:
+        before = "..." + before
+    if end < len(norm_content):
+        after = after + "..."
+
+    return {
+        "before": before,
+        "quoted": matched_text,
+        "after": after,
+        "matched": True,
+    }
+
+
 def cmd_list(args, api, cfg):
     folder = args.folder
     if not folder:
@@ -313,6 +433,15 @@ def main():
     rp.add_argument("--file-type", dest="file_type", default="docx",
                     help="File type (docx, doc, sheet, etc.)")
 
+    az = sub.add_parser("analyze")
+    az.add_argument("doc_id", help="Document ID or URL")
+    az.add_argument("--all", dest="show_all", action="store_true",
+                    help="Include resolved comments (default: unresolved only)")
+    az.add_argument("--context-chars", dest="context_chars", type=int, default=200,
+                    help="Characters of surrounding context per quote (default: 200)")
+    az.add_argument("--file-type", dest="file_type", default="docx",
+                    help="File type (docx, doc, sheet, etc.)")
+
     args = parser.parse_args()
     if not args.action:
         parser.print_help()
@@ -328,6 +457,7 @@ def main():
         "list": cmd_list,
         "comments": cmd_comments,
         "reply": cmd_reply,
+        "analyze": cmd_analyze,
     }
     dispatch[args.action](args, api, cfg)
 

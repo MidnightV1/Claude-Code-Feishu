@@ -1,6 +1,6 @@
 ---
 name: feishu-doc
-description: Create, read, edit, and comment on Feishu documents. Use when the user wants to create a document, write up discussion results, read a Feishu doc link, save content to a Feishu document, or review/reply to document comments.
+description: Create, read, edit, comment on, and analyze Feishu documents. Use when the user wants to create a document, write up discussion results, read a Feishu doc link, save content to a Feishu document, review/reply to document comments, or analyze document annotations.
 ---
 
 # Feishu Documents
@@ -37,6 +37,11 @@ python3 .claude/skills/feishu-doc/scripts/doc_ctl.py comments "https://xxx.feish
 
 # Reply to a specific comment
 python3 .claude/skills/feishu-doc/scripts/doc_ctl.py reply <doc_id_or_url> <comment_id> "回复内容"
+
+# Analyze document comments (structured context assembly for CC analysis)
+python3 .claude/skills/feishu-doc/scripts/doc_ctl.py analyze <doc_id_or_url>
+python3 .claude/skills/feishu-doc/scripts/doc_ctl.py analyze <doc_id_or_url> --all              # include resolved
+python3 .claude/skills/feishu-doc/scripts/doc_ctl.py analyze <doc_id_or_url> --context-chars 300 # wider context window
 ```
 
 ## Content Format
@@ -59,6 +64,37 @@ Comment <comment_id> [RESOLVED]
 ```
 
 Use the `comment_id` from the output to reply with the `reply` command.
+
+## Comment Analysis (analyze)
+
+The `analyze` command is a **data assembly module** — it pulls document content + comments, anchors each comment to its document location, and outputs structured JSON for CC to reason over.
+
+**Workflow** (triggered when user says "看看我在文档里的评论" or similar):
+1. Run `analyze <doc_id>` → get structured JSON
+2. Read the analysis prompt: `.claude/skills/feishu-doc/prompts/analyze_comments.md`
+3. Apply the prompt's framework to analyze the JSON output
+4. Reply in IM with structured analysis (overview → per-annotation → action items)
+
+**Output structure:**
+```json
+{
+  "doc_id": "...", "title": "...",
+  "stats": {"shown": 3, "filter": "unresolved"},
+  "annotations": [{
+    "comment_id": "...",
+    "quote": "被评论的原文",
+    "context": {
+      "before": "...前文...",
+      "quoted": "被评论的原文",
+      "after": "...后文...",
+      "matched": true
+    },
+    "thread": [{"user_id": "ou_xxx", "text": "评论内容", "time": 1234567890}]
+  }]
+}
+```
+
+Default: only unresolved comments. Use `--all` for full history.
 
 ## Behavior Notes
 
