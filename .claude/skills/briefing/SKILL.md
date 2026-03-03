@@ -34,25 +34,48 @@ python3 scripts/briefing_run.py run --domain ai-drama --step collect
 
 All commands accept `--config config.yaml` (defaults to hub config).
 
-## Domain Structure
-
-Each domain lives in `~/briefing/domains/<name>/`:
+## File Structure
 
 ```
-domains/<name>/
-  domain.yaml       # Core config: models, distribution, keyword_evolution, schedule
-  sources.yaml      # Keywords (by supply-chain layer) + source definitions (RSS, API)
-  prompts/
-    generate.md     # Gemini generation prompt
-    review.md       # Claude review prompt
-  data/
-    today_context.json      # Latest collector output
-    keyword_feedback.json   # Per-keyword hit stats (30-day rolling)
-    keywords_dynamic.yaml   # Auto-evolved keywords (candidate/active/deprecated)
-    keywords_meta.json      # Evolution history + idempotency
-    run_status.json         # Latest pipeline run status
-    output/                 # Final briefing markdown files
+~/briefing/
+  config/
+    email.json          # Global email config (fallback for domains without own config)
+    sources.yaml        # Legacy global sources (deprecated, use per-domain)
+  engine/
+    notify.py           # Email sending script (called by pipeline)
+  domains/<name>/
+    domain.yaml         # Core config: models, distribution, keyword_evolution, schedule
+    sources.yaml        # Keywords (by supply-chain layer) + source definitions (RSS, API)
+    config/
+      email.json        # Domain-specific email config (overrides global)
+    prompts/
+      generate.md       # Gemini generation prompt
+      review.md         # Claude review prompt
+    data/
+      today_context.json      # Latest collector output
+      keyword_feedback.json   # Per-keyword hit stats (30-day rolling)
+      keywords_dynamic.yaml   # Auto-evolved keywords (candidate/active/deprecated)
+      keywords_meta.json      # Evolution history + idempotency
+      run_status.json         # Latest pipeline run status
+      output/                 # Final briefing markdown files
 ```
+
+## Email Config
+
+Email recipients are in `email.json`. **Lookup order**: domain-specific (`domains/<name>/config/email.json`) → global fallback (`~/briefing/config/email.json`).
+
+```json
+{
+  "sender": "user@example.com",
+  "app_password": "smtp_app_password",
+  "recipients": ["a@example.com", "b@example.com"],
+  "cc": ["c@example.com"],
+  "smtp_host": "smtp.qq.com",
+  "smtp_port": 465
+}
+```
+
+To change recipients for a specific domain, edit its `domains/<name>/config/email.json`. The global file only applies to domains without their own config.
 
 ## Adding a New Domain
 
@@ -91,9 +114,11 @@ schedule: "0 8 * * *"
 
 ## Registered Handlers
 
-| Handler | Domain | Description |
-|---------|--------|-------------|
-| `briefing` | default (ai-drama) | Backward-compatible, runs default domain |
-| `briefing:<name>` | specific | Per-domain handler, auto-discovered |
+| Handler | Domain | Cron | Description |
+|---------|--------|------|-------------|
+| `briefing` | ai-drama (default) | `0 8 * * *` | 每天 8:00，AI 行业日报 |
+| `briefing:heritage-ai` | heritage-ai | `0 20 * * *` | 每天 20:00，遗产 AI 日报 |
+
+`briefing` handler（无后缀）= default domain = `ai-drama`。新增 domain 用 `briefing:<name>` 格式注册。
 
 Handler jobs don't need a prompt — they spawn `briefing_run.py` as subprocess.
