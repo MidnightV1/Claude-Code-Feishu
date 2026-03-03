@@ -63,9 +63,10 @@ python3 .claude/skills/hub-ops/scripts/hub_ctl.py reload
 
 | Handler | Description | Managed by |
 |---------|-------------|------------|
-| `briefing` | Daily briefing pipeline (collect → generate → review → email) | BriefingPipeline |
+| `briefing` | Daily briefing pipeline — default domain (subprocess) | BriefingPlugin |
+| `briefing:<domain>` | Per-domain briefing pipeline (auto-discovered) | BriefingPlugin |
 
-Handler jobs don't need a prompt — they invoke the registered pipeline directly.
+Handler jobs don't need a prompt — they spawn `scripts/briefing_run.py` as subprocess.
 
 ## What Requires Restart vs Not
 
@@ -73,6 +74,7 @@ Handler jobs don't need a prompt — they invoke the registered pipeline directl
 |--------|---------------|
 | Cron jobs (add/remove/enable/disable) | **No** — hub_ctl.py auto-reloads |
 | `sources.yaml` (briefing search terms) | **No** — collector reads fresh each run |
+| `scripts/briefing_run.py` (pipeline logic) | **No** — runs as subprocess |
 | `HEARTBEAT.md` | **No** — read fresh each heartbeat cycle |
 | `config.yaml` (credentials, LLM defaults) | **Yes** — tell user to run `hub.sh restart` |
 | Hub Python code (`main.py`, `feishu_bot.py`) | **Yes** — tell user to run `hub.sh restart` |

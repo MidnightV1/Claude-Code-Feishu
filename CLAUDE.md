@@ -65,6 +65,7 @@
 | Skill | 位置 | 用途 |
 |-------|------|------|
 | `hub-ops` | `.claude/skills/hub-ops/` | 定时任务 CRUD、服务状态、热加载 |
+| `briefing` | `.claude/skills/briefing/` | 日报 pipeline 管理、域管理、关键词进化 |
 | `feishu-cal` | `.claude/skills/feishu-cal/` | 日历日程 CRUD、参会人管理、联系人 |
 | `feishu-doc` | `.claude/skills/feishu-doc/` | 飞书文档创建、读取、追加内容 |
 | `feishu-task` | `.claude/skills/feishu-task/` | 飞书任务 CRUD、子任务、任务列表 |
@@ -130,7 +131,8 @@
 |-----------|------|
 | `main.py` | 入口，PID 文件写入，SIGUSR1 热加载信号 |
 | `feishu_bot.py` | 飞书 WebSocket Bot，消息路由，debounce，多模态处理 |
-| `briefing.py` | 日报 pipeline（采集→Gemini 生成→Claude 审稿→邮件→飞书） |
+| `briefing_plugin.py` | 日报 thin shim（subprocess launcher，60 行，不含逻辑） |
+| `scripts/briefing_run.py` | 日报 pipeline 独立脚本（采集→生成→审稿→邮件→关键词进化） |
 | `scheduler.py` | 进程内 cron 调度器（croniter + asyncio timer） |
 | `heartbeat.py` | 心跳监控（系统快照→LLM 判断→异常投递） |
 | `llm_router.py` | 多模型路由（claude-cli / gemini-api） |

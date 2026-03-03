@@ -18,7 +18,7 @@ from scheduler import CronScheduler
 from heartbeat import HeartbeatMonitor
 from feishu_bot import FeishuBot
 from file_store import FileStore
-from briefing_v2 import BriefingPipeline
+from briefing_plugin import BriefingPlugin
 from task_runner import TaskRunner
 from feishu_reporter import FeishuReporter
 
@@ -137,7 +137,7 @@ async def main():
     )
 
     # Plugins
-    briefing = BriefingPipeline("ai-drama", gemini_api, claude, notifier)
+    briefing = BriefingPlugin(notify_config=notify_cfg, default_domain="ai-drama")
     register_plugin(briefing.descriptor(), bot=bot, scheduler=scheduler)
 
     await bot.start()
