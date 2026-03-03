@@ -480,12 +480,6 @@ class FeishuBot:
             else f"chat:{batch.chat_id}"
         )
 
-        # Send "thinking" progress card (will be replaced with final reply)
-        progress_msg_id = await self.dispatcher.send_card_return_id(
-            batch.chat_id, "💭 正在思考…",
-            reply_to=batch.first_message_id,
-        )
-
         try:
             llm_config, prompt = self._resolve_skill(combined, session_key)
 
@@ -517,16 +511,11 @@ class FeishuBot:
                 result = await llm_task
             except asyncio.CancelledError:
                 log.info("LLM task cancelled for %s (user recalled)", key)
-                # Update progress card to show cancellation
-                if progress_msg_id:
-                    await self.dispatcher.update_card(progress_msg_id, "⏹️ 已取消")
                 return
             finally:
                 self._running_tasks.pop(key, None)
 
             if result.cancelled:
-                if progress_msg_id:
-                    await self.dispatcher.update_card(progress_msg_id, "⏹️ 已取消")
                 return
 
             if result.is_error:
@@ -552,20 +541,12 @@ class FeishuBot:
             else:
                 reply_text = None
 
-            # Replace progress card with final reply, or send as new message
+            # Send final reply as new message (triggers notification sound)
             if reply_text:
-                if progress_msg_id:
-                    ok = await self.dispatcher.update_card(progress_msg_id, reply_text)
-                    if not ok:
-                        await self.dispatcher.send_text(
-                            batch.chat_id, reply_text,
-                            reply_to=batch.first_message_id,
-                        )
-                else:
-                    await self.dispatcher.send_text(
-                        batch.chat_id, reply_text,
-                        reply_to=batch.first_message_id,
-                    )
+                await self.dispatcher.send_text(
+                    batch.chat_id, reply_text,
+                    reply_to=batch.first_message_id,
+                )
         except Exception as e:
             log.error("Batch processing error: %s", e, exc_info=True)
         finally:
