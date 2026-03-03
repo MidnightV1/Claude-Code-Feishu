@@ -17,7 +17,7 @@
 
 - **禁止 `hub.sh restart/stop`** — 你是 hub 的子进程，执行等于自杀。`HUB_CHILD` 环境变量已拦截此操作
 - **禁止 sudo** — 全用户态运行
-- 需要重启时，告诉用户：「服务需要重启，因为 [原因]。请执行：`hub.sh restart`」
+- 需要重启时，告诉用户：「服务需要重启，因为 [原因]。请在飞书发送 `#restart` 或在服务端执行 `hub.sh restart`」
 
 ### 热加载 vs 重启
 
@@ -68,6 +68,7 @@
 | `briefing` | `.claude/skills/briefing/` | 日报 pipeline 管理、域管理、关键词进化 |
 | `feishu-cal` | `.claude/skills/feishu-cal/` | 日历日程 CRUD、参会人管理、联系人 |
 | `feishu-doc` | `.claude/skills/feishu-doc/` | 文档 CRUD、搜索、评论分析、所有权转移 |
+| `feishu-task` | `.claude/skills/feishu-task/` | 任务 CRUD、截止日期管理、心跳联动 |
 
 参考：https://code.claude.com/docs/en/skills
 

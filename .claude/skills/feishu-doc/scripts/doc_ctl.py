@@ -407,11 +407,11 @@ def _anchor_quote(doc_content: str, quote: str, ctx_chars: int) -> dict:
     }
 
 
-def _list_folder(api, folder_token: str) -> list[dict]:
-    """List all files in a folder with pagination."""
+def _list_folder(api, folder_token: str, max_pages: int = 10) -> list[dict]:
+    """List files in a folder with pagination (capped at max_pages)."""
     files = []
     page_token = None
-    while True:
+    for _ in range(max_pages):
         params = {"folder_token": folder_token, "page_size": "50",
                   "order_by": "EditedTime", "direction": "DESC"}
         if page_token:

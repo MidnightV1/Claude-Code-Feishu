@@ -54,6 +54,11 @@ class HeartbeatMonitor:
         self.active_end = ah.get("end", "23:59")
         self.tz_name = ah.get("timezone", "Asia/Shanghai")
 
+        # Task deadline monitoring
+        tasks_cfg = config.get("tasks", {})
+        self._tasks_enabled = tasks_cfg.get("enabled", False)
+        self._alert_window_hours = tasks_cfg.get("alert_window_hours", 2)
+
         self.router = router
         self.dispatcher = dispatcher
         self._task: asyncio.Task | None = None
@@ -95,7 +100,7 @@ class HeartbeatMonitor:
             return "skipped"
 
         # Append active task snapshot
-        task_snapshot = self._collect_task_snapshot()
+        task_snapshot = await self._collect_task_snapshot()
         if task_snapshot:
             content = content.rstrip() + "\n\n" + task_snapshot
 
@@ -206,11 +211,28 @@ class HeartbeatMonitor:
             return False
         return text.strip() == self._last_text.strip()
 
-    @staticmethod
-    def _collect_task_snapshot() -> str:
-        """Placeholder — long-task orchestrator removed; progress is now
-        streamed via CC's native TodoWrite events on the thinking card."""
-        return ""
+    async def _collect_task_snapshot(self) -> str:
+        """Collect overdue/upcoming task snapshot via task_ctl.py subprocess."""
+        if not self._tasks_enabled:
+            return ""
+        script = os.path.join(
+            self.workspace_dir,
+            ".claude/skills/feishu-task/scripts/task_ctl.py")
+        if not os.path.exists(script):
+            return ""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "python3", script, "snapshot",
+                "--window-hours", str(self._alert_window_hours),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self.workspace_dir,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            return stdout.decode("utf-8").strip()
+        except Exception as e:
+            log.warning("Task snapshot failed: %s", e)
+            return ""
 
     @staticmethod
     def _format_duration(seconds: float) -> str:

@@ -514,7 +514,7 @@ class FeishuBot:
                 if not _todos:
                     return top
                 _icons = {"completed": "✅", "in_progress": "🔄", "pending": "⬜"}
-                lines = [top, "---", "#### Todo"]
+                lines = [top, "<hr>"]
                 for t in _todos:
                     icon = _icons.get(t.get("status", "pending"), "⬜")
                     label = t.get("activeForm") if t.get("status") == "in_progress" else t.get("content", "")
