@@ -107,6 +107,15 @@ class LLMRouter:
 
     # ═══ History Management ═══
 
+    def remove_last_round(self, session_key: str):
+        """Remove the last user+assistant round from history (e.g., on message recall)."""
+        entry = self._sessions.get(session_key, {})
+        history = entry.get("history", [])
+        if len(history) >= 2:
+            history.pop()  # assistant
+            history.pop()  # user
+            log.info("Recall: removed last history round for %s", session_key)
+
     def _append_history(self, session_key: str, user_msg: str, assistant_msg: str):
         """Append a round to session history, keeping last N rounds."""
         if not session_key:

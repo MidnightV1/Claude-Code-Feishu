@@ -164,6 +164,7 @@ class FeishuBot:
         handler = lark.EventDispatcherHandler.builder("", "") \
             .register_p2_im_message_receive_v1(self._on_message_event) \
             .register_p2_im_message_recalled_v1(self._on_recall_event) \
+            .register_p2_im_message_message_read_v1(lambda d: None) \
             .build()
 
         self._loop = asyncio.get_event_loop()
@@ -245,7 +246,10 @@ class FeishuBot:
                 # Cleanup is handled in _flush via CancelledError
                 return
 
-            log.debug("Recall: message %s already completed for key %s", message_id, key)
+            # Case C: already completed → remove last history round
+            log.info("Recall: removing history for completed message %s (session=%s)", message_id, key)
+            self.router.remove_last_round(key)
+            asyncio.create_task(self.router.save_sessions())
         except Exception as e:
             log.warning("Recall handler error: %s", e)
 
@@ -526,6 +530,9 @@ class FeishuBot:
                 # Delete thinking card on cancel
                 if thinking_msg_id:
                     await self.dispatcher.delete_message(thinking_msg_id)
+                # Clean up any history saved in the race window
+                self.router.remove_last_round(session_key)
+                asyncio.create_task(self.router.save_sessions())
                 return
             finally:
                 self._running_tasks.pop(key, None)
@@ -572,8 +579,13 @@ class FeishuBot:
             if thinking_msg_id:
                 await self.dispatcher.delete_message(thinking_msg_id)
         finally:
-            for mid in batch.message_ids:
-                self._msg_to_key.pop(mid, None)
+            # Keep _msg_to_key entries for recall-after-completion support.
+            # Evict oldest if too many (dict is insertion-ordered).
+            if len(self._msg_to_key) > 200:
+                excess = len(self._msg_to_key) - 200
+                it = iter(self._msg_to_key)
+                for _ in range(excess):
+                    self._msg_to_key.pop(next(it), None)
 
     # ═══ Skill & Command Router ═══
 
