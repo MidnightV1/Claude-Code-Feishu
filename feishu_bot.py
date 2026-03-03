@@ -504,18 +504,21 @@ class FeishuBot:
                 (110, "💭 快了，还在整理…"),
             ]
 
+            _last_tool_label = [""]  # persists latest tool activity across renders
+
             def _render_card(activity: str = "") -> str:
-                """Build card content from todo list + current activity."""
+                """Build card content: activity on top, todos below divider."""
+                if activity:
+                    _last_tool_label[0] = activity
+                top = _last_tool_label[0] or "💭 正在思考…"
                 if not _todos:
-                    return activity or "💭 正在思考…"
+                    return top
                 _icons = {"completed": "✅", "in_progress": "🔄", "pending": "⬜"}
-                lines = []
+                lines = [top, "---", "#### Todo"]
                 for t in _todos:
                     icon = _icons.get(t.get("status", "pending"), "⬜")
                     label = t.get("activeForm") if t.get("status") == "in_progress" else t.get("content", "")
                     lines.append(f"{icon} {label}")
-                if activity:
-                    lines.append(f"\n{activity}")
                 return "\n".join(lines)
 
             def _idle_label(elapsed: float) -> str:
