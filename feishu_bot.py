@@ -630,9 +630,14 @@ class FeishuBot:
             # Clean up thinking card and notify user
             if thinking_msg_id:
                 await self.dispatcher.delete_message(thinking_msg_id)
+            err_type = type(e).__name__
+            if "timeout" in str(e).lower() or "Timeout" in err_type:
+                err_msg = "请求超时，请稍后重试。"
+            else:
+                err_msg = f"处理出错（{err_type}），请重试。"
             try:
                 await self.dispatcher.send_text(
-                    batch.chat_id, "处理出错，请重试。",
+                    batch.chat_id, err_msg,
                     reply_to=batch.first_message_id,
                 )
             except Exception:
@@ -778,7 +783,7 @@ class FeishuBot:
             return "当前没有定时任务。"
         lines = ["**定时任务**\n"]
         for j in jobs:
-            status = ":DONE:" if j.enabled else ":WARNING:"
+            status = "✅" if j.enabled else "⚠️"
             sched = j.schedule.expr or f"{j.schedule.every_seconds}s"
             next_run = ""
             if j.state.next_run_at:
