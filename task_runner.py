@@ -232,11 +232,11 @@ class TaskRunner:
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     req = json.load(f)
-                os.remove(path)
 
                 goal = req.get("goal", "")
                 steps_data = req.get("steps", [])
                 if not goal or not steps_data:
+                    os.remove(path)
                     continue
 
                 task = TaskPlan(
@@ -252,6 +252,7 @@ class TaskRunner:
                     self._tasks[task.task_id] = task
                     await self._save()
 
+                os.remove(path)
                 await self.reporter.on_plan_ready(task)
                 log.info("Task from request: %s — %s (%d steps)",
                          task.task_id, goal[:60], len(task.steps))

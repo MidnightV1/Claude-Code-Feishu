@@ -8,11 +8,13 @@ This module only registers commands and handlers; it never needs to change.
 import asyncio
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 
 log = logging.getLogger("hub.briefing")
 
-PYTHON = Path.home() / "python313/python/bin/python3"
+PYTHON = Path(os.environ.get("BRIEFING_PYTHON", sys.executable))
 SCRIPT = Path(__file__).resolve().parent / "scripts" / "briefing_run.py"
 DOMAINS_DIR = Path.home() / "briefing" / "domains"
 

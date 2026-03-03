@@ -23,6 +23,11 @@ HISTORY_ROUNDS = 8       # keep last N rounds for context fallback
 HISTORY_TRUNCATE = 2000  # max chars per message in history
 SUMMARY_THRESHOLD = 4    # rounds beyond this → compress older portion
 
+COMPRESS_TIMEOUT_PRIMARY = 60
+COMPRESS_TIMEOUT_FALLBACK = 30
+COMPRESS_TEMPERATURE = 0.2
+LOG_PREVIEW_LEN = 200
+
 # ═══ Context Recovery Templates ═══
 
 RECOVERY_PREAMBLE = (
@@ -111,7 +116,7 @@ class LLMRouter:
         """Remove the last user+assistant round from history (e.g., on message recall)."""
         entry = self._sessions.get(session_key, {})
         history = entry.get("history", [])
-        if len(history) >= 2:
+        if len(history) >= 2 and history[-1]["role"] == "assistant" and history[-2]["role"] == "user":
             history.pop()  # assistant
             history.pop()  # user
             log.info("Recall: removed last history round for %s", session_key)
@@ -146,11 +151,7 @@ class LLMRouter:
 
     async def _compress_history(self, history: list[dict]) -> str | None:
         """Compress conversation history. Sonnet primary, Gemini 3-Flash fallback."""
-        lines = []
-        for msg in history:
-            role = "用户" if msg["role"] == "user" else "助手"
-            lines.append(f"{role}: {msg['text']}")
-        raw = "\n".join(lines)
+        raw = self._format_raw_history(history)
 
         prompt = SUMMARY_PROMPT.format(raw=raw)
 
@@ -159,13 +160,13 @@ class LLMRouter:
             result = await self.claude.run(
                 prompt, model="sonnet",
                 system_prompt=SUMMARY_SYSTEM,
-                timeout_seconds=60,
+                timeout_seconds=COMPRESS_TIMEOUT_PRIMARY,
             )
             if not result.is_error and result.text.strip():
                 log.info("History compressed via Sonnet: %d → %d chars",
                          len(raw), len(result.text))
                 return result.text.strip()
-            log.warning("Sonnet compression failed: %s", result.text[:200])
+            log.warning("Sonnet compression failed: %s", result.text[:LOG_PREVIEW_LEN])
         except Exception as e:
             log.warning("Sonnet compression error: %s", e)
 
@@ -173,7 +174,8 @@ class LLMRouter:
         try:
             result = await self.gemini_api.run(
                 prompt, model="3-Flash",
-                temperature=0.2, timeout_seconds=30,
+                temperature=COMPRESS_TEMPERATURE,
+                timeout_seconds=COMPRESS_TIMEOUT_FALLBACK,
             )
             if not result.is_error and result.text.strip():
                 log.info("History compressed via Gemini fallback: %d → %d chars",
@@ -296,19 +298,25 @@ class LLMRouter:
             )
             if not result.is_error:
                 self._save_result(session_key, result, prompt)
-                await self.save_sessions()
+                try:
+                    await self.save_sessions()
+                except Exception:
+                    log.warning("Failed to persist session", exc_info=True)
                 return result
-            # Resume failed — fall through to fresh session with context
-            log.warning("Resume failed for %s: %s", session_key, result.text[:200])
+            # Resume failed — check if timeout (don't retry, it would double the wait)
+            log.warning("Resume failed for %s: %s", session_key, result.text[:LOG_PREVIEW_LEN])
+            if "[Timeout" in result.text:
+                return result
 
         # ── Step 2: Fresh session with recovery context via system prompt ──
         effective_system = llm_config.system_prompt
         if session_key:
             recovery = await self._build_recovery_context(session_key)
             if recovery:
-                parts = [recovery]
+                parts = []
                 if effective_system:
                     parts.append(effective_system)
+                parts.append(recovery)
                 effective_system = "\n\n".join(parts)
 
         result = await self.claude.run(
@@ -322,5 +330,8 @@ class LLMRouter:
         )
 
         self._save_result(session_key, result, prompt)
-        await self.save_sessions()
+        try:
+            await self.save_sessions()
+        except Exception:
+            log.warning("Failed to persist session", exc_info=True)
         return result

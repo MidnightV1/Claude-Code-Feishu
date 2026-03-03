@@ -13,19 +13,6 @@ from models import LLMResult
 
 log = logging.getLogger("hub.claude_cli")
 
-# Tool name → human-readable label
-_TOOL_LABELS = {
-    "Read":      "📖 读取文件",
-    "Grep":      "🔍 搜索代码",
-    "Glob":      "📂 查找文件",
-    "Bash":      "⚡ 执行命令",
-    "Edit":      "✏️ 编辑文件",
-    "Write":     "📝 写入文件",
-    "Agent":     "🤖 子任务分析",
-    "WebFetch":  "🌐 获取网页",
-    "WebSearch": "🔎 搜索网页",
-}
-
 
 def _make_tool_label(tool_name: str, tool_input: dict) -> str:
     """Map a tool_use event to a human-readable progress label."""
@@ -66,7 +53,7 @@ def _make_tool_label(tool_name: str, tool_input: dict) -> str:
         server = parts[1] if len(parts) > 1 else "扩展"
         return f"🔌 {server}"
 
-    return _TOOL_LABELS.get(tool_name, f"🔧 {tool_name}")
+    return f"🔧 {tool_name}"
 
 
 class ClaudeCli:

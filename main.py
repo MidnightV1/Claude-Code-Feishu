@@ -165,7 +165,7 @@ async def main():
 
     # Wait for shutdown signal
     stop = asyncio.Event()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
             loop.add_signal_handler(sig, stop.set)
@@ -176,7 +176,7 @@ async def main():
     try:
         def _on_sigusr1():
             log.info("SIGUSR1 received, reloading scheduler...")
-            asyncio.ensure_future(scheduler.reload())
+            asyncio.create_task(scheduler.reload())
         loop.add_signal_handler(signal.SIGUSR1, _on_sigusr1)
     except (NotImplementedError, AttributeError):
         pass

@@ -32,8 +32,8 @@ class FileStore:
             return []
 
     def _save_meta(self, session_key: str, meta: list[dict]):
-        with open(self._meta_path(session_key), "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2, ensure_ascii=False)
+        from store import save_json_sync
+        save_json_sync(self._meta_path(session_key), meta)
 
     def save_from_path(
         self,

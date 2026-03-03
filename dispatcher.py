@@ -4,10 +4,14 @@
 import json
 import asyncio
 import logging
+from typing import TypeVar, Callable, Awaitable
 
 log = logging.getLogger("hub.dispatcher")
 
 MAX_MSG_LEN = 4000  # Feishu card markdown content limit per chunk
+MAX_RETRIES = 3
+
+T = TypeVar("T")
 
 
 class Dispatcher:
@@ -35,6 +39,60 @@ class Dispatcher:
     async def stop(self):
         self._client = None
 
+    def _ensure_client(self) -> None:
+        """Raise RuntimeError if start() has not been called."""
+        if self._client is None:
+            raise RuntimeError(
+                "Dispatcher not started — call await dispatcher.start() first"
+            )
+
+    @staticmethod
+    def _build_card_json(text: str) -> str:
+        """Build Feishu interactive card JSON 2.0 with markdown content."""
+        return json.dumps({
+            "schema": "2.0",
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": text}
+                ]
+            }
+        }, ensure_ascii=False)
+
+    async def _with_retry(
+        self,
+        operation: str,
+        fn: Callable[[], Awaitable[T]],
+        *,
+        success_check: Callable[[T], bool] | None = None,
+        log_failure: Callable[[T], None] | None = None,
+    ) -> T | None:
+        """Execute fn() with exponential backoff retry.
+
+        Args:
+            operation: Name for log messages (e.g. "send_card").
+            fn: Async callable to attempt.
+            success_check: If provided, called with the result to determine success.
+                           If it returns False, the attempt is considered failed.
+            log_failure: If provided, called with the result on non-success for logging.
+
+        Returns:
+            The result of fn() on success, or None after all retries exhausted.
+        """
+        for attempt in range(MAX_RETRIES):
+            try:
+                result = await fn()
+                if success_check is None or success_check(result):
+                    return result
+                if log_failure:
+                    log_failure(result)
+                else:
+                    log.warning("%s failed (attempt %d/%d)", operation, attempt + 1, MAX_RETRIES)
+            except Exception as e:
+                log.error("%s error (attempt %d/%d): %s", operation, attempt + 1, MAX_RETRIES, e)
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(2 ** attempt)
+        return None
+
     async def send_text(
         self,
         chat_id: str,
@@ -61,44 +119,6 @@ class Dispatcher:
             return None
         return await self.send_text(self.delivery_chat_id, text)
 
-    async def add_reaction(self, message_id: str, emoji: str = "Typing") -> str | None:
-        """Add a reaction emoji to a message. Returns reaction_id or None."""
-        try:
-            import lark_oapi as lark
-            from lark_oapi.api.im.v1 import CreateMessageReactionRequest, CreateMessageReactionRequestBody
-
-            req = CreateMessageReactionRequest.builder() \
-                .message_id(message_id) \
-                .request_body(
-                    CreateMessageReactionRequestBody.builder()
-                    .reaction_type({"emoji_type": emoji})
-                    .build()
-                ).build()
-            resp = await asyncio.to_thread(
-                self._client.im.v1.message_reaction.create, req
-            )
-            if resp.success() and resp.data:
-                return resp.data.reaction_id
-            log.debug("add_reaction failed: code=%s msg=%s", resp.code, resp.msg)
-        except Exception as e:
-            log.debug("add_reaction error: %s", e)
-        return None
-
-    async def remove_reaction(self, message_id: str, reaction_id: str) -> None:
-        """Remove a reaction emoji from a message."""
-        try:
-            from lark_oapi.api.im.v1 import DeleteMessageReactionRequest
-
-            req = DeleteMessageReactionRequest.builder() \
-                .message_id(message_id) \
-                .reaction_id(reaction_id) \
-                .build()
-            await asyncio.to_thread(
-                self._client.im.v1.message_reaction.delete, req
-            )
-        except Exception as e:
-            log.debug("remove_reaction error: %s", e)
-
     async def send_card_return_id(
         self,
         chat_id: str,
@@ -106,175 +126,120 @@ class Dispatcher:
         reply_to: str | None = None,
     ) -> str | None:
         """Send a card and return its message_id (for later updates). None on failure."""
-        import lark_oapi as lark
+        self._ensure_client()
         from lark_oapi.api.im.v1 import (
             CreateMessageRequest, CreateMessageRequestBody,
             ReplyMessageRequest, ReplyMessageRequestBody,
         )
 
-        content = json.dumps({
-            "schema": "2.0",
-            "body": {
-                "elements": [
-                    {"tag": "markdown", "content": text}
-                ]
-            }
-        }, ensure_ascii=False)
+        content = self._build_card_json(text)
 
-        for attempt in range(3):
-            try:
-                if reply_to:
-                    req = ReplyMessageRequest.builder() \
-                        .message_id(reply_to) \
-                        .request_body(
-                            ReplyMessageRequestBody.builder()
-                            .msg_type("interactive")
-                            .content(content)
-                            .build()
-                        ).build()
-                    resp = await asyncio.to_thread(
-                        self._client.im.v1.message.reply, req
-                    )
-                else:
-                    req = CreateMessageRequest.builder() \
-                        .receive_id_type("chat_id") \
-                        .request_body(
-                            CreateMessageRequestBody.builder()
-                            .receive_id(chat_id)
-                            .msg_type("interactive")
-                            .content(content)
-                            .build()
-                        ).build()
-                    resp = await asyncio.to_thread(
-                        self._client.im.v1.message.create, req
-                    )
+        async def _attempt():
+            if reply_to:
+                req = ReplyMessageRequest.builder() \
+                    .message_id(reply_to) \
+                    .request_body(
+                        ReplyMessageRequestBody.builder()
+                        .msg_type("interactive")
+                        .content(content)
+                        .build()
+                    ).build()
+                return await asyncio.to_thread(
+                    self._client.im.v1.message.reply, req
+                )
+            else:
+                req = CreateMessageRequest.builder() \
+                    .receive_id_type("chat_id") \
+                    .request_body(
+                        CreateMessageRequestBody.builder()
+                        .receive_id(chat_id)
+                        .msg_type("interactive")
+                        .content(content)
+                        .build()
+                    ).build()
+                return await asyncio.to_thread(
+                    self._client.im.v1.message.create, req
+                )
 
-                if resp.success() and resp.data:
-                    return resp.data.message_id
-                log.warning("send_card_return_id failed: code=%s msg=%s", resp.code, resp.msg)
-                if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
-            except Exception as e:
-                log.error("send_card_return_id error (attempt %d): %s", attempt + 1, e)
-                if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
+        def _check(resp) -> bool:
+            return resp.success() and resp.data
+
+        def _log_fail(resp):
+            log.warning("send_card failed: code=%s msg=%s", resp.code, resp.msg)
+
+        resp = await self._with_retry(
+            "send_card", _attempt,
+            success_check=_check, log_failure=_log_fail,
+        )
+        if resp and resp.data:
+            return resp.data.message_id
         return None
+
+    async def update_card(self, message_id: str, text: str) -> bool:
+        """Update an existing card message via PATCH. Returns success."""
+        self._ensure_client()
+        content = self._build_card_json(text)
+
+        async def _attempt():
+            from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+            req = PatchMessageRequest.builder() \
+                .message_id(message_id) \
+                .request_body(
+                    PatchMessageRequestBody.builder()
+                    .content(content)
+                    .build()
+                ).build()
+            return await asyncio.to_thread(
+                self._client.im.v1.message.patch, req
+            )
+
+        def _check(resp) -> bool:
+            return resp.success()
+
+        def _log_fail(resp):
+            log.warning("update_card failed: code=%s msg=%s", resp.code, resp.msg)
+
+        resp = await self._with_retry(
+            "update_card", _attempt,
+            success_check=_check, log_failure=_log_fail,
+        )
+        return resp is not None
 
     async def delete_message(self, message_id: str) -> bool:
         """Delete a message by message_id. Returns success."""
-        try:
+        self._ensure_client()
+
+        async def _attempt():
             from lark_oapi.api.im.v1 import DeleteMessageRequest
             req = DeleteMessageRequest.builder() \
                 .message_id(message_id) \
                 .build()
-            resp = await asyncio.to_thread(
+            return await asyncio.to_thread(
                 self._client.im.v1.message.delete, req
             )
-            if resp.success():
-                return True
-            log.debug("delete_message failed: code=%s msg=%s", resp.code, resp.msg)
-        except Exception as e:
-            log.debug("delete_message error: %s", e)
-        return False
 
-    async def update_card(self, message_id: str, text: str) -> bool:
-        """Update an existing card message via PATCH. Returns success."""
-        content = json.dumps({
-            "schema": "2.0",
-            "body": {
-                "elements": [
-                    {"tag": "markdown", "content": text}
-                ]
-            }
-        }, ensure_ascii=False)
+        def _check(resp) -> bool:
+            return resp.success()
 
-        for attempt in range(3):
-            try:
-                from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
-                req = PatchMessageRequest.builder() \
-                    .message_id(message_id) \
-                    .request_body(
-                        PatchMessageRequestBody.builder()
-                        .content(content)
-                        .build()
-                    ).build()
-                resp = await asyncio.to_thread(
-                    self._client.im.v1.message.patch, req
-                )
-                if resp.success():
-                    return True
-                log.warning("update_card failed: code=%s msg=%s", resp.code, resp.msg)
-                if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
-            except Exception as e:
-                log.error("update_card error (attempt %d): %s", attempt + 1, e)
-                if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
-        return False
+        def _log_fail(resp):
+            log.warning("delete_message failed: code=%s msg=%s", resp.code, resp.msg)
+
+        resp = await self._with_retry(
+            "delete_message", _attempt,
+            success_check=_check, log_failure=_log_fail,
+        )
+        return resp is not None
 
     async def _send_card(
         self, chat_id: str, text: str, reply_to: str | None = None,
-    ) -> str | None:
-        """Send markdown content as Feishu interactive card (JSON 2.0 schema).
+    ) -> str:
+        """Thin wrapper over send_card_return_id for internal use.
 
-        Returns message_id on success, None on failure.
+        Returns message_id on success, empty string on failure.
+        The _send_chunked method depends on this returning a string (possibly empty).
         """
-        import lark_oapi as lark
-        from lark_oapi.api.im.v1 import (
-            CreateMessageRequest, CreateMessageRequestBody,
-            ReplyMessageRequest, ReplyMessageRequestBody,
-        )
-
-        # Card JSON 2.0 with native markdown rendering (supports tables, colored text, etc.)
-        content = json.dumps({
-            "schema": "2.0",
-            "body": {
-                "elements": [
-                    {"tag": "markdown", "content": text}
-                ]
-            }
-        }, ensure_ascii=False)
-
-        for attempt in range(3):
-            try:
-                if reply_to:
-                    req = ReplyMessageRequest.builder() \
-                        .message_id(reply_to) \
-                        .request_body(
-                            ReplyMessageRequestBody.builder()
-                            .msg_type("interactive")
-                            .content(content)
-                            .build()
-                        ).build()
-                    resp = await asyncio.to_thread(
-                        self._client.im.v1.message.reply, req
-                    )
-                else:
-                    req = CreateMessageRequest.builder() \
-                        .receive_id_type("chat_id") \
-                        .request_body(
-                            CreateMessageRequestBody.builder()
-                            .receive_id(chat_id)
-                            .msg_type("interactive")
-                            .content(content)
-                            .build()
-                        ).build()
-                    resp = await asyncio.to_thread(
-                        self._client.im.v1.message.create, req
-                    )
-
-                if resp.success():
-                    mid = getattr(resp.data, "message_id", None) if resp.data else None
-                    return mid or ""
-                log.warning("Feishu send failed: code=%s msg=%s", resp.code, resp.msg)
-                if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
-            except Exception as e:
-                log.error("Feishu send error (attempt %d): %s", attempt + 1, e)
-                if attempt < 2:
-                    await asyncio.sleep(2 ** attempt)
-
-        return None
+        result = await self.send_card_return_id(chat_id, text, reply_to)
+        return result or ""
 
     async def _send_chunked(
         self, chat_id: str, text: str, reply_to: str | None = None,

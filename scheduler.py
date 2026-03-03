@@ -153,16 +153,16 @@ class CronScheduler:
         nearest = min(j.state.next_run_at for j in enabled)
         delay = max(0, min(nearest - time.time(), MAX_TIMER_DELAY))
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         self._timer = loop.call_later(delay, self._on_timer_fire)
 
     def _on_timer_fire(self):
         if self._running:
             # Re-check later (watchdog)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             self._timer = loop.call_later(MAX_TIMER_DELAY, self._on_timer_fire)
             return
-        self._task = asyncio.ensure_future(self._on_timer())
+        self._task = asyncio.create_task(self._on_timer())
 
     async def _on_timer(self):
         self._running = True
@@ -259,9 +259,8 @@ class CronScheduler:
             return base + s.every_seconds
 
         elif s.kind == "at" and s.at_time:
-            from datetime import datetime as dt
             try:
-                target = dt.fromisoformat(s.at_time).timestamp()
+                target = datetime.fromisoformat(s.at_time).timestamp()
                 return target if target > now else None
             except ValueError:
                 return None

@@ -145,11 +145,11 @@ class GeminiAPI:
             thinking_config=thinking_config,
         )
 
-        start = time.time()
+        start = time.monotonic()
         response = client.models.generate_content(
             model=model_id, config=config, contents=contents
         )
-        duration_ms = int((time.time() - start) * 1000)
+        duration_ms = int((time.monotonic() - start) * 1000)
 
         # Parse response
         text = response.text or ""

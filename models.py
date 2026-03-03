@@ -89,7 +89,7 @@ class SessionEntry:
 # ═══ Serialization ═══
 
 def to_dict(obj) -> dict:
-    """Convert dataclass to dict, filtering None values in nested structures."""
+    """Convert dataclass to dict."""
     return asdict(obj)
 
 

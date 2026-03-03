@@ -12,7 +12,7 @@ from pathlib import Path
 
 import requests
 
-log = logging.getLogger(__name__)
+log = logging.getLogger("hub.feishu_api")
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -81,6 +81,7 @@ class FeishuAPI:
     def get(self, path: str, params: dict | None = None) -> dict:
         r = requests.get(f"{self.domain}{path}",
                          headers=self._headers(), params=params, timeout=15)
+        r.raise_for_status()
         return r.json()
 
     def post(self, path: str, body: dict | None = None,
@@ -88,6 +89,7 @@ class FeishuAPI:
         r = requests.post(f"{self.domain}{path}",
                           headers=self._headers(), json=body, params=params,
                           timeout=15)
+        r.raise_for_status()
         return r.json()
 
     def patch(self, path: str, body: dict | None = None,
@@ -95,12 +97,21 @@ class FeishuAPI:
         r = requests.patch(f"{self.domain}{path}",
                            headers=self._headers(), json=body, params=params,
                            timeout=15)
+        r.raise_for_status()
         return r.json()
 
     def delete(self, path: str, params: dict | None = None) -> dict:
         r = requests.delete(f"{self.domain}{path}",
                             headers=self._headers(), params=params, timeout=15)
+        r.raise_for_status()
         return r.json()
+
+    def download(self, path: str, timeout: int = 30) -> requests.Response:
+        """Download raw bytes (images, files). Returns the Response object."""
+        r = requests.get(f"{self.domain}{path}",
+                         headers=self._headers(), timeout=timeout)
+        r.raise_for_status()
+        return r
 
 
 class ContactStore:
@@ -113,7 +124,7 @@ class ContactStore:
 
     def _load(self):
         if self.path.exists():
-            self._data = json.loads(self.path.read_text())
+            self._data = json.loads(self.path.read_text(encoding="utf-8"))
         else:
             self._data = {}
 

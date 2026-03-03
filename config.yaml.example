@@ -1,0 +1,68 @@
+# nas-claude-hub configuration template
+# Copy to config.yaml and fill in your credentials.
+
+feishu:
+  app_id: cli_your_app_id          # Feishu app ID (Bot capability required)
+  app_secret: your_app_secret_here  # Feishu app secret
+  domain: https://open.feishu.cn    # or https://open.larksuite.com for Lark
+  calendar:
+    enabled: false
+    calendar_id: ""                 # Feishu calendar ID for event management
+  docs:
+    enabled: false
+    default_folder: ""
+    share_to: []                    # List of open_ids to auto-share new docs
+  contacts:
+    store_path: data/contacts.json
+    auto_learn: true
+
+llm:
+  default:
+    provider: claude-cli            # claude-cli | gemini-api
+    model: sonnet                   # opus | sonnet (for claude-cli)
+  claude-cli:
+    path: claude                    # Path to Claude CLI binary
+    timeout_seconds: 600
+    workspace_dir: .                # Working directory for Claude CLI
+  gemini-cli:
+    path: gemini                    # Path to Gemini CLI binary (optional)
+    timeout_seconds: 300
+  gemini-api:
+    api_key: your_gemini_api_key    # Google AI Studio API key
+    timeout_seconds: 120
+    temperature: 1.0
+
+briefing:
+  model: 3-Flash
+  thinking: medium
+  review:
+    enabled: true
+    model: sonnet
+    timeout_seconds: 300
+
+scheduler:
+  enabled: true
+  store_path: data/jobs.json
+
+heartbeat:
+  enabled: true
+  interval_seconds: 1800
+  llm:
+    provider: gemini-api
+    model: 2.5-Flash-Lite
+  active_hours:
+    start: "08:00"
+    end: "23:59"
+    timezone: Asia/Shanghai
+
+logging:
+  level: INFO
+  file: data/nas-claude-hub.log
+
+# Optional: second Feishu app for notifications (alerts, briefings)
+# If omitted, the main feishu app is used for everything.
+notify:
+  app_id: cli_your_notify_app_id
+  app_secret: your_notify_secret
+  domain: https://open.feishu.cn
+  delivery_chat_id: ""              # Chat ID for notification delivery

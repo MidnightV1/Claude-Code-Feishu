@@ -6,7 +6,7 @@ import time
 import asyncio
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from models import LLMConfig, llm_config_from_dict
 from llm_router import LLMRouter
@@ -22,6 +22,11 @@ log = logging.getLogger("hub.feishu_bot")
 DEDUP_TTL = 86400       # 24h
 DEDUP_MAX_SIZE = 1000
 DEBOUNCE_SECONDS = 3    # debounce window for multi-part messages
+
+# Admin allowlist: only these open_ids can execute destructive commands (#restart)
+ADMIN_OPEN_IDS: set[str] = {
+    "ADMIN_OPEN_ID",  # John
+}
 
 # ═══ Feishu Channel System Prompt ═══
 # Injected via --append-system-prompt for all Feishu-originated Claude CLI calls.
@@ -184,19 +189,7 @@ class FeishuBot:
 
     async def _fetch_bot_open_id(self):
         try:
-            import requests
-            r = requests.post(
-                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-                json={"app_id": self.app_id, "app_secret": self.app_secret},
-                timeout=10,
-            )
-            token = r.json().get("tenant_access_token", "")
-            r2 = requests.get(
-                "https://open.feishu.cn/open-apis/bot/v3/info",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=10,
-            )
-            data = r2.json()
+            data = self._feishu_api.get("/open-apis/bot/v3/info")
             if data.get("code") == 0:
                 self._bot_open_id = data["bot"]["open_id"]
                 log.info("Bot open_id fetched: %s", self._bot_open_id)
@@ -495,15 +488,7 @@ class FeishuBot:
                 file_context = self.file_store.get_context_prompt(session_key)
                 if file_context:
                     parts.append(file_context)
-                llm_config = LLMConfig(
-                    provider=llm_config.provider,
-                    model=llm_config.model,
-                    timeout_seconds=llm_config.timeout_seconds,
-                    system_prompt="\n\n".join(parts),
-                    temperature=llm_config.temperature,
-                    thinking=llm_config.thinking,
-                    effort=llm_config.effort,
-                )
+                llm_config = replace(llm_config, system_prompt="\n\n".join(parts))
 
             # ── Progress: tool activity callback + idle pulse ──
             _last_activity = [time.monotonic()]  # tracks last real tool event
@@ -618,9 +603,16 @@ class FeishuBot:
                     self._cache_reply(reply_mid, reply_text)
         except Exception as e:
             log.error("Batch processing error: %s", e, exc_info=True)
-            # Clean up thinking card on error
+            # Clean up thinking card and notify user
             if thinking_msg_id:
                 await self.dispatcher.delete_message(thinking_msg_id)
+            try:
+                await self.dispatcher.send_text(
+                    batch.chat_id, "处理出错，请重试。",
+                    reply_to=batch.first_message_id,
+                )
+            except Exception:
+                pass
         finally:
             # Keep _msg_to_key entries for recall-after-completion support.
             # Evict oldest if too many (dict is insertion-ordered).
@@ -678,6 +670,8 @@ class FeishuBot:
         elif cmd == "#jobs":
             return self._cmd_jobs()
         elif cmd == "#restart":
+            if sender_id not in ADMIN_OPEN_IDS:
+                return "权限不足，仅管理员可执行 #restart"
             asyncio.create_task(self._do_server_restart())
             return "服务将在 3 秒后重启..."
         elif cmd == "#opus":
@@ -893,29 +887,11 @@ class FeishuBot:
         self, message_id: str, image_key: str,
     ) -> str | None:
         """Download image from Feishu, compress to webp (max 1024px). Returns temp path."""
-        import requests
         from io import BytesIO
         try:
-            r = requests.post(
-                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-                json={"app_id": self.app_id, "app_secret": self.app_secret},
-                timeout=10,
+            resp = self._feishu_api.download(
+                f"/open-apis/im/v1/messages/{message_id}/resources/{image_key}?type=image"
             )
-            token = r.json().get("tenant_access_token", "")
-            if not token:
-                log.error("Image download: failed to get access token")
-                return None
-
-            url = (
-                f"https://open.feishu.cn/open-apis/im/v1/messages"
-                f"/{message_id}/resources/{image_key}?type=image"
-            )
-            resp = requests.get(
-                url, headers={"Authorization": f"Bearer {token}"}, timeout=30
-            )
-            if resp.status_code != 200:
-                log.error("Image download failed: status=%d", resp.status_code)
-                return None
 
             from PIL import Image
             img = Image.open(BytesIO(resp.content))
@@ -1049,31 +1025,15 @@ class FeishuBot:
         self, message_id: str, file_key: str, file_name: str,
     ) -> str | None:
         """Download file from Feishu API. Returns temp file path."""
-        import requests
         try:
-            r = requests.post(
-                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
-                json={"app_id": self.app_id, "app_secret": self.app_secret},
-                timeout=10,
+            resp = self._feishu_api.download(
+                f"/open-apis/im/v1/messages/{message_id}/resources/{file_key}?type=file",
+                timeout=60,
             )
-            token = r.json().get("tenant_access_token", "")
-            if not token:
-                log.error("File download: failed to get access token")
-                return None
 
-            url = (
-                f"https://open.feishu.cn/open-apis/im/v1/messages"
-                f"/{message_id}/resources/{file_key}?type=file"
-            )
-            resp = requests.get(
-                url, headers={"Authorization": f"Bearer {token}"}, timeout=60
-            )
-            if resp.status_code != 200:
-                log.error("File download failed: status=%d", resp.status_code)
-                return None
-
+            safe_name = os.path.basename(file_name)  # prevent path traversal
             tmp_path = os.path.expanduser(
-                f"~/tmp/feishu_file_{file_key[:16]}_{file_name}"
+                f"~/tmp/feishu_file_{file_key[:16]}_{safe_name}"
             )
             os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
             with open(tmp_path, "wb") as f:
