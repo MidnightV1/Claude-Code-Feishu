@@ -1,3 +1,23 @@
+<!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
+## First-Time Setup
+
+> **Agent**: On first load, walk the user through these items. Once all confirmed, delete from `ONBOARDING:START` to `ONBOARDING:END`.
+
+### Prerequisites
+
+- [ ] Hub service is running with `task_runner` enabled (enabled by default)
+- [ ] `data/` directory is writable (for `task_requests/` and `tasks.json`)
+- [ ] Feishu messaging works (progress cards are sent via dispatcher)
+
+### Verify
+
+```bash
+python3 .claude/skills/long-task/scripts/task_ctl.py list
+```
+
+No additional user configuration needed — this skill is built into the hub and works out of the box once the core service is running.
+<!-- ONBOARDING:END -->
+
 # Long Task — 可观测的长程任务执行
 
 ## 什么时候使用

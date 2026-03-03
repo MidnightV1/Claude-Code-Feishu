@@ -3,6 +3,40 @@ name: feishu-doc
 description: Create, read, edit, comment on, and analyze Feishu documents. Use when the user wants to create a document, write up discussion results, read a Feishu doc link, save content to a Feishu document, review/reply to document comments, or analyze document annotations.
 ---
 
+<!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
+## First-Time Setup
+
+> **Agent**: On first load, walk the user through these items. Once all confirmed, delete from `ONBOARDING:START` to `ONBOARDING:END`.
+
+### Prerequisites
+
+- [ ] **Feishu app permissions**: `docx:document` (read/write docs), `drive:drive` (list/manage files)
+- [ ] **`feishu.docs.enabled: true`** in `config.yaml`
+- [ ] **Shared folders** (for list/search): User shares one or more folders with the bot app, then adds them to `config.yaml`:
+  ```yaml
+  feishu:
+    docs:
+      shared_folders:
+        - name: Work Documents
+          token: fldcnXXXXXXXX
+  ```
+- [ ] **Default folder** (optional, for creating docs): `feishu.docs.default_folder` in `config.yaml`
+- [ ] **Auto-share** (optional): `feishu.docs.share_to` list of open_ids to auto-share created docs
+
+### How to get folder tokens
+
+User opens a folder in Feishu Drive → the URL contains the folder token:
+`https://xxx.feishu.cn/drive/folder/fldcnXXXXXXXX` → token is `fldcnXXXXXXXX`
+
+### Verify
+
+```bash
+python3 .claude/skills/feishu-doc/scripts/doc_ctl.py list
+```
+
+Ask the user: "Do you have document folders to share with the bot? I need the folder tokens to browse and search your documents."
+<!-- ONBOARDING:END -->
+
 # Feishu Documents
 
 Create, manage, and collaborate on Feishu documents (new docx format).
@@ -28,8 +62,13 @@ python3 .claude/skills/feishu-doc/scripts/doc_ctl.py read "https://xxx.feishu.cn
 # Append content to existing document
 python3 .claude/skills/feishu-doc/scripts/doc_ctl.py append <doc_id> "新增内容"
 
-# List recent documents
+# List documents in all shared folders (or a specific folder)
 python3 .claude/skills/feishu-doc/scripts/doc_ctl.py list
+python3 .claude/skills/feishu-doc/scripts/doc_ctl.py list --folder fldcnXXXXXXXX
+
+# Search documents by keyword (matches file name)
+python3 .claude/skills/feishu-doc/scripts/doc_ctl.py search "预算"
+python3 .claude/skills/feishu-doc/scripts/doc_ctl.py search "项目" --folder fldcnXXXXXXXX
 
 # List all comments on a document (with replies)
 python3 .claude/skills/feishu-doc/scripts/doc_ctl.py comments <doc_id_or_url>
@@ -103,3 +142,22 @@ Default: only unresolved comments. Use `--all` for full history.
 - The `read` command accepts both raw document IDs and full Feishu URLs.
 - Created documents return a clickable Feishu URL.
 - Comment commands default to `--file-type docx`. Use `--file-type sheet` for spreadsheets etc.
+
+## Document Discovery
+
+The `list` and `search` commands operate on **shared folders** — folders that have been explicitly shared with the bot app.
+
+Configure in `config.yaml`:
+```yaml
+feishu:
+  docs:
+    shared_folders:
+      - name: 工作文档
+        token: fldcnXXXXXXXX
+      - name: 项目资料
+        token: fldcnYYYYYYYY
+```
+
+Without `--folder`, both commands scan all `shared_folders`. Search matches file names (case-insensitive).
+
+**Limitation**: Server-side search API requires user OAuth token (not implemented). Current search does client-side keyword filtering within accessible folders.

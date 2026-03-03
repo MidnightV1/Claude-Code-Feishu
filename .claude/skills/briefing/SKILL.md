@@ -3,6 +3,40 @@ name: briefing
 description: Manage daily briefing pipelines — run briefings, check status, list domains, trigger keyword evolution. Use when the user asks about daily briefings, briefing status, adding domains, or keyword management.
 ---
 
+<!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
+## First-Time Setup
+
+> **Agent**: On first load, walk the user through these items. Once all confirmed, delete from `ONBOARDING:START` to `ONBOARDING:END`.
+
+### Prerequisites
+
+- [ ] **Gemini API key** in `config.yaml` → `gemini-api.api_key` (used for collection and generation)
+- [ ] **Claude CLI** available (used for review step)
+- [ ] **Brave Search MCP** configured (used for web collection)
+- [ ] **At least one domain** created under `~/briefing/domains/<name>/` with:
+  - `domain.yaml` — models, distribution, keyword_evolution config
+  - `sources.yaml` — keywords and source definitions
+  - `prompts/generate.md` and `prompts/review.md`
+- [ ] **Email config** (optional): `~/briefing/config/email.json` with SMTP credentials for email delivery
+- [ ] **Feishu delivery** (optional): `distribution.feishu.chat_id` in `domain.yaml` for IM delivery
+- [ ] **Cron job registered**: use hub-ops skill to add `briefing` or `briefing:<domain>` handler
+
+### Quick Start
+
+```bash
+# Check existing domains
+python3 scripts/briefing_run.py domains
+
+# Test a pipeline run
+python3 scripts/briefing_run.py run --domain <name>
+
+# Check run status
+python3 scripts/briefing_run.py status --domain <name>
+```
+
+Ask the user: "Which topics/domains do you want daily briefings on? I'll help set up the pipeline."
+<!-- ONBOARDING:END -->
+
 # Briefing Pipeline
 
 Multi-domain daily briefing system: collect → generate → review → email → keyword evolution.

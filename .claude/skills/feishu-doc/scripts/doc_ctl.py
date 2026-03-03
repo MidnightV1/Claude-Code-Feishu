@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Feishu Document CLI — create, read, write, comment, analyze documents.
+"""Feishu Document CLI — create, read, write, list, search, comment, analyze documents.
 
 Usage:
     doc_ctl.py create "title" [--content "text"] [--folder TOKEN] [--share OPEN_ID]
     doc_ctl.py read <doc_id_or_url>
     doc_ctl.py append <doc_id> "content"
     doc_ctl.py list [--folder TOKEN]
+    doc_ctl.py search "keyword" [--folder TOKEN]
     doc_ctl.py comments <doc_id_or_url>
     doc_ctl.py reply <doc_id_or_url> <comment_id> "reply text"
     doc_ctl.py analyze <doc_id_or_url> [--all] [--context-chars N]
@@ -366,37 +367,109 @@ def _anchor_quote(doc_content: str, quote: str, ctx_chars: int) -> dict:
     }
 
 
+def _list_folder(api, folder_token: str) -> list[dict]:
+    """List all files in a folder with pagination."""
+    files = []
+    page_token = None
+    while True:
+        params = {"folder_token": folder_token, "page_size": "50",
+                  "order_by": "EditedTime", "direction": "DESC"}
+        if page_token:
+            params["page_token"] = page_token
+        resp = api.get("/open-apis/drive/v1/files", params=params)
+        if resp.get("code") != 0:
+            print(f"ERROR listing folder {folder_token}: {resp.get('msg')}",
+                  file=sys.stderr)
+            break
+        files.extend(resp.get("data", {}).get("files", []))
+        if not resp.get("data", {}).get("has_more"):
+            break
+        page_token = resp["data"].get("page_token")
+    return files
+
+
+def _get_folders(args, cfg) -> list[tuple[str, str]]:
+    """Get target folders: --folder flag > shared_folders config > default_folder."""
+    if getattr(args, "folder", None):
+        return [("", args.folder)]
+    docs_cfg = cfg.get("feishu", {}).get("docs", {})
+    shared = docs_cfg.get("shared_folders", [])
+    if shared:
+        return [(f.get("name", ""), f["token"]) for f in shared if f.get("token")]
+    default = docs_cfg.get("default_folder", "")
+    if default:
+        return [("", default)]
+    return []
+
+
+def _format_time(ts) -> str:
+    """Format a Unix timestamp (str or int) to MM-DD HH:MM."""
+    from datetime import datetime
+    try:
+        return datetime.fromtimestamp(int(ts)).strftime("%m-%d %H:%M")
+    except (ValueError, TypeError, OSError):
+        return ""
+
+
+def _print_files(files: list[dict], folder_name: str = "", folder_token: str = ""):
+    """Print file list in human-readable format."""
+    if folder_name or folder_token:
+        label = folder_name or folder_token
+        print(f"\n📁 {label}")
+    if not files:
+        print("  (empty)")
+        return
+    for f in files:
+        ftype = f.get("type", "?")
+        name = f.get("name", "?")
+        mtime = _format_time(f.get("modified_time", ""))
+        url = f.get("url", "")
+        time_col = f"  {mtime}" if mtime else ""
+        url_col = f"  {url}" if url else ""
+        print(f"  {ftype:<7} {name}{time_col}{url_col}")
+
+
 def cmd_list(args, api, cfg):
-    folder = args.folder
-    if not folder:
-        folder = cfg.get("feishu", {}).get("docs", {}).get("default_folder", "")
-
-    # List files in folder (or root space)
-    if folder:
-        resp = api.get(
-            "/open-apis/drive/v1/files",
-            params={"folder_token": folder, "page_size": "20"},
-        )
-    else:
-        # List from app's root folder
-        resp = api.get(
-            "/open-apis/drive/v1/files",
-            params={"page_size": "20"},
-        )
-
-    if resp.get("code") != 0:
-        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+    folders = _get_folders(args, cfg)
+    if not folders:
+        print("No folders configured. Set feishu.docs.shared_folders in config.yaml "
+              "or use --folder <token>.", file=sys.stderr)
         sys.exit(1)
 
-    files = resp.get("data", {}).get("files", [])
-    if not files:
-        print("No documents found.")
+    for name, token in folders:
+        files = _list_folder(api, token)
+        _print_files(files, name, token)
+
+
+def cmd_search(args, api, cfg):
+    """Search files by keyword in name across all configured folders."""
+    keyword = args.keyword.lower()
+    folders = _get_folders(args, cfg)
+    if not folders:
+        print("No folders configured. Set feishu.docs.shared_folders in config.yaml "
+              "or use --folder <token>.", file=sys.stderr)
+        sys.exit(1)
+
+    matches = []
+    for name, token in folders:
+        for f in _list_folder(api, token):
+            if keyword in f.get("name", "").lower():
+                matches.append((name, f))
+
+    if not matches:
+        print(f'No documents matching "{args.keyword}" found.')
         return
 
-    print(f"{'Type':<8} {'Token':<32} Name")
-    print("-" * 70)
-    for f in files:
-        print(f"{f.get('type', '?'):<8} {f.get('token', '?'):<32} {f.get('name', '?')}")
+    print(f'Found {len(matches)} document(s) matching "{args.keyword}":')
+    for folder_name, f in matches:
+        ftype = f.get("type", "?")
+        name = f.get("name", "?")
+        mtime = _format_time(f.get("modified_time", ""))
+        url = f.get("url", "")
+        prefix = f"[{folder_name}] " if folder_name else ""
+        time_col = f"  {mtime}" if mtime else ""
+        url_col = f"  {url}" if url else ""
+        print(f"  {prefix}{ftype:<7} {name}{time_col}{url_col}")
 
 
 # ── CLI ──────────────────────────────────────────────────
@@ -420,6 +493,10 @@ def main():
 
     ls = sub.add_parser("list")
     ls.add_argument("--folder", help="Folder token")
+
+    sr = sub.add_parser("search")
+    sr.add_argument("keyword", help="Search keyword (matches file name)")
+    sr.add_argument("--folder", help="Limit search to a specific folder token")
 
     cm = sub.add_parser("comments")
     cm.add_argument("doc_id", help="Document ID or URL")
@@ -455,6 +532,7 @@ def main():
         "read": cmd_read,
         "append": cmd_append,
         "list": cmd_list,
+        "search": cmd_search,
         "comments": cmd_comments,
         "reply": cmd_reply,
         "analyze": cmd_analyze,

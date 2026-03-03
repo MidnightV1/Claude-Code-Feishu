@@ -3,6 +3,26 @@ name: hub-ops
 description: Manage nas-claude-hub service operations — cron jobs, scheduler reload, service status. Use when the user asks about scheduled tasks, periodic jobs, adding/removing/enabling cron jobs, checking service status, or reloading configuration.
 ---
 
+<!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
+## First-Time Setup
+
+> **Agent**: On first load, walk the user through these items. Once all confirmed, delete from `ONBOARDING:START` to `ONBOARDING:END`.
+
+### Prerequisites
+
+- [ ] `config.yaml` exists (copy from `config.yaml.example`) with Feishu app credentials filled in
+- [ ] Hub service is running (`./hub.sh start`)
+- [ ] `data/` directory exists and is writable (auto-created on first start)
+
+### Verify
+
+```bash
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py status
+```
+
+If status shows "running", you're good. If not, ask the user to run `./hub.sh start`.
+<!-- ONBOARDING:END -->
+
 # Hub Operations
 
 You are running inside nas-claude-hub as a Claude CLI subprocess. Use the `hub_ctl.py` script to manage hub operations. **Never run `hub.sh restart` or `hub.sh stop` directly** — that would kill your own parent process.

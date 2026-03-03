@@ -3,6 +3,37 @@ name: feishu-cal
 description: Manage Feishu calendar events — create, list, update, delete events, invite attendees, manage contacts. Use when the user mentions meetings, schedule, calendar, events, appointments, or asks to block time / invite people.
 ---
 
+<!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
+## First-Time Setup
+
+> **Agent**: On first load, walk the user through these items. Once all confirmed, delete from `ONBOARDING:START` to `ONBOARDING:END`.
+
+### Prerequisites
+
+- [ ] **Feishu app permissions**: `calendar:calendar` (read/write calendar events)
+- [ ] **Shared calendar**: User creates a calendar in Feishu and shares it with the bot app (editor access)
+- [ ] **Calendar ID** in `config.yaml` → `feishu.calendar.calendar_id`
+- [ ] **`feishu.calendar.enabled: true`** in `config.yaml`
+- [ ] **Contacts store** initialized: either manually add contacts or run `contact sync` to learn from existing events
+
+### How to get the Calendar ID
+
+1. User opens Feishu Calendar → Settings → find the shared calendar
+2. Calendar ID is in the URL or can be obtained via API:
+   ```bash
+   python3 .claude/skills/feishu-cal/scripts/cal_ctl.py calendar list
+   ```
+3. Copy the calendar_id to `config.yaml`
+
+### Verify
+
+```bash
+python3 .claude/skills/feishu-cal/scripts/cal_ctl.py event list
+```
+
+Ask the user: "Do you have a shared calendar set up for the bot? I need the calendar ID to manage your events."
+<!-- ONBOARDING:END -->
+
 # Feishu Calendar
 
 Manage the user's Feishu calendar via the shared calendar "📅 小谁的工作日历".
