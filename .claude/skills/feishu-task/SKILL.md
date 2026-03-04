@@ -10,28 +10,35 @@ description: Manage Feishu tasks — create, list, update, complete, delete task
 
 ### Prerequisites
 
-- [ ] **Feishu app permissions**: `task:task:read`, `task:task:write`
-- [ ] **Create a dedicated tasklist** (bot manages all tasks through this list):
-  ```bash
-  python3 .claude/skills/feishu-task/scripts/task_ctl.py tasklist create "Hub Tasks"
-  ```
-- [ ] **Copy returned GUID** to `config.yaml`:
-  ```yaml
-  feishu:
-    tasks:
-      tasklist_guid: "<guid from above>"
-  ```
-- [ ] **Enable heartbeat integration** (optional):
-  ```yaml
-  heartbeat:
-    tasks:
-      enabled: true
-      alert_window_hours: 2
-  ```
+- [ ] **Feishu app permissions**: `task:task:read`, `task:task:write`, `task:tasklist:read`, `task:tasklist:write`
 
-### Why a dedicated tasklist?
+### Setup Steps
 
-The global task list API requires user OAuth token (not available to the bot). By using a dedicated tasklist, the bot can list, monitor, and manage tasks with its app-level token. All tasks created by the bot are automatically added to this list.
+1. **Create a shared tasklist** (bot manages all tasks through this list):
+   ```bash
+   python3 .claude/skills/feishu-task/scripts/task_ctl.py tasklist create "Hub Tasks"
+   ```
+2. **Copy returned GUID** to `config.yaml`:
+   ```yaml
+   feishu:
+     tasks:
+       tasklist_guid: "<guid from above>"
+   ```
+3. **Add the user as tasklist member** (so they can see tasks/sections in Feishu client):
+   ```bash
+   python3 .claude/skills/feishu-task/scripts/task_ctl.py tasklist add-member "用户名" --role editor
+   ```
+4. **Enable heartbeat integration** (optional):
+   ```yaml
+   heartbeat:
+     tasks:
+       enabled: true
+       alert_window_hours: 2
+   ```
+
+### Why a shared tasklist?
+
+The global task list API requires user OAuth token (not available to the bot). By using a dedicated tasklist, the bot can list, monitor, and manage tasks with its app-level token. Adding the user as editor ensures they can view and manage tasks directly in the Feishu client, including sections (groups) and task details.
 
 ### Verify
 
@@ -39,7 +46,7 @@ The global task list API requires user OAuth token (not available to the bot). B
 python3 .claude/skills/feishu-task/scripts/task_ctl.py tasklist list
 ```
 
-Ask the user: "I need to set up task management. Can you add `task:task:read` and `task:task:write` permissions to the Feishu app?"
+Ask the user: "I need to set up task management. Can you add `task:task:read/write` and `task:tasklist:read/write` permissions to the Feishu app?"
 <!-- ONBOARDING:END -->
 
 # Feishu Tasks
@@ -93,6 +100,8 @@ task_ctl.py create "紧急修复" --section "紧急" --due "+2h"
 # Tasklist management
 task_ctl.py tasklist create "My List"
 task_ctl.py tasklist list
+task_ctl.py tasklist add-member "张三,李四" --role editor
+task_ctl.py tasklist remove-member "张三"
 
 # Task snapshot (used by heartbeat)
 task_ctl.py snapshot
@@ -111,18 +120,19 @@ The `--due` parameter accepts flexible time formats:
 
 The heartbeat uses a two-layer architecture driven entirely by the task snapshot:
 
-1. **Triage (Haiku)**: Reads snapshot, judges OK vs anomaly
-2. **Action (Sonnet)**: Only triggered on anomaly — has full tool access to update tasks, create follow-ups, compose notifications
+1. **Triage (Sonnet)**: Reads snapshot, judges OK vs anomaly with quantified rules
+2. **Action (Sonnet)**: Only triggered on anomaly — has full tool access to update tasks, create follow-ups, compose natural-tone DM notifications
 
 Config:
 ```yaml
 heartbeat:
   triage:
     provider: claude-cli
-    model: haiku
+    model: sonnet
   action:
     provider: claude-cli
     model: sonnet
+  notify_open_id: ou_xxx  # DM target
   alert_window_hours: 2  # alert for tasks due within N hours
 ```
 
@@ -145,3 +155,4 @@ Snapshot output includes current time, assignee info, and open tasks without due
 - Task timestamps use milliseconds (Feishu Task v2 API format). Time parsing handles this automatically.
 - `snapshot` exits silently (no output) if no open tasks, keeping heartbeat noise-free.
 - The bot uses `tenant_access_token`, so the global task list API is unavailable. All queries go through the dedicated tasklist endpoint.
+- The tasklist is created by the bot (owner=app). Users must be added as members (`tasklist add-member`) to see tasks and sections in their Feishu client.

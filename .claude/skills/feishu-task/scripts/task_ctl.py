@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Feishu Task CLI — create, list, update, complete, delete tasks.
+"""Feishu Task CLI — CRUD tasks, sections, and tasklists via Feishu Task v2 API.
 
 Usage:
     task_ctl.py create "title" [--assignee "a,b"] [--due "time"] [--desc "..."] [--section "name"]
@@ -7,12 +7,17 @@ Usage:
     task_ctl.py get <task_guid>
     task_ctl.py update <task_guid> [--title T] [--due D] [--desc D]
     task_ctl.py complete <task_guid>
+    task_ctl.py assign <task_guid> "a,b"
+    task_ctl.py unassign <task_guid> "a,b"
     task_ctl.py delete <task_guid>
-    task_ctl.py tasklist create "name"
-    task_ctl.py tasklist list
+    task_ctl.py move <task_guid> "section_name"
     task_ctl.py section create "name"
     task_ctl.py section list
     task_ctl.py section delete <section_guid>
+    task_ctl.py tasklist create "name"
+    task_ctl.py tasklist list
+    task_ctl.py tasklist add-member "a,b" [--role editor|viewer]
+    task_ctl.py tasklist remove-member "a,b"
     task_ctl.py snapshot [--window-hours N]
 """
 
@@ -54,7 +59,9 @@ def _parse_dt(s: str) -> int:
         elif unit == "m":
             dt = now + timedelta(minutes=val)
         else:
-            dt = now + timedelta(minutes=val)
+            print(f"ERROR: Unknown time unit '{unit}', use 'h' or 'm'",
+                  file=sys.stderr)
+            sys.exit(1)
         return int(dt.timestamp())
 
     # "tomorrow HH:MM"
@@ -191,6 +198,23 @@ def _format_relative(ms: int) -> str:
     return f"{days}d"
 
 
+def _get_assignees(api: FeishuAPI, task_guid: str,
+                    contacts: ContactStore) -> str:
+    """Fetch task details and return assignee names string."""
+    try:
+        full = _fetch_task(api, task_guid)
+    except Exception:
+        return "未知"
+    if not full:
+        return "未知"
+    names = []
+    for m in full.get("members", []):
+        if m.get("role") == "assignee":
+            name = contacts.lookup_name(m.get("id", "")) or m.get("id", "?")[:8]
+            names.append(name)
+    return ", ".join(names) if names else "未指派"
+
+
 # ── Commands ─────────────────────────────────────────────
 
 def cmd_create(args, api, cfg, contacts):
@@ -271,7 +295,7 @@ def cmd_list(args, api, cfg, contacts):
         parts = [f"{icon} {summary}"]
         if t.get("due") and t["due"].get("timestamp"):
             parts.append(f"due: {_ms_to_str(t['due']['timestamp'])}")
-        parts.append(f"({guid[:8]})")
+        parts.append(f"({guid})")
         print("  ".join(parts))
 
 
@@ -355,7 +379,6 @@ def cmd_assign(args, api, cfg, contacts):
     if resp.get("code") != 0:
         print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
         sys.exit(1)
-    names = [m.get("id", "?")[:8] for m in members]
     print(f"Assigned {', '.join(args.names.split(','))} to {args.task_guid[:8]}")
 
 
@@ -453,10 +476,49 @@ def cmd_tasklist_create(args, api, cfg, contacts):
     print(f"  Add to config.yaml -> feishu.tasks.tasklist_guid: {tl['guid']}")
 
 
+def cmd_tasklist_add_member(args, api, cfg, contacts):
+    tasklist_guid = _get_tasklist_guid(cfg)
+    members = _resolve_members(args.names, contacts)
+    if not members:
+        print("ERROR: no valid contacts resolved", file=sys.stderr)
+        sys.exit(1)
+    # Override role to the specified one (default: editor)
+    for m in members:
+        m["role"] = args.role
+    resp = api.post(
+        f"/open-apis/task/v2/tasklists/{tasklist_guid}/add_members",
+        {"members": members},
+        params={"user_id_type": "open_id"},
+    )
+    if resp.get("code") != 0:
+        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+        sys.exit(1)
+    names_str = ", ".join(args.names.split(","))
+    print(f"Added {names_str} as {args.role} to tasklist {tasklist_guid[:8]}")
+
+
+def cmd_tasklist_remove_member(args, api, cfg, contacts):
+    tasklist_guid = _get_tasklist_guid(cfg)
+    members = _resolve_members(args.names, contacts)
+    if not members:
+        print("ERROR: no valid contacts resolved", file=sys.stderr)
+        sys.exit(1)
+    resp = api.post(
+        f"/open-apis/task/v2/tasklists/{tasklist_guid}/remove_members",
+        {"members": members},
+        params={"user_id_type": "open_id"},
+    )
+    if resp.get("code") != 0:
+        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+        sys.exit(1)
+    names_str = ", ".join(args.names.split(","))
+    print(f"Removed {names_str} from tasklist {tasklist_guid[:8]}")
+
+
 def cmd_tasklist_list(args, api, cfg, contacts):
     items = []
     page_token = None
-    while True:
+    for _ in range(10):
         params = {"page_size": "50"}
         if page_token:
             params["page_token"] = page_token
@@ -477,23 +539,6 @@ def cmd_tasklist_list(args, api, cfg, contacts):
     print("-" * 70)
     for tl in items:
         print(f"{tl.get('guid', '?'):<40} {tl.get('name', '?')}")
-
-
-def _get_assignees(api: FeishuAPI, task_guid: str,
-                    contacts: ContactStore) -> str:
-    """Fetch task details and return assignee names string."""
-    try:
-        full = _fetch_task(api, task_guid)
-    except Exception:
-        return "未知"
-    if not full:
-        return "未知"
-    names = []
-    for m in full.get("members", []):
-        if m.get("role") == "assignee":
-            name = contacts.lookup_name(m.get("id", "")) or m.get("id", "?")[:8]
-            names.append(name)
-    return ", ".join(names) if names else "未指派"
 
 
 def cmd_snapshot(args, api, cfg, contacts):
@@ -637,6 +682,13 @@ def main():
     tl_cr = tl_sub.add_parser("create")
     tl_cr.add_argument("name")
     tl_sub.add_parser("list")
+    tl_am = tl_sub.add_parser("add-member")
+    tl_am.add_argument("names", help="Comma-separated member names")
+    tl_am.add_argument("--role", default="editor",
+                       choices=["editor", "viewer"],
+                       help="Member role (default: editor)")
+    tl_rm = tl_sub.add_parser("remove-member")
+    tl_rm.add_argument("names", help="Comma-separated member names")
 
     args = parser.parse_args()
     if not args.group:
@@ -665,6 +717,8 @@ def main():
         ("section", "delete"): cmd_section_delete,
         ("tasklist", "create"): cmd_tasklist_create,
         ("tasklist", "list"): cmd_tasklist_list,
+        ("tasklist", "add-member"): cmd_tasklist_add_member,
+        ("tasklist", "remove-member"): cmd_tasklist_remove_member,
     }
 
     action = getattr(args, "action", None)
