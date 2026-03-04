@@ -60,6 +60,10 @@ class ClaudeCli:
     def __init__(self, config: dict):
         self.path = os.path.expanduser(config.get("path", "claude"))
         self.default_timeout = config.get("timeout_seconds", 600)
+        # Idle timeout: kill only when no stream output for this long
+        self.idle_timeout = config.get("idle_timeout_seconds", 120)
+        # Hard cap: absolute maximum regardless of activity
+        self.max_timeout = config.get("max_timeout_seconds", 1800)
         self.workspace_dir = os.path.expanduser(
             config.get("workspace_dir", ".")
         )
@@ -101,7 +105,14 @@ class ClaudeCli:
         on_activity: Callable[[str], Awaitable[None]] | None = None,
         on_todo: Callable[[list[dict]], Awaitable[None]] | None = None,
     ) -> LLMResult:
-        timeout = timeout_seconds or self.default_timeout
+        # Timeout strategy:
+        # - Explicit timeout_seconds (heartbeat, compression) → absolute timeout (old behavior)
+        # - No explicit timeout (chat) → idle-based: kill if no output for idle_timeout,
+        #   hard cap at max_timeout
+        use_idle_timeout = timeout_seconds is None
+        idle_timeout = self.idle_timeout if use_idle_timeout else (timeout_seconds or self.default_timeout)
+        hard_cap = self.max_timeout if use_idle_timeout else (timeout_seconds or self.default_timeout)
+
         args = [
             self.path, "-p",
             "--output-format", "stream-json",
@@ -152,9 +163,23 @@ class ClaudeCli:
             new_session_id = None
             cost = 0.0
 
+            hard_deadline = time.monotonic() + hard_cap
+
             async def _read_stream():
                 nonlocal text, new_session_id, cost
-                async for raw_line in proc.stdout:
+                while True:
+                    remaining = hard_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError()
+                    try:
+                        raw_line = await asyncio.wait_for(
+                            proc.stdout.readline(),
+                            timeout=min(idle_timeout, remaining),
+                        )
+                    except asyncio.TimeoutError:
+                        raise  # idle or hard cap exceeded
+                    if not raw_line:
+                        break  # EOF
                     line = raw_line.decode("utf-8", errors="replace").strip()
                     if not line:
                         continue
@@ -194,7 +219,7 @@ class ClaudeCli:
 
                 await proc.wait()
 
-            await asyncio.wait_for(_read_stream(), timeout=timeout)
+            await _read_stream()
             duration = int((time.monotonic() - start) * 1000)
 
             # Collect stderr
@@ -202,14 +227,19 @@ class ClaudeCli:
 
         except asyncio.TimeoutError:
             duration = int((time.monotonic() - start) * 1000)
+            elapsed = int(duration / 1000)
             proc.terminate()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5)
             except asyncio.TimeoutError:
                 proc.kill()
-            log.warning("Claude CLI timed out after %ds", timeout)
+            if elapsed >= self.max_timeout - 5:
+                reason = f"hard cap {self.max_timeout}s"
+            else:
+                reason = f"idle {idle_timeout}s"
+            log.warning("Claude CLI timed out (%s, elapsed %ds)", reason, elapsed)
             return LLMResult(
-                text=f"[Timeout after {timeout}s]",
+                text=f"[Timeout: {reason}, elapsed {elapsed}s]",
                 duration_ms=duration, is_error=True,
             )
         except asyncio.CancelledError:

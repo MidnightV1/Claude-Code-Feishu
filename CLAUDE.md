@@ -47,6 +47,13 @@
 | `HISTORY_TRUNCATE` | 2000 字 | 单条消息截断长度 |
 | `SUMMARY_THRESHOLD` | 4 轮 | 超过此阈值触发摘要压缩 |
 
+CLI 超时策略（`claude_cli.py`）：
+
+| 场景 | 超时方式 | 默认值 |
+|------|----------|--------|
+| 聊天（无显式 timeout） | **空闲超时**：连续无 stream 输出才断开 | idle=120s, hard cap=1800s |
+| 心跳/压缩（显式 timeout） | **绝对超时**：到时间直接断开 | 由调用方指定 |
+
 上下文策略特点：
 - **无 TTL 限制** — 永远尝试 `--resume`，让 CLI 自行判断 session 可用性
 - **Retry 在 router 层** — resume 失败后带上下文重试，claude_cli 只做执行
@@ -69,6 +76,7 @@
 | `feishu-cal` | `.claude/skills/feishu-cal/` | 日历日程 CRUD、参会人管理、联系人 |
 | `feishu-doc` | `.claude/skills/feishu-doc/` | 文档 CRUD、搜索、评论分析、所有权转移 |
 | `feishu-task` | `.claude/skills/feishu-task/` | 任务 CRUD、截止日期管理、心跳联动 |
+| `feishu-wiki` | `.claude/skills/feishu-wiki/` | 知识库空间浏览、页面 CRUD、内容读写 |
 
 参考：https://code.claude.com/docs/en/skills
 
@@ -120,7 +128,7 @@
 
 `gemini-cli` 接口已预留，因 tree-sitter 编译问题on the server暂不可用。
 
-心跳使用两层 Claude 模型：Haiku（triage）→ Sonnet（action，仅异常时触发）。
+心跳两层架构：Sonnet（triage，无工具）→ Sonnet（action，有工具，仅异常时触发）。通知发到用户 DM，自然口吻。
 
 ---
 
@@ -133,7 +141,7 @@
 | `briefing_plugin.py` | 日报 thin shim（subprocess launcher，60 行，不含逻辑） |
 | `scripts/briefing_run.py` | 日报 pipeline 独立脚本（采集→生成→审稿→邮件→关键词进化） |
 | `scheduler.py` | 进程内 cron 调度器（croniter + asyncio timer） |
-| `heartbeat.py` | 心跳监控（两层架构：Haiku triage → Sonnet action） |
+| `heartbeat.py` | 心跳监控（两层 Sonnet：triage → action，DM 通知） |
 | `llm_router.py` | 多模型路由（claude-cli / gemini-api） |
 | `dispatcher.py` | 飞书消息发送（卡片 JSON 2.0 markdown，分块，重试，卡片更新） |
 | `file_store.py` | 会话级文件存储（图片/文件持久化 + 上下文注入） |
@@ -146,6 +154,7 @@
 | `hub.sh` | 服务管理脚本（start/stop/restart/status/watchdog） |
 | `.claude/skills/` | Claude Code Skills |
 | `data/` | 运行时状态（jobs.json, sessions.json, hub.pid, logs） |
+| `docs/feishu_scopes.md` | 飞书 Bot 已申请的 API 权限清单（按模块分类） |
 | `PLAN.md` | 架构设计文档 |
 
 ---

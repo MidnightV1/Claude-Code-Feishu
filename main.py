@@ -110,7 +110,9 @@ async def main():
     scheduler = CronScheduler(cfg.get("scheduler", {}), router, notifier)
     await scheduler.start()
 
-    hb = HeartbeatMonitor(cfg.get("heartbeat", {}), router, notifier, workspace_dir)
+    hb_cfg = cfg.get("heartbeat", {})
+    hb = HeartbeatMonitor(hb_cfg, router, dispatcher, workspace_dir,
+                          notify_open_id=hb_cfg.get("notify_open_id", ""))
     await hb.start()
 
     default_llm_cfg = llm_cfg.get("default", {})

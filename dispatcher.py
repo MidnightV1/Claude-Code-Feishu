@@ -119,6 +119,60 @@ class Dispatcher:
             return None
         return await self.send_text(self.delivery_chat_id, text)
 
+    async def send_to_user(self, open_id: str, text: str) -> str | None:
+        """Send a DM to a user by open_id. Returns message_id or None."""
+        if not text.strip():
+            return None
+        if len(text) > MAX_MSG_LEN:
+            return await self._send_chunked_to_user(open_id, text)
+        return await self._send_card_to_user(open_id, text)
+
+    async def _send_card_to_user(self, open_id: str, text: str) -> str | None:
+        """Send a card to a user by open_id."""
+        self._ensure_client()
+        from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+        content = self._build_card_json(text)
+
+        async def _attempt():
+            req = CreateMessageRequest.builder() \
+                .receive_id_type("open_id") \
+                .request_body(
+                    CreateMessageRequestBody.builder()
+                    .receive_id(open_id)
+                    .msg_type("interactive")
+                    .content(content)
+                    .build()
+                ).build()
+            return await asyncio.to_thread(
+                self._client.im.v1.message.create, req
+            )
+
+        def _check(resp) -> bool:
+            return resp.success() and resp.data
+
+        def _log_fail(resp):
+            log.warning("send_to_user failed: code=%s msg=%s", resp.code, resp.msg)
+
+        resp = await self._with_retry(
+            "send_to_user", _attempt,
+            success_check=_check, log_failure=_log_fail,
+        )
+        if resp and resp.data:
+            return resp.data.message_id
+        return None
+
+    async def _send_chunked_to_user(self, open_id: str, text: str) -> str | None:
+        """Split long text and send as multiple DMs."""
+        chunks = self._chunk_text(text)
+        first_mid = None
+        for i, chunk in enumerate(chunks):
+            mid = await self._send_card_to_user(open_id, chunk)
+            if i == 0:
+                first_mid = mid
+            if i < len(chunks) - 1:
+                await asyncio.sleep(0.5)
+        return first_mid
+
     async def send_card_return_id(
         self,
         chat_id: str,

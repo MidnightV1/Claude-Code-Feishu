@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Heartbeat monitor — two-layer architecture.
+"""Heartbeat monitor — two-layer Sonnet architecture.
 
-Layer 1 (Triage): Haiku reads task snapshot, judges OK vs anomaly.
+Layer 1 (Triage): Sonnet reads task snapshot, judges OK vs anomaly.
 Layer 2 (Action): Sonnet via CLI with full tool access, analyzes and acts.
 
-Input: Feishu task snapshot only (no HEARTBEAT.md).
+Notifications delivered to user DM in natural conversational tone.
+Input: Feishu task snapshot only.
 """
 
 import asyncio
@@ -32,40 +33,43 @@ TRIAGE_PROMPT = (
     "当前时间：{current_time}\n\n"
     "以下是当前任务状态快照：\n\n"
     "{task_snapshot}\n\n"
-    "如果所有任务状态正常（无逾期、无紧急事项需要立即处理），回复 HEARTBEAT_OK。\n"
-    "如果发现需要关注的异常（逾期任务、即将到期的任务无人负责等），"
-    "简要列出需要处理的事项。"
+    "判断规则：\n"
+    "- 已逾期（截止时间 < 当前时间）→ 异常\n"
+    "- 距离截止不足 30 分钟 → 异常\n"
+    "- 所有任务截止时间充裕 → 正常\n\n"
+    "如果正常，回复 HEARTBEAT_OK。\n"
+    "如果异常，简要列出需要处理的事项（哪个任务、什么状态、距离截止多久）。"
 )
 
 ACTION_PROMPT = (
-    "你是 nas-claude-hub 心跳监控的执行模块，运行在项目目录下，有完整工具权限。\n\n"
-    "传感器检测到以下异常需要处理：\n{triage_findings}\n\n"
+    "你是用户的 AI 助手，正在通过飞书 DM 给用户发消息。\n\n"
+    "心跳检测到以下任务需要关注：\n{triage_findings}\n\n"
     "任务快照：\n{task_snapshot}\n\n"
-    "请自主分析当前局面并采取需要的行动：\n"
+    "请自主分析并采取需要的行动：\n"
     "- 需要更新的任务（状态、截止日期）→ 用 task_ctl.py update/complete\n"
-    "- 需要通知的负责人 → 在报告中 @具体人名\n"
-    "- 需要创建的跟进任务 → 用 task_ctl.py create\n"
-    "- 需要同步给用户的信息\n\n"
+    "- 需要创建的跟进任务 → 用 task_ctl.py create\n\n"
     "工具：python3 .claude/skills/feishu-task/scripts/task_ctl.py <command>\n"
     "命令：create, list, get, update, complete, assign, unassign, delete\n\n"
-    "执行完毕后，输出一份简要行动报告。此报告将通过飞书发送给用户。"
+    "执行完毕后，用自然口吻写一段简短提醒发给用户。\n"
+    "要求：像对话一样自然，不要用「行动报告」「心跳」等系统术语，"
+    "直接说「提醒你一下，XX 任务快到期了」这种风格。"
 )
 
 
 class HeartbeatMonitor:
     def __init__(self, config: dict, router: LLMRouter, dispatcher: Dispatcher,
-                 workspace_dir: str):
+                 workspace_dir: str, notify_open_id: str = ""):
         self.enabled = config.get("enabled", True)
         self.interval = config.get("interval_seconds", 1800)
         self.workspace_dir = workspace_dir
+        self.notify_open_id = notify_open_id
 
-        # Triage LLM (Haiku — cheap, fast, no tools needed)
+        # Triage LLM (Sonnet — accurate judgment, no tools needed)
         triage_cfg = config.get("triage", config.get("llm", {}))
         self.triage_llm = LLMConfig(
             provider=triage_cfg.get("provider", "claude-cli"),
-            model=triage_cfg.get("model", "haiku"),
+            model=triage_cfg.get("model", "sonnet"),
             timeout_seconds=triage_cfg.get("timeout_seconds", 120),
-            effort="low",
         )
 
         # Action LLM (Sonnet — full tool access, triggered only on anomaly)
@@ -125,7 +129,7 @@ class HeartbeatMonitor:
         now = datetime.now(ZoneInfo(self.tz_name))
         current_time = now.strftime("%Y-%m-%d %H:%M (%A)")
 
-        # ── Layer 1: Triage (Haiku) ──
+        # ── Layer 1: Triage (Sonnet) ──
         triage_prompt = TRIAGE_PROMPT.format(
             current_time=current_time,
             task_snapshot=snapshot,
@@ -161,14 +165,11 @@ class HeartbeatMonitor:
         if action_result.is_error:
             log.warning("Heartbeat action error: %s", action_result.text[:200])
             # Fallback: deliver triage findings directly
-            header = "**[Heartbeat]** 传感器报告\n\n"
-            await self.dispatcher.send_to_delivery_target(header + cleaned)
+            await self._deliver(cleaned)
             return "error"
 
-        # Deliver action report
-        header = "**[Heartbeat]** 行动报告\n\n"
-        ok = await self.dispatcher.send_to_delivery_target(
-            header + action_result.text)
+        # Deliver action report (natural tone, no system headers)
+        ok = await self._deliver(action_result.text)
         if ok:
             self._last_sent_at = time.time()
             log.info("Heartbeat action report delivered (%d chars) [%s]",
@@ -189,6 +190,12 @@ class HeartbeatMonitor:
         }
 
     # ═══ Internal ═══
+
+    async def _deliver(self, text: str) -> str | None:
+        """Deliver message: DM to user if configured, else delivery target."""
+        if self.notify_open_id:
+            return await self.dispatcher.send_to_user(self.notify_open_id, text)
+        return await self.dispatcher.send_to_delivery_target(text)
 
     async def _loop(self):
         try:
