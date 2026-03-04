@@ -35,6 +35,33 @@ def _load_config():
         return yaml.safe_load(f)
 
 
+def _safe_post(api: FeishuAPI, path: str, body: dict | None = None,
+               params: dict | None = None) -> dict:
+    """POST with graceful error handling — returns JSON even on HTTP errors."""
+    import requests as _req
+    try:
+        return api.post(path, body, params)
+    except _req.exceptions.HTTPError as e:
+        # Try to extract JSON error body from Feishu
+        try:
+            return e.response.json()
+        except Exception:
+            return {"code": -1, "msg": str(e)}
+
+
+def _safe_patch(api: FeishuAPI, path: str, body: dict | None = None,
+                params: dict | None = None) -> dict:
+    """PATCH with graceful error handling."""
+    import requests as _req
+    try:
+        return api.patch(path, body, params)
+    except _req.exceptions.HTTPError as e:
+        try:
+            return e.response.json()
+        except Exception:
+            return {"code": -1, "msg": str(e)}
+
+
 def _get_calendar_id(api: FeishuAPI, cfg: dict) -> str:
     cal_cfg = cfg.get("feishu", {}).get("calendar", {})
     cal_id = cal_cfg.get("calendar_id", "auto")
@@ -75,6 +102,19 @@ def _resolve_attendees(names: str, contacts: ContactStore) -> list[dict]:
 
 # ── Commands ─────────────────────────────────────────────
 
+def _create_event(api: FeishuAPI, cal_id: str, body: dict) -> dict:
+    """Create event with fallback to 'primary' calendar."""
+    params = {"user_id_type": "open_id"}
+    resp = _safe_post(api, f"/open-apis/calendar/v4/calendars/{cal_id}/events",
+                      body, params)
+    if resp.get("code") != 0 and cal_id != "primary":
+        print(f"  Calendar {cal_id} failed ({resp.get('msg')}), retrying on primary...",
+              file=sys.stderr)
+        resp = _safe_post(api, "/open-apis/calendar/v4/calendars/primary/events",
+                          body, params)
+    return resp
+
+
 def cmd_event_create(args, api, cal_id, contacts):
     body = {
         "summary": args.title,
@@ -87,13 +127,14 @@ def cmd_event_create(args, api, cal_id, contacts):
     if args.remind is not None:
         body["reminders"] = [{"minutes": args.remind}]
 
-    resp = api.post(f"/open-apis/calendar/v4/calendars/{cal_id}/events", body)
+    resp = _create_event(api, cal_id, body)
     if resp.get("code") != 0:
         print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
         sys.exit(1)
 
     event = resp["data"]["event"]
     event_id = event["event_id"]
+    actual_cal_id = event.get("calendar_id", cal_id)
     print(f"Created: {event_id}")
     print(f"  Title: {event.get('summary')}")
     print(f"  Start: {_ts_to_str(event['start_time']['timestamp'])}")
@@ -103,8 +144,9 @@ def cmd_event_create(args, api, cal_id, contacts):
     if args.attendees:
         att_list = _resolve_attendees(args.attendees, contacts)
         if att_list:
-            resp2 = api.post(
-                f"/open-apis/calendar/v4/calendars/{cal_id}/events/{event_id}/attendees",
+            resp2 = _safe_post(
+                api,
+                f"/open-apis/calendar/v4/calendars/{actual_cal_id}/events/{event_id}/attendees",
                 {"attendees": att_list, "need_notification": True},
                 params={"user_id_type": "open_id"},
             )
@@ -170,7 +212,12 @@ def cmd_event_update(args, api, cal_id, contacts):
         print("Nothing to update.")
         return
 
-    resp = api.patch(f"/open-apis/calendar/v4/calendars/{cal_id}/events/{args.event_id}", body)
+    resp = _safe_patch(
+        api,
+        f"/open-apis/calendar/v4/calendars/{cal_id}/events/{args.event_id}",
+        body,
+        params={"user_id_type": "open_id"},
+    )
     if resp.get("code") != 0:
         print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
         sys.exit(1)
@@ -178,7 +225,17 @@ def cmd_event_update(args, api, cal_id, contacts):
 
 
 def cmd_event_delete(args, api, cal_id, contacts):
-    resp = api.delete(f"/open-apis/calendar/v4/calendars/{cal_id}/events/{args.event_id}")
+    import requests as _req
+    try:
+        resp = api.delete(
+            f"/open-apis/calendar/v4/calendars/{cal_id}/events/{args.event_id}",
+            params={"user_id_type": "open_id"},
+        )
+    except _req.exceptions.HTTPError as e:
+        try:
+            resp = e.response.json()
+        except Exception:
+            resp = {"code": -1, "msg": str(e)}
     if resp.get("code") != 0:
         print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
         sys.exit(1)
@@ -190,7 +247,8 @@ def cmd_freebusy(args, api, cal_id, contacts):
     days = args.days or 1
     end = base + timedelta(days=days)
 
-    resp = api.post(
+    resp = _safe_post(
+        api,
         "/open-apis/calendar/v4/freebusy/list",
         {
             "time_min": base.strftime("%Y-%m-%dT00:00:00+08:00"),

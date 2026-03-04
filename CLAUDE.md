@@ -77,6 +77,9 @@ CLI 超时策略（`claude_cli.py`）：
 | `feishu-doc` | `.claude/skills/feishu-doc/` | 文档 CRUD、搜索、评论分析、所有权转移 |
 | `feishu-task` | `.claude/skills/feishu-task/` | 任务 CRUD、截止日期管理、心跳联动 |
 | `feishu-wiki` | `.claude/skills/feishu-wiki/` | 知识库空间浏览、页面 CRUD、内容读写 |
+| `feishu-bitable` | `.claude/skills/feishu-bitable/` | 多维表格 CRUD、记录查询/筛选 |
+| `feishu-drive` | `.claude/skills/feishu-drive/` | 云盘文件/文件夹浏览、创建、移动、搜索 |
+| `feishu-perm` | `.claude/skills/feishu-perm/` | 文档权限管理、协作者增删、公开链接设置 |
 | `gemini-doc` | `.claude/skills/gemini-doc/` | 文档分析 co-pilot（Gemini CLI 订阅制，CC 上下文不注入全文） |
 
 参考：https://code.claude.com/docs/en/skills

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Feishu outbound message dispatcher."""
 
+import re
 import json
 import asyncio
 import logging
@@ -10,6 +11,26 @@ log = logging.getLogger("hub.dispatcher")
 
 MAX_MSG_LEN = 4000  # Feishu card markdown content limit per chunk
 MAX_RETRIES = 3
+
+# ── Secret scanning ─────────────────────────────────────
+_SECRET_PATTERNS = [
+    re.compile(r'sk-ant-api03-[a-zA-Z0-9\-_]{20,}'),          # Anthropic
+    re.compile(r'sk-[a-zA-Z0-9]{20,}'),                        # OpenAI
+    re.compile(r'ghp_[a-zA-Z0-9]{10,}'),                       # GitHub PAT
+    re.compile(r'gho_[a-zA-Z0-9]{10,}'),                       # GitHub OAuth
+    re.compile(r'xox[baprs]-[a-zA-Z0-9\-]{10,}'),              # Slack
+    re.compile(r'AIza[a-zA-Z0-9\-_]{30,}'),                    # Google API key
+    re.compile(r'-----BEGIN [A-Z]+ PRIVATE KEY-----'),          # Private keys
+    re.compile(r'AKIA[A-Z0-9]{16}'),                            # AWS access key
+]
+
+
+def _contains_secret(text: str) -> str | None:
+    """Check text for known secret patterns. Returns matched pattern name or None."""
+    for pat in _SECRET_PATTERNS:
+        if pat.search(text):
+            return pat.pattern[:30]
+    return None
 
 T = TypeVar("T")
 
@@ -106,6 +127,11 @@ class Dispatcher:
         if not text.strip():
             return None
 
+        secret = _contains_secret(text)
+        if secret:
+            log.error("Secret leak blocked (pattern: %s), message NOT sent", secret)
+            return None
+
         # Chunk if too long
         if len(text) > MAX_MSG_LEN:
             return await self._send_chunked(chat_id, text, reply_to)
@@ -122,6 +148,10 @@ class Dispatcher:
     async def send_to_user(self, open_id: str, text: str) -> str | None:
         """Send a DM to a user by open_id. Returns message_id or None."""
         if not text.strip():
+            return None
+        secret = _contains_secret(text)
+        if secret:
+            log.error("Secret leak blocked in DM (pattern: %s), message NOT sent", secret)
             return None
         if len(text) > MAX_MSG_LEN:
             return await self._send_chunked_to_user(open_id, text)

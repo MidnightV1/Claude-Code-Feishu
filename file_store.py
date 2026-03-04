@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Session-scoped file storage. Files persist permanently for user and agent reference."""
 
+import hashlib
 import os
 import json
 import shutil
@@ -35,6 +36,15 @@ class FileStore:
         from store import save_json_sync
         save_json_sync(self._meta_path(session_key), meta)
 
+    @staticmethod
+    def _file_md5(path: str) -> str:
+        """Compute MD5 hex digest of a file."""
+        h = hashlib.md5()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
     def save_from_path(
         self,
         session_key: str,
@@ -43,17 +53,32 @@ class FileStore:
         file_type: str = "other",
         analysis: str | None = None,
     ) -> str:
-        """Copy file to session storage. Returns stored path."""
+        """Copy file to session storage. Returns stored path.
+
+        Deduplicates by content hash — returns existing path if identical file
+        was already stored in this session.
+        """
         if not original_name:
             original_name = os.path.basename(src_path)
 
+        # Content-hash dedup: skip if identical file already stored
+        src_hash = self._file_md5(src_path)
+        meta = self._load_meta(session_key)
+        session_dir = self._session_dir(session_key)
+        for entry in meta:
+            if entry.get("content_hash") == src_hash:
+                existing = os.path.join(session_dir, entry["filename"])
+                if os.path.exists(existing):
+                    log.info("File dedup: %s already stored as %s",
+                             original_name, entry["filename"])
+                    return existing
+
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         dest_name = f"{ts}_{original_name}"
-        dest = os.path.join(self._session_dir(session_key), dest_name)
+        dest = os.path.join(session_dir, dest_name)
 
         shutil.copy2(src_path, dest)
 
-        meta = self._load_meta(session_key)
         meta.append({
             "filename": dest_name,
             "original_name": original_name,
@@ -61,6 +86,7 @@ class FileStore:
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "analysis": analysis,
             "size_bytes": os.path.getsize(dest),
+            "content_hash": src_hash,
         })
         self._save_meta(session_key, meta)
         log.info("File stored: %s → %s (%s)", original_name, dest_name, session_key[:20])

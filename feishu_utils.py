@@ -8,12 +8,24 @@ from datetime import datetime, timedelta, timezone
 TZ = timezone(timedelta(hours=8))  # Asia/Shanghai
 
 
+def _sanitize_doc_text(text: str) -> str:
+    """Sanitize text before sending to Feishu docx API.
+
+    Strips control chars (except newline/tab), null bytes, and normalizes whitespace.
+    Prevents 400 errors from malformed content.
+    """
+    # Remove null bytes and control chars except \n \t \r
+    text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    return text
+
+
 def text_to_blocks(text: str) -> list[dict]:
     """Convert plain text (with markdown-like headings) to Feishu docx block children.
 
     Handles escaped newlines from shell arguments.
     """
     text = text.replace("\\n", "\n")
+    text = _sanitize_doc_text(text)
     blocks = []
     for line in text.split("\n"):
         line = line.rstrip()

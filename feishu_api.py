@@ -76,13 +76,35 @@ class FeishuAPI:
             "Content-Type": "application/json",
         }
 
+    def _invalidate_token(self):
+        """Force token refresh on next request."""
+        self._token = ""
+        self._token_expires = 0
+
+    # Token-expired codes returned in 200 responses by Feishu
+    _TOKEN_EXPIRED_CODES = {99991663, 99991664, 99991661, 99991668}
+
+    def _check_token_expired(self, data: dict) -> bool:
+        """If response indicates token expired, invalidate and return True."""
+        if data.get("code") in self._TOKEN_EXPIRED_CODES:
+            log.warning("Token expired in response (code=%s), refreshing", data["code"])
+            self._invalidate_token()
+            return True
+        return False
+
     # ── generic HTTP ───────────────────────────────────────
 
     def get(self, path: str, params: dict | None = None) -> dict:
         r = requests.get(f"{self.domain}{path}",
                          headers=self._headers(), params=params, timeout=15)
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        if self._check_token_expired(data):
+            r = requests.get(f"{self.domain}{path}",
+                             headers=self._headers(), params=params, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+        return data
 
     def post(self, path: str, body: dict | None = None,
              params: dict | None = None) -> dict:
@@ -90,7 +112,14 @@ class FeishuAPI:
                           headers=self._headers(), json=body, params=params,
                           timeout=15)
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        if self._check_token_expired(data):
+            r = requests.post(f"{self.domain}{path}",
+                              headers=self._headers(), json=body, params=params,
+                              timeout=15)
+            r.raise_for_status()
+            data = r.json()
+        return data
 
     def patch(self, path: str, body: dict | None = None,
               params: dict | None = None) -> dict:
@@ -98,13 +127,26 @@ class FeishuAPI:
                            headers=self._headers(), json=body, params=params,
                            timeout=15)
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        if self._check_token_expired(data):
+            r = requests.patch(f"{self.domain}{path}",
+                               headers=self._headers(), json=body, params=params,
+                               timeout=15)
+            r.raise_for_status()
+            data = r.json()
+        return data
 
     def delete(self, path: str, params: dict | None = None) -> dict:
         r = requests.delete(f"{self.domain}{path}",
                             headers=self._headers(), params=params, timeout=15)
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        if self._check_token_expired(data):
+            r = requests.delete(f"{self.domain}{path}",
+                                headers=self._headers(), params=params, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+        return data
 
     def download(self, path: str, timeout: int = 30) -> requests.Response:
         """Download raw bytes (images, files). Returns the Response object."""

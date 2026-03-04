@@ -9,6 +9,7 @@ Input: Feishu task snapshot only.
 """
 
 import asyncio
+import hashlib
 import os
 import re
 import time
@@ -99,6 +100,9 @@ class HeartbeatMonitor:
         self._last_sent_at: float | None = None
         # Pending notifications per session key — consumed by feishu_bot on next user message
         self._pending_notifications: dict[str, list[str]] = defaultdict(list)
+        # Notification dedup: hash → timestamp, 30-min window
+        self._sent_hashes: dict[str, float] = {}
+        self._dedup_window = 1800  # seconds
 
     async def start(self):
         if not self.enabled:
@@ -196,8 +200,25 @@ class HeartbeatMonitor:
 
     # ═══ Internal ═══
 
+    def _is_duplicate(self, text: str) -> bool:
+        """Check if similar notification was sent within dedup window."""
+        now = time.time()
+        # Purge expired entries
+        self._sent_hashes = {
+            h: ts for h, ts in self._sent_hashes.items()
+            if now - ts < self._dedup_window
+        }
+        h = hashlib.md5(text.encode()).hexdigest()
+        if h in self._sent_hashes:
+            return True
+        self._sent_hashes[h] = now
+        return False
+
     async def _deliver(self, text: str) -> str | None:
         """Deliver message and store for conversation context injection."""
+        if self._is_duplicate(text):
+            log.info("Heartbeat notification dedup: suppressed duplicate")
+            return "dedup"
         if self.notify_open_id:
             result = await self.dispatcher.send_to_user(self.notify_open_id, text)
             # Store for context injection: session_key matches feishu_bot p2p pattern
