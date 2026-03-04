@@ -119,16 +119,14 @@ class ClaudeCli:
             "--verbose",
             "--dangerously-skip-permissions",
         ]
-        # fallback-model must differ from main model
+        # Always set --model explicitly to avoid fallback collision with CLI default
         effective_model = model or "opus"
-        if effective_model != "opus":
-            args.extend(["--fallback-model", "opus"])
-        elif effective_model != "sonnet":
-            args.extend(["--fallback-model", "sonnet"])
+        args.extend(["--model", effective_model])
+        # fallback-model must differ from main model
+        fallback = "sonnet" if effective_model == "opus" else "opus"
+        args.extend(["--fallback-model", fallback])
         if session_id:
             args.extend(["--resume", session_id])
-        if model:
-            args.extend(["--model", model])
         if system_prompt:
             args.extend(["--append-system-prompt", system_prompt])
         if effort:
@@ -145,7 +143,7 @@ class ClaudeCli:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                limit=1024 * 1024,  # 1MB; default 64KB is too small for large stream-json lines
+                limit=8 * 1024 * 1024,  # 8MB; CC result events can be very large
                 cwd=self.workspace_dir,
                 env=env,
             )
@@ -178,6 +176,10 @@ class ClaudeCli:
                         )
                     except asyncio.TimeoutError:
                         raise  # idle or hard cap exceeded
+                    except ValueError:
+                        # "Separator is found, but chunk is longer than limit"
+                        log.warning("Stream line exceeded buffer limit, skipping")
+                        continue
                     if not raw_line:
                         break  # EOF
                     line = raw_line.decode("utf-8", errors="replace").strip()

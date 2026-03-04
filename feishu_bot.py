@@ -664,14 +664,26 @@ class FeishuBot:
 
             if result.is_error:
                 log.warning("LLM error (session=%s): %s", session_key, result.text[:200])
-                self.router.clear_session(session_key)
-                asyncio.create_task(self.router.save_sessions())
+                # Transient errors: keep session — next --resume may succeed
+                is_transient = (
+                    "Timeout" in result.text
+                    or "ld.so" in result.text
+                    or result.text == ""
+                )
+                if not is_transient:
+                    self.router.clear_session(session_key)
+                    asyncio.create_task(self.router.save_sessions())
+
                 err_hint = ""
                 if "Timeout" in result.text:
                     err_hint = "（响应超时）"
                 elif "ld.so" in result.text:
                     err_hint = "（环境异常）"
-                reply_text = f"处理出错{err_hint}，已重置会话。请重新发送消息继续。"
+
+                if is_transient:
+                    reply_text = f"处理出错{err_hint}，请重新发送消息重试。"
+                else:
+                    reply_text = f"处理出错{err_hint}，已重置会话。请重新发送消息继续。"
             elif result.text:
                 footer_parts = [f for f in batch.footers if f]
                 if llm_config.provider == "gemini-api" and result.cost_usd > 0:

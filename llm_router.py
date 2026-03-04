@@ -28,8 +28,8 @@ COMPRESS_TIMEOUT_PRIMARY = 60
 COMPRESS_TIMEOUT_FALLBACK = 30
 COMPRESS_TEMPERATURE = 0.2
 LOG_PREVIEW_LEN = 200
-TRANSIENT_RETRY_MAX = 2
-TRANSIENT_RETRY_DELAY = 3  # seconds
+TRANSIENT_RETRY_MAX = 3
+TRANSIENT_RETRY_DELAY = 2  # seconds (exponential: 2, 4, 8)
 
 # ═══ Context Recovery Templates ═══
 
@@ -353,10 +353,11 @@ class LLMRouter:
             if not result.is_error or not self._is_transient(result):
                 break
             if attempt < TRANSIENT_RETRY_MAX:
+                delay = TRANSIENT_RETRY_DELAY * (2 ** attempt)
                 log.warning("Transient CLI error (attempt %d/%d), retrying in %ds: %s",
                             attempt + 1, TRANSIENT_RETRY_MAX + 1,
-                            TRANSIENT_RETRY_DELAY, result.text[:LOG_PREVIEW_LEN])
-                await asyncio.sleep(TRANSIENT_RETRY_DELAY)
+                            delay, result.text[:LOG_PREVIEW_LEN])
+                await asyncio.sleep(delay)
 
         self._save_result(session_key, result, prompt)
         try:

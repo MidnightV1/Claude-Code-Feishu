@@ -224,11 +224,12 @@ class Dispatcher:
         )
 
         content = self._build_card_json(text)
+        _reply_ref = [reply_to]  # mutable ref for closure
 
         async def _attempt():
-            if reply_to:
+            if _reply_ref[0]:
                 req = ReplyMessageRequest.builder() \
-                    .message_id(reply_to) \
+                    .message_id(_reply_ref[0]) \
                     .request_body(
                         ReplyMessageRequestBody.builder()
                         .msg_type("interactive")
@@ -257,6 +258,10 @@ class Dispatcher:
 
         def _log_fail(resp):
             log.warning("send_card failed: code=%s msg=%s", resp.code, resp.msg)
+            # 230011 = message withdrawn; drop reply_to and send as new message
+            if resp.code == 230011 and _reply_ref[0]:
+                log.info("Reply target withdrawn, falling back to non-reply send")
+                _reply_ref[0] = None
 
         resp = await self._with_retry(
             "send_card", _attempt,
