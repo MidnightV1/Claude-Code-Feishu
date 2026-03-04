@@ -383,6 +383,28 @@ def cmd_delete(args, api, cfg, contacts):
     print(f"Deleted: {args.task_guid}")
 
 
+def cmd_move(args, api, cfg, contacts):
+    tasklist_guid = _get_tasklist_guid(cfg)
+    # "default" moves to the default (unnamed) section
+    if args.section.lower() == "default":
+        sections = _list_sections(api, tasklist_guid)
+        section_guid = next(
+            (s["guid"] for s in sections if s.get("is_default")), None)
+    else:
+        section_guid = _resolve_section_guid(api, tasklist_guid, args.section)
+    if not section_guid:
+        print(f"ERROR: section '{args.section}' not found", file=sys.stderr)
+        sys.exit(1)
+    resp = api.post(
+        f"/open-apis/task/v2/tasks/{args.task_guid}/add_tasklist",
+        {"tasklist_guid": tasklist_guid, "section_guid": section_guid},
+    )
+    if resp.get("code") != 0:
+        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Moved {args.task_guid[:8]} to section '{args.section}'")
+
+
 def cmd_section_create(args, api, cfg, contacts):
     tasklist_guid = _get_tasklist_guid(cfg)
     resp = api.post("/open-apis/task/v2/sections", {
@@ -590,6 +612,11 @@ def main():
     dl = sub.add_parser("delete")
     dl.add_argument("task_guid")
 
+    # move to section
+    mv = sub.add_parser("move")
+    mv.add_argument("task_guid")
+    mv.add_argument("section", help="Section name to move task to")
+
     # snapshot (heartbeat integration)
     sn = sub.add_parser("snapshot")
     sn.add_argument("--window-hours", type=int, default=None,
@@ -631,6 +658,7 @@ def main():
         ("assign", None): cmd_assign,
         ("unassign", None): cmd_unassign,
         ("delete", None): cmd_delete,
+        ("move", None): cmd_move,
         ("snapshot", None): cmd_snapshot,
         ("section", "create"): cmd_section_create,
         ("section", "list"): cmd_section_list,
