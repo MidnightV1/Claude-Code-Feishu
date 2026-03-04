@@ -2,7 +2,7 @@
 """Feishu Task CLI — create, list, update, complete, delete tasks.
 
 Usage:
-    task_ctl.py create "title" [--assignee "a,b"] [--due "time"] [--desc "..."]
+    task_ctl.py create "title" [--assignee "a,b"] [--due "time"] [--desc "..."] [--section "name"]
     task_ctl.py list [--assignee "name"] [--completed]
     task_ctl.py get <task_guid>
     task_ctl.py update <task_guid> [--title T] [--due D] [--desc D]
@@ -10,6 +10,9 @@ Usage:
     task_ctl.py delete <task_guid>
     task_ctl.py tasklist create "name"
     task_ctl.py tasklist list
+    task_ctl.py section create "name"
+    task_ctl.py section list
+    task_ctl.py section delete <section_guid>
     task_ctl.py snapshot [--window-hours N]
 """
 
@@ -147,6 +150,35 @@ def _list_tasklist_tasks(api: FeishuAPI, tasklist_guid: str,
     return tasks
 
 
+def _list_sections(api: FeishuAPI, tasklist_guid: str) -> list[dict]:
+    """List sections in a tasklist."""
+    items = []
+    page_token = None
+    for _ in range(10):
+        params = {"page_size": "50", "resource_type": "tasklist",
+                  "resource_id": tasklist_guid}
+        if page_token:
+            params["page_token"] = page_token
+        resp = api.get("/open-apis/task/v2/sections", params=params)
+        if resp.get("code") != 0:
+            break
+        items.extend(resp.get("data", {}).get("items", []))
+        if not resp.get("data", {}).get("has_more"):
+            break
+        page_token = resp["data"].get("page_token")
+    return items
+
+
+def _resolve_section_guid(api: FeishuAPI, tasklist_guid: str,
+                           name: str) -> str | None:
+    """Look up section GUID by name. Returns None if not found."""
+    sections = _list_sections(api, tasklist_guid)
+    for s in sections:
+        if s.get("name") == name:
+            return s.get("guid")
+    return None
+
+
 def _format_relative(ms: int) -> str:
     """Format milliseconds to human-readable relative time."""
     minutes = ms // 60000
@@ -171,10 +203,17 @@ def cmd_create(args, api, cfg, contacts):
     if args.assignee:
         body["members"] = _resolve_members(args.assignee, contacts)
 
-    # Auto-add to configured tasklist
+    # Auto-add to configured tasklist (with optional section)
     tasklist_guid = cfg.get("feishu", {}).get("tasks", {}).get("tasklist_guid")
     if tasklist_guid:
-        body["tasklists"] = [{"tasklist_guid": tasklist_guid}]
+        tl_entry = {"tasklist_guid": tasklist_guid}
+        if args.section:
+            section_guid = _resolve_section_guid(api, tasklist_guid, args.section)
+            if not section_guid:
+                print(f"ERROR: section '{args.section}' not found", file=sys.stderr)
+                sys.exit(1)
+            tl_entry["section_guid"] = section_guid
+        body["tasklists"] = [tl_entry]
 
     resp = api.post("/open-apis/task/v2/tasks", body,
                     params={"user_id_type": "open_id"})
@@ -344,6 +383,43 @@ def cmd_delete(args, api, cfg, contacts):
     print(f"Deleted: {args.task_guid}")
 
 
+def cmd_section_create(args, api, cfg, contacts):
+    tasklist_guid = _get_tasklist_guid(cfg)
+    resp = api.post("/open-apis/task/v2/sections", {
+        "name": args.name,
+        "resource_type": "tasklist",
+        "resource_id": tasklist_guid,
+    })
+    if resp.get("code") != 0:
+        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+        sys.exit(1)
+    sec = resp["data"]["section"]
+    print(f"Created section: {sec['guid']}")
+    print(f"  Name: {sec.get('name')}")
+
+
+def cmd_section_list(args, api, cfg, contacts):
+    tasklist_guid = _get_tasklist_guid(cfg)
+    sections = _list_sections(api, tasklist_guid)
+    if not sections:
+        print("No sections found.")
+        return
+    print(f"{'GUID':<40} {'Default':<9} Name")
+    print("-" * 70)
+    for s in sections:
+        default = "✓" if s.get("is_default") else ""
+        name = s.get("name") or "(default)"
+        print(f"{s.get('guid', '?'):<40} {default:<9} {name}")
+
+
+def cmd_section_delete(args, api, cfg, contacts):
+    resp = api.delete(f"/open-apis/task/v2/sections/{args.section_guid}")
+    if resp.get("code") != 0:
+        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Deleted section: {args.section_guid}")
+
+
 def cmd_tasklist_create(args, api, cfg, contacts):
     resp = api.post("/open-apis/task/v2/tasklists", {"name": args.name})
     if resp.get("code") != 0:
@@ -478,6 +554,7 @@ def main():
     cr.add_argument("--assignee", help="Comma-separated assignee names")
     cr.add_argument("--due", help="Due time (ISO, HH:MM, +2h, tomorrow HH:MM)")
     cr.add_argument("--desc", help="Description")
+    cr.add_argument("--section", help="Section name to place task in")
 
     # list
     ls = sub.add_parser("list")
@@ -518,6 +595,15 @@ def main():
     sn.add_argument("--window-hours", type=int, default=None,
                     help="Alert window in hours (default: from config or 2)")
 
+    # section subcommands
+    sec_p = sub.add_parser("section")
+    sec_sub = sec_p.add_subparsers(dest="action")
+    sec_cr = sec_sub.add_parser("create")
+    sec_cr.add_argument("name")
+    sec_sub.add_parser("list")
+    sec_dl = sec_sub.add_parser("delete")
+    sec_dl.add_argument("section_guid")
+
     # tasklist subcommands
     tl_p = sub.add_parser("tasklist")
     tl_sub = tl_p.add_subparsers(dest="action")
@@ -546,6 +632,9 @@ def main():
         ("unassign", None): cmd_unassign,
         ("delete", None): cmd_delete,
         ("snapshot", None): cmd_snapshot,
+        ("section", "create"): cmd_section_create,
+        ("section", "list"): cmd_section_list,
+        ("section", "delete"): cmd_section_delete,
         ("tasklist", "create"): cmd_tasklist_create,
         ("tasklist", "list"): cmd_tasklist_list,
     }

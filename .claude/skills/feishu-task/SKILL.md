@@ -82,6 +82,14 @@ task_ctl.py unassign <task_guid> "张三"
 # Delete a task
 task_ctl.py delete <task_guid>
 
+# Section (group) management
+task_ctl.py section create "紧急"
+task_ctl.py section list
+task_ctl.py section delete <section_guid>
+
+# Create task in a specific section
+task_ctl.py create "紧急修复" --section "紧急" --due "+2h"
+
 # Tasklist management
 task_ctl.py tasklist create "My List"
 task_ctl.py tasklist list
