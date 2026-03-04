@@ -54,12 +54,23 @@ CLI 超时策略（`claude_cli.py`）：
 | 聊天（无显式 timeout） | **空闲超时**：连续无 stream 输出才断开 | idle=180s, hard cap=1800s |
 | 心跳/压缩（显式 timeout） | **绝对超时**：到时间直接断开 | 由调用方指定 |
 
+错误恢复策略：
+
+| 层 | 机制 | 说明 |
+|---|------|------|
+| **CLI 层** | stream buffer 8MB, ValueError catch | 防止大 result event 导致 stream 断开 |
+| **Router 层** | transient retry ×3 (指数退避 2/4/8s) | ld.so crash、空结果自动重试 |
+| **Router 层** | resume 失败 → 静默降级 | 压缩上下文注入 system prompt，新 session |
+| **Bot 层** | 瞬态错误保留 session | timeout/ld.so/空结果不清 session，下次仍尝试 resume |
+| **Bot 层** | 非瞬态错误重置 session | 清 session_id（保留 history），用户重发继续 |
+| **Dispatcher 层** | 230011 降级 | 回复已撤回消息 → 自动改为非回复发送 |
+
 上下文策略特点：
 - **无 TTL 限制** — 永远尝试 `--resume`，让 CLI 自行判断 session 可用性
-- **Retry 在 router 层** — resume 失败（含超时）后静默降级到带上下文的新 session，不返回错误给用户
 - **上下文注入走 system prompt** — 不污染 user message，CC 能区分历史和当前指令
 - **Sonnet 压缩（Gemini fallback）** — 结构化摘要保留决策、文件路径、任务状态
 - **恢复通知** — 降级时告知 CC 工具调用记录不可访问，需重新读取文件
+- **Fallback model** — 始终显式传 `--model`，`--fallback-model` 自动选另一个模型
 
 降级触发场景：CLI session 文件丢失/损坏、LLM 报错 → resume 失败自动降级、`#reset` → 主动清除、服务重启 → CLI session 失效。
 
