@@ -220,9 +220,14 @@ class HeartbeatMonitor:
 
     @staticmethod
     def _strip_heartbeat_token(text: str) -> tuple[bool, str]:
-        """Strip HEARTBEAT_OK token. Returns (should_skip, cleaned_text)."""
+        """Strip HEARTBEAT_OK token. Returns (should_skip, cleaned_text).
+
+        should_skip=True only when the token was present AND remaining text is short
+        (i.e., the LLM said "all clear" with minimal commentary).
+        """
+        has_token = bool(HEARTBEAT_TOKEN_PATTERN.search(text))
         cleaned = HEARTBEAT_TOKEN_PATTERN.sub("", text).strip()
-        if len(cleaned) <= ACK_MAX_CHARS:
+        if has_token and len(cleaned) <= ACK_MAX_CHARS:
             return True, cleaned
         return False, cleaned
 
