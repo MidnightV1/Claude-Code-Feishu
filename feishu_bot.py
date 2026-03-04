@@ -348,9 +348,7 @@ class FeishuBot:
                 if stored_path is not None:
                     await self._enqueue_part(
                         key,
-                        f"[用户发送了一张图片]\n"
-                        f"图片文件：{stored_path}\n"
-                        f"请用 Read 工具查看图片内容。",
+                        f"[图片] {stored_path}",
                     )
                 else:
                     self._handle_media_failure(key, chat_id, message_id, "图片处理失败，请重试。")
