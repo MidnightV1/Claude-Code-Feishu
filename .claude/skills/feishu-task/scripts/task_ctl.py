@@ -384,7 +384,10 @@ def cmd_tasklist_list(args, api, cfg, contacts):
 def _get_assignees(api: FeishuAPI, task_guid: str,
                     contacts: ContactStore) -> str:
     """Fetch task details and return assignee names string."""
-    full = _fetch_task(api, task_guid)
+    try:
+        full = _fetch_task(api, task_guid)
+    except Exception:
+        return "未知"
     if not full:
         return "未知"
     names = []
