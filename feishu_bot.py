@@ -39,7 +39,7 @@ FEISHU_SYSTEM_PROMPT = """\
 ### 已实现的能力
 
 **多模态输入**
-- 图片：hub 自动调用 Gemini 3-Flash 视觉分析，结果注入 prompt
+- 图片：已下载压缩存储到会话目录，prompt 中提供绝对路径。**收到图片时请用 Read 工具直接读取图片文件**，你具备原生视觉理解能力
 - 文件（PDF）：Gemini Files API 解析全文，注入 prompt
 - 文件（代码/文本）：直接读取注入（.py, .js, .json, .yaml, .md 等 30+ 格式）
 - 文件持久化到会话存储（`data/files/`），跨消息可引用
@@ -339,17 +339,18 @@ class FeishuBot:
                     key, message_id, chat_id, chat_type, sender_id
                 )
                 batch.pending_media += 1
-                desc, footer = await self._analyze_image(
+                stored_path = await self._process_image(
                     message_id, msg.content, session_key
                 )
                 batch = self._pending.get(key)
                 if batch:
                     batch.pending_media -= 1
-                if desc is not None:
+                if stored_path is not None:
                     await self._enqueue_part(
                         key,
-                        f"[用户发送了一张图片]\n图片内容：{desc}",
-                        footer,
+                        f"[用户发送了一张图片]\n"
+                        f"图片文件：{stored_path}\n"
+                        f"请用 Read 工具查看图片内容。",
                     )
                 else:
                     self._handle_media_failure(key, chat_id, message_id, "图片处理失败，请重试。")
@@ -881,10 +882,14 @@ class FeishuBot:
 
     # ═══ Media Processing ═══
 
-    async def _analyze_image(
+    async def _process_image(
         self, message_id: str, content_str: str, session_key: str,
-    ) -> tuple[str | None, str]:
-        """Gemini 3-Flash as vision module. Saves to FileStore. Returns (desc, footer)."""
+    ) -> str | None:
+        """Download, compress, and store image. Returns absolute stored path.
+
+        Claude CLI reads the image natively via its Read tool.
+        Gemini vision analysis is no longer the primary path.
+        """
         try:
             content = json.loads(content_str) if isinstance(content_str, str) else {}
         except Exception:
@@ -892,7 +897,7 @@ class FeishuBot:
 
         image_key = content.get("image_key", "") if isinstance(content, dict) else ""
         if not image_key:
-            return None, ""
+            return None
 
         tmp_path = None
         try:
@@ -900,7 +905,7 @@ class FeishuBot:
                 self._download_feishu_image_sync, message_id, image_key
             )
             if not tmp_path:
-                return None, ""
+                return None
 
             # Save to FileStore permanently
             stored_path = self.file_store.save_from_path(
@@ -908,40 +913,11 @@ class FeishuBot:
                 original_name=f"{image_key[:16]}.webp",
                 file_type="image",
             )
-
-            # Analyze with Gemini
-            vision_config = LLMConfig(provider="gemini-api", model="3-Flash")
-            result = await self.router.run(
-                prompt=(
-                    "Describe this image in detail in Chinese. "
-                    "Include: text/code content (transcribe exactly), "
-                    "UI elements, layout, colors, and any notable details. "
-                    "Be factual and structured."
-                ),
-                llm_config=vision_config,
-                image_src=stored_path,
-            )
-            if result.is_error:
-                log.warning("Vision analysis failed: %s", result.text[:200])
-                return None, ""
-
-            # Update analysis in FileStore
-            self.file_store.update_analysis(
-                session_key, os.path.basename(stored_path), result.text
-            )
-
-            footer = ""
-            if result.cost_usd > 0:
-                footer = (
-                    f"\n\n`vision: gemini-api/3-Flash"
-                    f" | ${result.cost_usd:.4f} | {result.duration_ms}ms`"
-                )
-            return result.text, footer
+            return stored_path
         except Exception as e:
-            log.error("Image analysis error: %s", e)
-            return None, ""
+            log.error("Image processing error: %s", e)
+            return None
         finally:
-            # Clean up temp file (stored copy is in FileStore)
             if tmp_path:
                 try:
                     os.unlink(tmp_path)

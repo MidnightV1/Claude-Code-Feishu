@@ -123,8 +123,8 @@ CLI 超时策略（`claude_cli.py`）：
 
 | Provider | 调用方式 | 适用场景 |
 |----------|----------|----------|
-| `claude-cli` | `claude -p` subprocess | 需要工具能力的任务 |
-| `gemini-api` | `google-genai` SDK | 多模态、大文档 |
+| `claude-cli` | `claude -p` subprocess | 对话、工具、图片理解（Read 原生视觉） |
+| `gemini-api` | `google-genai` SDK | 大文档（Files API）、PDF 解析 |
 
 `gemini-cli` 接口已预留，因 tree-sitter 编译问题on the server暂不可用。
 

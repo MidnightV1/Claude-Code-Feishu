@@ -85,13 +85,23 @@ class FileStore:
             return None
 
         session_dir = self._session_dir(session_key)
-        lines = [f"会话文件（路径: {session_dir}/）："]
+        lines = ["会话文件："]
         for f in files:
-            line = f"- {f['original_name']} ({f['type']}, {f['timestamp'][:16]})"
-            if f.get("analysis"):
-                preview = f["analysis"][:100].replace("\n", " ")
-                if len(f["analysis"]) > 100:
-                    preview += "..."
-                line += f" — {preview}"
+            path = os.path.join(session_dir, f['filename'])
+            if f['type'] == 'image':
+                # Image: provide absolute path for Read tool access
+                line = f"- [图片] {path} ({f['timestamp'][:16]})"
+                if f.get("analysis"):
+                    preview = f["analysis"][:80].replace("\n", " ")
+                    if len(f["analysis"]) > 80:
+                        preview += "..."
+                    line += f" — {preview}"
+            else:
+                line = f"- {f['original_name']} ({f['type']}, {f['timestamp'][:16]})"
+                if f.get("analysis"):
+                    preview = f["analysis"][:100].replace("\n", " ")
+                    if len(f["analysis"]) > 100:
+                        preview += "..."
+                    line += f" — {preview}"
             lines.append(line)
         return "\n".join(lines)
