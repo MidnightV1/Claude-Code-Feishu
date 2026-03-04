@@ -13,6 +13,17 @@
 
 **不是简单的 API 封装。** Bot 为每个用户运行真正的 Claude Code CLI 会话，具备持久对话上下文、工具调用和所有 Claude Code 能力。
 
+## 为什么做这个
+
+市面上飞书 AI Bot 不少，但大多是 LLM API 的聊天封装。这个项目走了不同的路：
+
+- **Claude Code CLI 原生集成** — 不是 API 封装。每个用户运行真正的 `claude -p` 子进程，拥有完整工具链：文件读写、Shell 执行、代码编辑、网页搜索、子 Agent 协作。这不是一个调用 Claude 的聊天机器人，而是 Claude Code 本身。
+- **飞书深度集成** — 7 个专属 Skill（日历、文档、任务、知识库、每日简报、心跳监控、文档助手）。不只是消息转发 — Claude 能直接创建日历事件、撰写飞书文档、管理任务、浏览知识库。
+- **自进化的每日简报** — 自动化新闻 pipeline，内置关键词进化：每次运行后 LLM 自动分析覆盖盲区并优化搜索关键词，简报质量随时间持续提升，无需手动调优。
+- **多 LLM 路由 + 降级链** — Claude CLI 负责对话，Gemini CLI 负责文档分析，Gemini API 负责多模态。每项能力都有降级路径（如 PDF：Gemini CLI → Gemini API → Claude Read）。
+- **会话连续性** — `--resume` 保持完整 CLI 上下文；失败时 Sonnet 将历史压缩为结构化摘要，无缝恢复。
+- **低功耗自部署** — 为 NAS/低功耗服务器设计。单 Python 进程，无需 Docker/Redis/数据库。
+
 ## 架构
 
 ```
