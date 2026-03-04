@@ -70,7 +70,7 @@ def _parse_dt(s: str) -> int:
         elif unit == "m":
             dt = now + timedelta(minutes=val)
         else:
-            dt = now + timedelta(minutes=val)
+            raise ValueError(f"Unknown time unit '{unit}' (use 'h' or 'm')")
         return int(dt.timestamp())
 
     # "tomorrow HH:MM"

@@ -275,13 +275,3 @@ class HeartbeatMonitor:
             log.warning("Task snapshot failed: %s", e)
             return ""
 
-    @staticmethod
-    def _format_duration(seconds: float) -> str:
-        s = int(seconds)
-        if s < 60:
-            return f"{s}秒"
-        if s < 3600:
-            return f"{s // 60}分钟"
-        if s < 86400:
-            return f"{s // 3600}小时{(s % 3600) // 60}分钟"
-        return f"{s // 86400}天"

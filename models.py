@@ -75,17 +75,6 @@ class CronJob:
             self.updated_at = self.created_at
 
 
-# ═══ Session ═══
-
-@dataclass
-class SessionEntry:
-    session_id: Optional[str] = None
-    llm_config: Optional[LLMConfig] = None   # per-conversation model override
-    updated_at: float = 0.0
-    last_heartbeat_text: Optional[str] = None
-    last_heartbeat_at: Optional[float] = None
-
-
 # ═══ Serialization ═══
 
 def to_dict(obj) -> dict:
@@ -119,8 +108,3 @@ def cron_job_from_dict(d: dict) -> CronJob:
     return CronJob(**{k: v for k, v in d.items() if k in CronJob.__dataclass_fields__})
 
 
-def session_entry_from_dict(d: dict) -> SessionEntry:
-    d = dict(d)
-    if d.get("llm_config"):
-        d["llm_config"] = llm_config_from_dict(d["llm_config"])
-    return SessionEntry(**{k: v for k, v in d.items() if k in SessionEntry.__dataclass_fields__})
