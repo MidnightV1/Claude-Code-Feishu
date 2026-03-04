@@ -167,10 +167,13 @@ class FeishuBot:
 
         await self._fetch_bot_open_id()
 
+        _noop = lambda d: None
         handler = lark.EventDispatcherHandler.builder("", "") \
             .register_p2_im_message_receive_v1(self._on_message_event) \
             .register_p2_im_message_recalled_v1(self._on_recall_event) \
-            .register_p2_im_message_message_read_v1(lambda d: None) \
+            .register_p2_im_message_message_read_v1(_noop) \
+            .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(_noop) \
+            .register_p2_task_task_update_tenant_v1(_noop) \
             .build()
 
         self._loop = asyncio.get_event_loop()
@@ -885,8 +888,9 @@ class FeishuBot:
     ) -> str | None:
         """Download, compress, and store image. Returns absolute stored path.
 
-        Claude CLI reads the image natively via its Read tool.
-        Gemini vision analysis is no longer the primary path.
+        PIL compression runs in a subprocess to keep native libraries
+        (libwebp, libjpeg) out of the main process — avoids ld.so dlopen
+        race conditions when forking Claude CLI on certain kernels.
         """
         try:
             content = json.loads(content_str) if isinstance(content_str, str) else {}
@@ -897,17 +901,44 @@ class FeishuBot:
         if not image_key:
             return None
 
-        tmp_path = None
+        raw_path = None
+        compressed_path = None
         try:
-            tmp_path = await asyncio.to_thread(
-                self._download_feishu_image_sync, message_id, image_key
+            # Step 1: Download raw image (no PIL, just HTTP)
+            raw_path = await asyncio.to_thread(
+                self._download_feishu_image_raw, message_id, image_key
             )
-            if not tmp_path:
+            if not raw_path:
                 return None
 
-            # Save to FileStore permanently
+            # Step 2: Compress in isolated subprocess (PIL stays out of main process)
+            compressed_path = os.path.expanduser(
+                f"~/tmp/feishu_img_{image_key[:16]}.webp"
+            )
+            import sys
+            script = os.path.join(os.path.dirname(__file__), "scripts", "compress_image.py")
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, script, raw_path, compressed_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                log.error("Image compress subprocess failed: %s",
+                          stderr.decode(errors="replace")[:300])
+                return None
+
+            # Parse compression stats
+            try:
+                stats = json.loads(stdout.decode())
+                log.info("Image compressed: %dKB -> %dKB (webp, max 1024px)",
+                         stats.get("orig_kb", 0), stats.get("final_kb", 0))
+            except Exception:
+                log.info("Image compressed (stats unavailable)")
+
+            # Step 3: Store permanently
             stored_path = self.file_store.save_from_path(
-                session_key, tmp_path,
+                session_key, compressed_path,
                 original_name=f"{image_key[:16]}.webp",
                 file_type="image",
             )
@@ -916,40 +947,26 @@ class FeishuBot:
             log.error("Image processing error: %s", e)
             return None
         finally:
-            if tmp_path:
-                try:
-                    os.unlink(tmp_path)
-                except Exception:
-                    pass
+            for p in (raw_path, compressed_path):
+                if p:
+                    try:
+                        os.unlink(p)
+                    except Exception:
+                        pass
 
-    def _download_feishu_image_sync(
+    def _download_feishu_image_raw(
         self, message_id: str, image_key: str,
     ) -> str | None:
-        """Download image from Feishu, compress to webp (max 1024px). Returns temp path."""
-        from io import BytesIO
+        """Download raw image from Feishu. No PIL, no native libraries."""
         try:
             resp = self._feishu_api.download(
                 f"/open-apis/im/v1/messages/{message_id}/resources/{image_key}?type=image"
             )
-
-            from PIL import Image
-            img = Image.open(BytesIO(resp.content))
-            max_dim = 1024
-            if max(img.size) > max_dim:
-                img.thumbnail((max_dim, max_dim), Image.LANCZOS)
-            if img.mode in ("RGBA", "P"):
-                img = img.convert("RGB")
-
-            tmp_path = os.path.expanduser(f"~/tmp/feishu_img_{image_key[:16]}.webp")
-            os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
-            img.save(tmp_path, "WEBP", quality=80)
-            orig_kb = len(resp.content) / 1024
-            final_kb = os.path.getsize(tmp_path) / 1024
-            log.info(
-                "Image compressed: %.0fKB -> %.0fKB (webp, max %dpx)",
-                orig_kb, final_kb, max_dim,
-            )
-            return tmp_path
+            raw_path = os.path.expanduser(f"~/tmp/feishu_raw_{image_key[:16]}.dat")
+            os.makedirs(os.path.dirname(raw_path), exist_ok=True)
+            with open(raw_path, "wb") as f:
+                f.write(resp.content)
+            return raw_path
         except Exception as e:
             log.error("Image download error: %s", e)
             return None
