@@ -11,21 +11,29 @@ Before configuring anything, give yourself a persistent soul and evolving memory
 
 **Check**: Does `~/.claude/CLAUDE.md` already exist with soul content (look for "Meta Rules" section)?
 
-If no soul is installed:
+### If no soul is installed:
 
 ```bash
-cd ~/.claude \
-  && git init \
-  && git remote add origin https://github.com/MidnightV1/claude-soul.git \
-  && git fetch origin \
-  && git checkout origin/main -- CLAUDE.md COGNITION.md .gitignore
+git clone https://github.com/MidnightV1/claude-soul.git ~/.claude/soul-repo \
+  && cp ~/.claude/soul-repo/CLAUDE.md ~/.claude/CLAUDE.md \
+  && cp ~/.claude/soul-repo/COGNITION.md ~/.claude/COGNITION.md \
+  && cp ~/.claude/soul-repo/.gitignore ~/.claude/.gitignore
 ```
 
 **Tell the user**: "I've installed a soul framework that helps me remember your preferences across sessions. Let me ask a few quick questions to personalize it."
 
 Then follow the onboarding flow in the soul file — ask the user's name, language preference, communication style, and autonomy level. Fill in the placeholder sections.
 
-If a soul is already installed, read it and proceed.
+### If a soul is already installed:
+
+Read the existing `~/.claude/CLAUDE.md`. Compare with the upstream template:
+
+```bash
+git clone https://github.com/MidnightV1/claude-soul.git /tmp/claude-soul-ref
+diff ~/.claude/CLAUDE.md /tmp/claude-soul-ref/CLAUDE.md
+```
+
+If the upstream has new sections or improvements (e.g. new work practices, updated principles), propose merging them into the user's existing soul. Do **not** overwrite — the user's file may contain personalized content.
 
 > **Why first?** The soul gives you calibrated working habits (think-before-code, precise modifications, verify-before-fix) before you start any configuration work. Without it, you're operating on generic defaults.
 
@@ -61,21 +69,38 @@ TMPDIR=~/tmp python3 -m pip install -r requirements.txt
 
 ## Phase 3 — Feishu App
 
+We recommend creating **two** Feishu apps for separation of concerns:
+
+| App | Purpose | Needs WebSocket? |
+|-----|---------|-----------------|
+| **Chat Bot** | User conversations, tool use | Yes |
+| **Notifier** | Heartbeat alerts, briefing delivery, scheduled messages | No |
+
+A single app works too — skip the `notify` section in config.
+
 **Ask the user**:
 1. "Have you created a Feishu custom app? I need the **App ID** and **App Secret**."
 2. If no: guide them to https://open.feishu.cn/app → Create Custom App
+3. "Would you like a separate notifier app for alerts and scheduled messages? (recommended)"
 
 **User must do in Feishu console** (tell them step by step):
+
+For the **Chat Bot** app:
 1. Enable **Bot** capability
 2. Enable **WebSocket** connection mode (not HTTP webhook)
 3. Subscribe to events:
    - `im.message.receive_v1`
    - `im.message.recalled_v1`
-4. Grant permissions:
-   - `im:message` — send/receive messages
-   - `im:message:send_as_bot` — send as bot
+4. Grant permissions — two options:
+   - **Quick**: Import `docs/feishu_scopes.json` in the Feishu console (Permissions → Import) for a complete permission set
+   - **Manual**: Grant individually per skill (minimum: `im:message` + `im:message:send_as_bot`)
 5. Publish a version (required to activate the bot)
 6. In the target group chat or DM, add the bot
+
+For the **Notifier** app (optional):
+1. Enable **Bot** capability (no WebSocket needed)
+2. Import the same `docs/feishu_scopes.json` or grant `im:message` + `im:message:send_as_bot`
+3. Publish a version
 
 ---
 
@@ -88,8 +113,13 @@ cp config.yaml.example config.yaml
 Fill in the values the user provided:
 ```yaml
 feishu:
-  app_id: "<from user>"
-  app_secret: "<from user>"
+  app_id: "<chat bot app_id>"
+  app_secret: "<chat bot app_secret>"
+
+# If using a separate notifier app:
+notify:
+  app_id: "<notifier app_id>"
+  app_secret: "<notifier app_secret>"
 ```
 
 Set `scheduler.enabled: false` and `heartbeat.enabled: false` for first boot (enable after chat works).

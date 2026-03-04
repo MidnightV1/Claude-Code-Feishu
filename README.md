@@ -1,6 +1,11 @@
 # claude-code-lark
 
-Give Claude Code a Feishu/Lark messaging interface — with calendar, documents, daily briefings, and long-running task orchestration.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://python.org)
+
+English | [中文](README.zh-CN.md)
+
+Give Claude Code a Feishu/Lark messaging interface — with calendar, documents, tasks, wiki, daily briefings, and autonomous health monitoring.
 
 ## What is this
 
@@ -12,9 +17,10 @@ A lightweight Python service that connects Claude Code CLI to Feishu (Lark) via 
 
 ```
 Feishu WebSocket ──> FeishuBot ──> LLMRouter ─┬─> claude -p       (claude-cli)
+                        │              │       ├─> gemini cli       (gemini-cli)
                         │              │       └─> google-genai     (gemini-api)
                         ├──> CronScheduler (per-job model routing)
-                        └──> HeartbeatMonitor (gemini-api, low-cost)
+                        └──> HeartbeatMonitor (two-layer triage → action)
                                   │
                            Dispatcher ──> Feishu Card JSON 2.0
 ```
@@ -33,14 +39,32 @@ Key components:
 ## Features
 
 - **Chat** — Full Claude Code conversations via Feishu DM or group @mention
-- **Multimodal** — Image analysis (via Gemini Flash), PDF/file parsing, all injected as context
-- **Calendar** — Create, list, update Feishu calendar events; manage contacts
-- **Documents** — Create, read, search, comment on Feishu documents
-- **Daily Briefings** — Multi-domain news pipeline: collect → generate → review → email/Feishu
+- **Multimodal** — Image understanding (native Claude vision), PDF/file analysis (Gemini CLI → API → Claude fallback)
+- **Calendar** — Create, list, update, delete Feishu calendar events; contact management
+- **Documents** — Create, read, search, comment on Feishu documents; ownership transfer
+- **Tasks** — Feishu task CRUD with assignees, due dates, and heartbeat deadline monitoring
+- **Wiki** — Browse wiki spaces, create/move/read/write wiki pages
+- **Daily Briefings** — Automated multi-domain news digest (see below)
+- **Document Co-pilot** — Deep document analysis via Gemini CLI without polluting chat context
 - **Progress Tracking** — Real-time TodoWrite progress on thinking cards for complex tasks
 - **Cron Jobs** — Scheduled tasks with hot-reload (no restart needed)
-- **Heartbeat** — Periodic system health checks with anomaly alerts
+- **Heartbeat** — Periodic health checks with two-layer LLM triage and DM alerts
 - **Session Continuity** — `--resume` first, fallback to compressed history injection
+
+## Daily Briefings
+
+An automated news digest pipeline that runs on a cron schedule:
+
+```
+Brave Search → Collect articles → Gemini generates draft → Claude reviews → Deliver via email/Feishu
+```
+
+- **Multi-domain**: Configure separate briefing domains (e.g. "tech", "finance"), each with its own keywords, prompts, and delivery targets
+- **Keyword evolution**: After each cycle, the LLM analyzes coverage gaps and suggests new search keywords — the keyword list improves over time
+- **Review layer**: Optional Claude review pass catches hallucinations and improves quality before delivery
+- **Flexible delivery**: Email (SMTP), Feishu IM card, Feishu document, or any combination
+
+Each domain is a folder under `~/briefing/domains/<name>/` with `sources.yaml` (keywords), `domain.yaml` (models + delivery config), and prompt templates. See `.claude/skills/briefing/SKILL.md` for full setup.
 
 ## Prerequisites
 
@@ -48,6 +72,7 @@ Key components:
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 - A Feishu (Lark) custom app with Bot capability and WebSocket enabled
 - Google AI Studio API key (for Gemini — multimodal, heartbeat, briefings)
+- (Optional) Gemini CLI for document analysis co-pilot
 
 ## Quick Start
 
@@ -72,33 +97,46 @@ cp config.yaml.example config.yaml
 tail -f data/nas-claude-hub.log
 ```
 
+For detailed setup with an AI agent guiding you through each step, see [SETUP.md](SETUP.md).
+
 ## Feishu App Setup
+
+We recommend creating **two** Feishu apps — one for interactive chat, one for notifications/alerts:
+
+| App | Purpose | Why separate |
+|-----|---------|-------------|
+| **Chat Bot** | User conversations, tool use | Interactive sessions, per-user context |
+| **Notifier** | Heartbeat alerts, briefing delivery, scheduled messages | Background tasks, no user session needed |
+
+This separation keeps notification delivery independent of chat sessions. A single app works too — just skip the `notify` section in config.
+
+### For each app:
 
 1. Go to [Feishu Open Platform](https://open.feishu.cn/app) → Create Custom App
 2. Enable **Bot** capability
-3. Enable **WebSocket** mode (not HTTP callback)
-4. Subscribe to events:
+3. Enable **WebSocket** mode (not HTTP callback) — *chat app only*
+4. Subscribe to events (chat app only):
    - `im.message.receive_v1` — receive messages
    - `im.message.recalled_v1` — handle message recall
-   - `im.message.message_read_v1` — read receipts (optional)
-5. Grant permissions:
-   - `im:message` — send/receive messages
-   - `im:message:send_as_bot` — send messages as bot
-   - Additional per-skill (see each skill's setup guide)
-6. Copy App ID and App Secret to `config.yaml`
+5. Grant permissions — import [`docs/feishu_scopes.json`](docs/feishu_scopes.json) for a complete set, or grant individually per skill
+6. Publish a version to activate the bot
+7. Copy App ID and App Secret to `config.yaml`
 
 ## Skills
 
-Skills are modular capabilities in `.claude/skills/`. Each has a `SKILL.md` with usage docs and a **First-Time Setup** section that guides the agent through configuration.
+Skills are modular capabilities in `.claude/skills/`. Each has a `SKILL.md` with usage docs and a setup guide.
 
 | Skill | Purpose | Key Config |
 |-------|---------|------------|
 | `hub-ops` | Cron jobs, service status, hot-reload | (built-in) |
 | `briefing` | Daily news briefing pipeline | Gemini API key, domain configs |
-| `feishu-cal` | Calendar event management | `feishu.calendar.calendar_id` |
+| `feishu-cal` | Calendar event CRUD, contacts | `feishu.calendar.calendar_id` |
 | `feishu-doc` | Document CRUD, search, comments | `feishu.docs.shared_folders` |
+| `feishu-task` | Task management, deadline monitoring | `feishu.tasks.tasklist_guid` |
+| `feishu-wiki` | Wiki space and page management | (add bot to wiki space) |
+| `gemini-doc` | Document analysis co-pilot | Gemini CLI installed |
 
-Each skill's `SKILL.md` contains an `ONBOARDING` section with a prerequisites checklist. The agent walks through this on first use, then removes the section once setup is confirmed.
+Each skill is opt-in — activate only what you need.
 
 ## Configuration
 
@@ -106,7 +144,7 @@ See `config.yaml.example` for all options. Key sections:
 
 | Section | Purpose |
 |---------|---------|
-| `feishu` | App credentials, calendar, docs, contacts |
+| `feishu` | App credentials, calendar, docs, tasks, contacts |
 | `llm` | Default provider/model, CLI paths, timeouts |
 | `gemini-api` | Google AI Studio API key |
 | `briefing` | Briefing pipeline model config |
@@ -126,16 +164,8 @@ See `config.yaml.example` for all options. Key sections:
 
 ## For AI Agents
 
-If you're an AI agent setting up this service for the first time:
-
-1. Read `CLAUDE.md` for project-level context and constraints
-2. Read `config.yaml.example` and help the user create `config.yaml`
-3. Check each skill's `SKILL.md` — the `ONBOARDING` sections tell you what to ask the user
-4. After confirming each skill's setup, delete its `ONBOARDING` section
-5. Run `./hub.sh start` and verify with `./hub.sh status`
-
-The onboarding sections are designed as prompts for you. Walk the user through prerequisites, help them configure, then clean up.
+If you're a Claude Code instance setting up this service for the first time, read [`SETUP.md`](SETUP.md) — it's a step-by-step bootstrap guide designed for you to walk the user through the entire setup interactively.
 
 ## License
 
-MIT
+[MIT](LICENSE)
