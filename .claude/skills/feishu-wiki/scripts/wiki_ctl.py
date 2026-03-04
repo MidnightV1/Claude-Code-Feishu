@@ -320,33 +320,7 @@ def _format_ts(ts) -> str:
         return str(ts)
 
 
-def _text_to_blocks(text: str) -> list[dict]:
-    """Convert plain text to Feishu docx block children."""
-    text = text.replace("\\n", "\n")
-    blocks = []
-    for line in text.split("\n"):
-        line = line.rstrip()
-        if not line:
-            continue
-
-        heading_match = re.match(r"^(#{1,9})\s+(.+)$", line)
-        if heading_match:
-            level = len(heading_match.group(1))
-            blocks.append({
-                "block_type": 2 + level,
-                "heading" + str(level): {
-                    "elements": [{"text_run": {"content": heading_match.group(2)}}]
-                },
-            })
-            continue
-
-        blocks.append({
-            "block_type": 2,
-            "text": {
-                "elements": [{"text_run": {"content": line}}],
-            },
-        })
-    return blocks
+from feishu_utils import text_to_blocks as _text_to_blocks  # noqa: E402
 
 
 # ── CLI ──────────────────────────────────────────────────

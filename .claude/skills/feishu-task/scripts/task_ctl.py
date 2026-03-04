@@ -31,6 +31,7 @@ BASE = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(BASE))
 
 from feishu_api import FeishuAPI, ContactStore  # noqa: E402
+from feishu_utils import parse_dt  # noqa: E402
 
 TZ = timezone(timedelta(hours=8))  # Asia/Shanghai
 
@@ -39,56 +40,6 @@ def _load_config():
     import yaml
     with open(BASE / "config.yaml") as f:
         return yaml.safe_load(f)
-
-
-def _parse_dt(s: str) -> int:
-    """Parse datetime string to unix timestamp (seconds).
-
-    Accepts: 'YYYY-MM-DD', 'YYYY-MM-DDTHH:MM', 'HH:MM' (today),
-             'tomorrow HH:MM', '+2h', '+30m'.
-    """
-    s = s.strip()
-    now = datetime.now(TZ)
-
-    # relative: +2h, +30m
-    if s.startswith("+"):
-        unit = s[-1]
-        val = int(s[1:-1])
-        if unit == "h":
-            dt = now + timedelta(hours=val)
-        elif unit == "m":
-            dt = now + timedelta(minutes=val)
-        else:
-            print(f"ERROR: Unknown time unit '{unit}', use 'h' or 'm'",
-                  file=sys.stderr)
-            sys.exit(1)
-        return int(dt.timestamp())
-
-    # "tomorrow HH:MM"
-    if s.lower().startswith("tomorrow"):
-        time_part = s.split(None, 1)[1] if " " in s else "09:00"
-        h, m = map(int, time_part.split(":"))
-        dt = (now + timedelta(days=1)).replace(hour=h, minute=m, second=0, microsecond=0)
-        return int(dt.timestamp())
-
-    # "HH:MM" — today (or next day if past)
-    if len(s) <= 5 and ":" in s:
-        h, m = map(int, s.split(":"))
-        dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if dt < now:
-            dt += timedelta(days=1)
-        return int(dt.timestamp())
-
-    # ISO formats
-    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
-        try:
-            dt = datetime.strptime(s, fmt).replace(tzinfo=TZ)
-            return int(dt.timestamp())
-        except ValueError:
-            continue
-
-    print(f"ERROR: Cannot parse datetime: {s}", file=sys.stderr)
-    sys.exit(1)
 
 
 def _ms_to_str(ts) -> str:
@@ -222,7 +173,7 @@ def cmd_create(args, api, cfg, contacts):
     if args.desc:
         body["description"] = args.desc
     if args.due:
-        body["due"] = {"timestamp": _sec_to_ms(_parse_dt(args.due)),
+        body["due"] = {"timestamp": _sec_to_ms(parse_dt(args.due)),
                        "is_all_day": False}
     if args.assignee:
         body["members"] = _resolve_members(args.assignee, contacts)
@@ -331,7 +282,7 @@ def cmd_update(args, api, cfg, contacts):
         body["summary"] = args.title
         update_fields.append("summary")
     if args.due:
-        body["due"] = {"timestamp": _sec_to_ms(_parse_dt(args.due)),
+        body["due"] = {"timestamp": _sec_to_ms(parse_dt(args.due)),
                        "is_all_day": False}
         update_fields.append("due")
     if args.desc:

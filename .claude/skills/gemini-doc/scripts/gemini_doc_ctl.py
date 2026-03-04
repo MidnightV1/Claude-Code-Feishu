@@ -15,7 +15,7 @@ import shutil
 import subprocess
 import sys
 
-GEMINI_PATH = os.path.expanduser("~/.npm-global/bin/gemini")
+GEMINI_PATH = shutil.which("gemini") or os.path.expanduser("~/.npm-global/bin/gemini")
 DEFAULT_TIMEOUT = 300  # 5 minutes for large documents
 
 ANALYZE_PROMPT = (

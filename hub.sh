@@ -2,8 +2,8 @@
 # nas-claude-hub service manager
 # Usage: hub.sh {start|stop|restart|status|check|watchdog}
 
-HUB_DIR="$HOME/workspace/nas-claude-hub"
-PYTHON="$HOME/python313/python/bin/python3"
+HUB_DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHON="${BRIEFING_PYTHON:-python3}"
 SCREEN_NAME="claude-hub"
 WATCHDOG_SCREEN="hub-watchdog"
 WATCHDOG_LOG="$HUB_DIR/data/watchdog.log"
@@ -31,7 +31,7 @@ do_start() {
         echo "Started OK"
         screen -ls | grep "$SCREEN_NAME"
     else
-        echo "Failed to start — check logs: $HUB_DIR/data/nas-claude-hub.log"
+        echo "Failed to start — check logs: $HUB_DIR/data/hub.log"
         return 1
     fi
 }

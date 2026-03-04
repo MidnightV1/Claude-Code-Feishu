@@ -88,37 +88,7 @@ def _transfer_owner(api: FeishuAPI, doc_id: str, open_id: str,
     return False, resp.get("msg", "unknown error")
 
 
-def _text_to_blocks(text: str) -> list[dict]:
-    """Convert plain text (with markdown-like headings) to Feishu block children."""
-    # Handle escaped newlines from shell arguments
-    text = text.replace("\\n", "\n")
-    blocks = []
-    for line in text.split("\n"):
-        line = line.rstrip()
-        if not line:
-            continue
-
-        # Headings
-        heading_match = re.match(r"^(#{1,9})\s+(.+)$", line)
-        if heading_match:
-            level = len(heading_match.group(1))
-            # block_type: 3=H1, 4=H2, ..., 11=H9
-            blocks.append({
-                "block_type": 2 + level,
-                "heading" + str(level): {
-                    "elements": [{"text_run": {"content": heading_match.group(2)}}]
-                },
-            })
-            continue
-
-        # Regular text
-        blocks.append({
-            "block_type": 2,
-            "text": {
-                "elements": [{"text_run": {"content": line}}],
-            },
-        })
-    return blocks
+from feishu_utils import text_to_blocks as _text_to_blocks  # noqa: E402
 
 
 # ── Commands ─────────────────────────────────────────────

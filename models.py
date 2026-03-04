@@ -13,7 +13,7 @@ import uuid
 class LLMConfig:
     provider: str = "claude-cli"       # "claude-cli" | "gemini-cli" | "gemini-api"
     model: str = "opus"
-    timeout_seconds: int = 600
+    timeout_seconds: Optional[int] = None  # None → idle-based timeout in claude-cli
     system_prompt: Optional[str] = None
     temperature: float = 1.0           # gemini default
     thinking: Optional[str] = None     # gemini thinking level: minimal/low/medium/high

@@ -1,6 +1,6 @@
 # Feishu Bot Scopes
 
-Bot app (YOUR_CHAT_APP_ID) 已申请的 API 权限。更新时间：2026-03-04。
+Bot app API permissions. Last updated: 2026-03-04.
 
 ## 按模块分类
 

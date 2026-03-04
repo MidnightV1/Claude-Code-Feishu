@@ -5,6 +5,7 @@ feishu:
   app_id: cli_your_app_id          # Feishu app ID (Bot capability required)
   app_secret: your_app_secret_here  # Feishu app secret
   domain: https://open.feishu.cn    # or https://open.larksuite.com for Lark
+  admin_open_ids: []                # List of open_ids allowed to run #restart etc.
   calendar:
     enabled: false
     calendar_id: ""                 # Feishu calendar ID for event management
@@ -36,6 +37,7 @@ llm:
     temperature: 1.0
 
 briefing:
+  default_domain: ""                # Default domain for the `briefing` cron handler
   model: 3-Flash
   thinking: medium
   review:
@@ -60,7 +62,7 @@ heartbeat:
 
 logging:
   level: INFO
-  file: data/nas-claude-hub.log
+  file: data/hub.log
 
 # Optional: second Feishu app for notifications (alerts, briefings)
 # If omitted, the main feishu app is used for everything.

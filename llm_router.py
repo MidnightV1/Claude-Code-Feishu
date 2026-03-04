@@ -8,6 +8,7 @@ Context strategy for Claude CLI sessions:
 - Router owns retry logic; claude_cli.py is a simple executor
 """
 
+import asyncio
 import time
 import logging
 from typing import Awaitable, Callable
@@ -27,6 +28,8 @@ COMPRESS_TIMEOUT_PRIMARY = 60
 COMPRESS_TIMEOUT_FALLBACK = 30
 COMPRESS_TEMPERATURE = 0.2
 LOG_PREVIEW_LEN = 200
+TRANSIENT_RETRY_MAX = 2
+TRANSIENT_RETRY_DELAY = 3  # seconds
 
 # ═══ Context Recovery Templates ═══
 
@@ -230,6 +233,20 @@ class LLMRouter:
         if result.text:
             self._append_history(session_key, prompt, result.text)
 
+    @staticmethod
+    def _is_transient(result: LLMResult) -> bool:
+        """Check if a CLI error is transient and worth retrying."""
+        if not result.is_error:
+            return False
+        t = result.text
+        # ld.so dynamic linker crash
+        if "ld.so" in t or "dl-open.c" in t:
+            return True
+        # Generic empty-result crash (no stderr info)
+        if t == "":
+            return True
+        return False
+
     # ═══ Routing ═══
 
     async def run(
@@ -322,16 +339,26 @@ class LLMRouter:
                 parts.append(recovery)
                 effective_system = "\n\n".join(parts)
 
-        result = await self.claude.run(
-            prompt,
-            session_id=None,
-            model=llm_config.model,
-            system_prompt=effective_system,
-            timeout_seconds=llm_config.timeout_seconds,
-            effort=llm_config.effort,
-            on_activity=on_activity,
-            on_todo=on_todo,
-        )
+        # Retry loop for transient errors (e.g. ld.so crash)
+        result = None
+        for attempt in range(1 + TRANSIENT_RETRY_MAX):
+            result = await self.claude.run(
+                prompt,
+                session_id=None,
+                model=llm_config.model,
+                system_prompt=effective_system,
+                timeout_seconds=llm_config.timeout_seconds,
+                effort=llm_config.effort,
+                on_activity=on_activity,
+                on_todo=on_todo,
+            )
+            if not result.is_error or not self._is_transient(result):
+                break
+            if attempt < TRANSIENT_RETRY_MAX:
+                log.warning("Transient CLI error (attempt %d/%d), retrying in %ds: %s",
+                            attempt + 1, TRANSIENT_RETRY_MAX + 1,
+                            TRANSIENT_RETRY_DELAY, result.text[:LOG_PREVIEW_LEN])
+                await asyncio.sleep(TRANSIENT_RETRY_DELAY)
 
         self._save_result(session_key, result, prompt)
         try:

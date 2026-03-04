@@ -130,7 +130,11 @@ async def main():
     )
 
     # Plugins
-    briefing = BriefingPlugin(notify_config=notify_cfg, default_domain="ai-drama")
+    briefing_cfg = cfg.get("briefing", {})
+    briefing = BriefingPlugin(
+        notify_config=notify_cfg,
+        default_domain=briefing_cfg.get("default_domain"),
+    )
     register_plugin(briefing.descriptor(), bot=bot, scheduler=scheduler)
 
     await bot.start()

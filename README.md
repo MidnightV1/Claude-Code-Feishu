@@ -94,7 +94,7 @@ cp config.yaml.example config.yaml
 ./hub.sh status
 
 # View logs
-tail -f data/nas-claude-hub.log
+tail -f data/hub.log
 ```
 
 For detailed setup with an AI agent guiding you through each step, see [SETUP.md](SETUP.md).

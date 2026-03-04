@@ -132,7 +132,7 @@ Set `scheduler.enabled: false` and `heartbeat.enabled: false` for first boot (en
 ./hub.sh start
 sleep 3
 ./hub.sh status
-tail -20 data/nas-claude-hub.log
+tail -20 data/hub.log
 ```
 
 **Verify**: Log should show "FeishuBot connected" or similar WebSocket success.
@@ -230,7 +230,7 @@ Requires permissions: `wiki:wiki`, `wiki:node:*`
 
 ### Briefing
 
-Daily news digest pipeline. See [Briefing section in README](#daily-briefings) for details.
+Daily news digest pipeline. See the Daily Briefings section in [README.md](README.md) for details.
 
 Prerequisites:
 - Gemini API key (for content generation)

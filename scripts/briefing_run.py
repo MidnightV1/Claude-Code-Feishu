@@ -5,15 +5,16 @@ Executes the full briefing pipeline as an independent process:
   collect → generate → review → email → keyword evolution
 
 Usage:
-    python3 scripts/briefing_run.py --domain ai-drama --date 2026-03-03 --config config.yaml
-    python3 scripts/briefing_run.py --domain ai-drama --step collect
-    python3 scripts/briefing_run.py --domain ai-drama --step evolve
+    python3 scripts/briefing_run.py --domain <name> --date 2026-03-03 --config config.yaml
+    python3 scripts/briefing_run.py --domain <name> --step collect
+    python3 scripts/briefing_run.py --domain <name> --step evolve
 """
 
 import argparse
 import asyncio
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -31,10 +32,11 @@ from gemini_api import GeminiAPI  # noqa: E402
 from claude_cli import ClaudeCli  # noqa: E402
 from dispatcher import Dispatcher  # noqa: E402
 from feishu_api import FeishuAPI  # noqa: E402
+from feishu_utils import text_to_blocks  # noqa: E402
 
 log = logging.getLogger("briefing.run")
 
-PYTHON = Path.home() / "python313/python/bin/python3"
+PYTHON = Path(os.environ.get("BRIEFING_PYTHON", sys.executable))
 BRIEFING_DIR = Path.home() / "briefing"
 DOMAINS_DIR = BRIEFING_DIR / "domains"
 ENGINE_DIR = BRIEFING_DIR / "engine"
@@ -301,7 +303,7 @@ class BriefingRunner:
             data = json.loads(self.dc.data_dir.joinpath("today_context.json").read_text(encoding="utf-8"))
             return len(data.get("articles", []))
         except Exception:
-            return -1
+            return 0
 
     async def _generate(self, date_str: str) -> LLMResult:
         context_path = self.dc.data_dir / "today_context.json"
@@ -425,7 +427,7 @@ class BriefingRunner:
 
         doc_id = resp["data"]["document"]["document_id"]
         content = output_file.read_text(encoding="utf-8")
-        blocks = self._text_to_blocks(content)
+        blocks = text_to_blocks(content)
         if blocks:
             resp2 = api.post(
                 f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
@@ -447,29 +449,6 @@ class BriefingRunner:
         doc_url = f"{domain}/docx/{doc_id}"
         log.info("[%s] Feishu doc created: %s", self.domain_name, doc_url)
         return True, doc_url
-
-    @staticmethod
-    def _text_to_blocks(text: str) -> list[dict]:
-        """Convert markdown text to Feishu docx block children (headings + paragraphs)."""
-        blocks = []
-        for line in text.split("\n"):
-            line = line.rstrip()
-            if not line:
-                continue
-            heading_match = re.match(r"^(#{1,9})\s+(.+)$", line)
-            if heading_match:
-                level = len(heading_match.group(1))
-                key = f"heading{level}"
-                blocks.append({
-                    "block_type": 2 + level,
-                    key: {"elements": [{"text_run": {"content": heading_match.group(2)}}]},
-                })
-            else:
-                blocks.append({
-                    "block_type": 2,
-                    "text": {"elements": [{"text_run": {"content": line}}]},
-                })
-        return blocks
 
     # ── Helpers ──────────────────────────────────────────
 

@@ -24,6 +24,7 @@ BASE = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(BASE))
 
 from feishu_api import FeishuAPI, ContactStore  # noqa: E402
+from feishu_utils import parse_dt  # noqa: E402
 
 TZ = timezone(timedelta(hours=8))  # Asia/Shanghai
 
@@ -52,54 +53,6 @@ def _get_calendar_id(api: FeishuAPI, cfg: dict) -> str:
     sys.exit(1)
 
 
-def _parse_dt(s: str) -> int:
-    """Parse datetime string to unix timestamp.
-
-    Accepts: 'YYYY-MM-DD', 'YYYY-MM-DDTHH:MM', 'HH:MM' (today),
-             'tomorrow HH:MM', '+2h', '+30m'.
-    """
-    s = s.strip()
-    now = datetime.now(TZ)
-
-    # relative: +2h, +30m
-    if s.startswith("+"):
-        unit = s[-1]
-        val = int(s[1:-1])
-        if unit == "h":
-            dt = now + timedelta(hours=val)
-        elif unit == "m":
-            dt = now + timedelta(minutes=val)
-        else:
-            raise ValueError(f"Unknown time unit '{unit}' (use 'h' or 'm')")
-        return int(dt.timestamp())
-
-    # "tomorrow HH:MM"
-    if s.lower().startswith("tomorrow"):
-        time_part = s.split(None, 1)[1] if " " in s else "09:00"
-        h, m = map(int, time_part.split(":"))
-        dt = (now + timedelta(days=1)).replace(hour=h, minute=m, second=0, microsecond=0)
-        return int(dt.timestamp())
-
-    # "HH:MM" — today
-    if len(s) <= 5 and ":" in s:
-        h, m = map(int, s.split(":"))
-        dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if dt < now:
-            dt += timedelta(days=1)
-        return int(dt.timestamp())
-
-    # ISO formats
-    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
-        try:
-            dt = datetime.strptime(s, fmt).replace(tzinfo=TZ)
-            return int(dt.timestamp())
-        except ValueError:
-            continue
-
-    print(f"ERROR: Cannot parse datetime: {s}", file=sys.stderr)
-    sys.exit(1)
-
-
 def _ts_to_str(ts: str | int) -> str:
     """Unix timestamp (string or int) to readable datetime."""
     return datetime.fromtimestamp(int(ts), TZ).strftime("%Y-%m-%d %H:%M")
@@ -125,8 +78,8 @@ def _resolve_attendees(names: str, contacts: ContactStore) -> list[dict]:
 def cmd_event_create(args, api, cal_id, contacts):
     body = {
         "summary": args.title,
-        "start_time": {"timestamp": str(_parse_dt(args.start)), "timezone": "Asia/Shanghai"},
-        "end_time": {"timestamp": str(_parse_dt(args.end)), "timezone": "Asia/Shanghai"},
+        "start_time": {"timestamp": str(parse_dt(args.start)), "timezone": "Asia/Shanghai"},
+        "end_time": {"timestamp": str(parse_dt(args.end)), "timezone": "Asia/Shanghai"},
         "need_notification": True,
     }
     if args.desc:
@@ -207,9 +160,9 @@ def cmd_event_update(args, api, cal_id, contacts):
     if args.title:
         body["summary"] = args.title
     if args.start:
-        body["start_time"] = {"timestamp": str(_parse_dt(args.start)), "timezone": "Asia/Shanghai"}
+        body["start_time"] = {"timestamp": str(parse_dt(args.start)), "timezone": "Asia/Shanghai"}
     if args.end:
-        body["end_time"] = {"timestamp": str(_parse_dt(args.end)), "timezone": "Asia/Shanghai"}
+        body["end_time"] = {"timestamp": str(parse_dt(args.end)), "timezone": "Asia/Shanghai"}
     if args.desc:
         body["description"] = args.desc
 

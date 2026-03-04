@@ -10,7 +10,7 @@ description: Manage Feishu wiki spaces and pages — list spaces, browse node tr
 
 ### Prerequisites
 
-- [x] **Feishu app permissions**: ✅ Already granted — `wiki:wiki`, `wiki:wiki:readonly`, `wiki:node:*`, `wiki:space:*`, `wiki:member:*`, `wiki:setting:*` (see `docs/feishu_scopes.md`)
+- [ ] **Feishu app permissions**: `wiki:wiki`, `wiki:wiki:readonly`, `wiki:node:*`, `wiki:space:*`, `wiki:member:*`, `wiki:setting:*` (see `docs/feishu_scopes.md`)
 - [ ] **Add bot to wiki space**: The bot must be added as a member (or admin) of the target wiki space. Go to Wiki Space Settings > Members > Add the bot app.
 - [ ] **Verify access**:
   ```bash

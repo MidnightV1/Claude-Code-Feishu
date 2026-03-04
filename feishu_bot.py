@@ -24,9 +24,8 @@ DEDUP_MAX_SIZE = 1000
 DEBOUNCE_SECONDS = 3    # debounce window for multi-part messages
 
 # Admin allowlist: only these open_ids can execute destructive commands (#restart)
-ADMIN_OPEN_IDS: set[str] = {
-    "ADMIN_OPEN_ID",  # John
-}
+# Loaded from config.yaml feishu.admin_open_ids at startup; empty = no admin commands
+ADMIN_OPEN_IDS: set[str] = set()
 
 # ═══ Feishu Channel System Prompt ═══
 # Injected via --append-system-prompt for all Feishu-originated Claude CLI calls.
@@ -129,6 +128,9 @@ class FeishuBot:
         self.app_id = config.get("app_id", "")
         self.app_secret = config.get("app_secret", "")
         self.domain = config.get("domain", "https://open.feishu.cn")
+        # Load admin allowlist from config
+        global ADMIN_OPEN_IDS
+        ADMIN_OPEN_IDS = set(config.get("admin_open_ids", []))
         self.router = router
         self.scheduler = scheduler
         self.heartbeat = heartbeat
@@ -176,7 +178,7 @@ class FeishuBot:
             .register_p2_task_task_update_tenant_v1(_noop) \
             .build()
 
-        self._loop = asyncio.get_event_loop()
+        self._loop = asyncio.get_running_loop()
         self._ws_client = lark.ws.Client(
             self.app_id, self.app_secret,
             event_handler=handler,
@@ -740,7 +742,7 @@ class FeishuBot:
         return LLMConfig(
             provider=self.default_llm.provider,
             model=self.default_llm.model,
-            timeout_seconds=self.default_llm.timeout_seconds,
+            # timeout_seconds=None → idle-based timeout for chat
         ), prompt
 
     async def _route_command(self, text: str, chat_id: str, chat_type: str, sender_id: str) -> str | None:
@@ -862,7 +864,7 @@ class FeishuBot:
             result = _sp.run(
                 ["python3", "scripts/check_quota.py", "--feishu"],
                 capture_output=True, text=True, timeout=20,
-                cwd=os.path.expanduser("~/workspace/nas-claude-hub"),
+                cwd=os.path.dirname(os.path.abspath(__file__)),
             )
             if result.returncode != 0:
                 return f"Quota check failed: {result.stderr.strip()}"
@@ -874,7 +876,7 @@ class FeishuBot:
         """Wait for reply delivery, then trigger hub restart in a detached process."""
         await asyncio.sleep(3)
         import subprocess
-        hub_dir = os.path.expanduser("~/workspace/nas-claude-hub")
+        hub_dir = os.path.dirname(os.path.abspath(__file__))
         log_path = os.path.join(hub_dir, "data", "restart.log")
         with open(log_path, "a") as lf:
             subprocess.Popen(

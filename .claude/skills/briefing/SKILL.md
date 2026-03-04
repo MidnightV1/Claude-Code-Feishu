@@ -152,11 +152,13 @@ schedule: "0 8 * * *"
 
 ## Registered Handlers
 
+Handlers are auto-discovered from `~/briefing/domains/`. Example:
+
 | Handler | Domain | Cron | Description |
 |---------|--------|------|-------------|
-| `briefing` | ai-drama (default) | `0 8 * * *` | 每天 8:00，AI 行业日报 |
-| `briefing:heritage-ai` | heritage-ai | `0 20 * * *` | 每天 20:00，遗产 AI 日报 |
+| `briefing` | (default domain) | `0 8 * * *` | Daily briefing for the default domain |
+| `briefing:<name>` | `<name>` | user-defined | Per-domain briefing |
 
-`briefing` handler（无后缀）= default domain = `ai-drama`。新增 domain 用 `briefing:<name>` 格式注册。
+`briefing` handler (no suffix) = default domain (set via `briefing.default_domain` in config.yaml). New domains register as `briefing:<name>`.
 
 Handler jobs don't need a prompt — they spawn `briefing_run.py` as subprocess.

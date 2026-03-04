@@ -7,13 +7,14 @@ suitable for CC to relay to users.
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 HUB_DIR = Path(__file__).resolve().parents[4]  # .claude/skills/briefing/scripts/ → hub root
 RUNNER = HUB_DIR / "scripts" / "briefing_run.py"
-PYTHON = Path.home() / "python313/python/bin/python3"
+PYTHON = Path(os.environ.get("BRIEFING_PYTHON", sys.executable))
 CONFIG = HUB_DIR / "config.yaml"
 DOMAINS_DIR = Path.home() / "briefing" / "domains"
 

@@ -94,7 +94,7 @@ cp config.yaml.example config.yaml
 ./hub.sh status
 
 # 查看日志
-tail -f data/nas-claude-hub.log
+tail -f data/hub.log
 ```
 
 如需 AI agent 引导你完成完整配置，请参阅 [SETUP.md](SETUP.md)。

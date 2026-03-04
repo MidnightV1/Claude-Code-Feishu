@@ -22,7 +22,7 @@ DOMAINS_DIR = Path.home() / "briefing" / "domains"
 class BriefingPlugin:
     """Subprocess-based briefing plugin — zero pipeline logic in hub process."""
 
-    def __init__(self, notify_config: dict, default_domain: str = "ai-drama"):
+    def __init__(self, notify_config: dict, default_domain: str = None):
         self.default_domain = default_domain
         self.notify_config = notify_config
         self._config_path = str(Path(__file__).resolve().parent / "config.yaml")

@@ -140,8 +140,9 @@ PDF 处理降级链：Gemini CLI（订阅免费）→ Gemini API（按 token 计
 |-----------|------|
 | `main.py` | 入口，PID 文件写入，SIGUSR1 热加载信号 |
 | `feishu_bot.py` | 飞书 WebSocket Bot，消息路由，debounce，多模态处理 |
-| `briefing_plugin.py` | 日报 thin shim（subprocess launcher，60 行，不含逻辑） |
-| `scripts/briefing_run.py` | 日报 pipeline 独立脚本（采集→生成→审稿→邮件→关键词进化） |
+| `briefing_plugin.py` | 日报 thin shim（subprocess launcher，不含逻辑） |
+| `scripts/briefing_run.py` | 日报 pipeline 独立脚本（采集→生成→审稿→投递→关键词进化） |
+| `scripts/compress_image.py` | 图片压缩子进程（隔离 PIL 避免 ld.so 冲突） |
 | `scheduler.py` | 进程内 cron 调度器（croniter + asyncio timer） |
 | `heartbeat.py` | 心跳监控（两层 Sonnet：triage → action，DM 通知） |
 | `gemini_cli.py` | Gemini CLI subprocess 封装（stdin pipe，@file 语法，文档分析） |
@@ -150,14 +151,16 @@ PDF 处理降级链：Gemini CLI（订阅免费）→ Gemini API（按 token 计
 | `file_store.py` | 会话级文件存储（图片/文件持久化 + 上下文注入） |
 | `claude_cli.py` | Claude CLI subprocess 封装（stream-json + TodoWrite 进度流） |
 | `gemini_api.py` | Gemini API SDK 封装（多模态 + Files API） |
-| `models.py` | 共享数据结构 |
 | `feishu_api.py` | 飞书 API 客户端（token 缓存 + HTTP + 联系人映射） |
+| `models.py` | 共享数据结构 |
 | `store.py` | JSON 原子持久化 |
+| `feishu_utils.py` | 共享工具函数（`text_to_blocks`, `parse_dt`） |
 | `config.yaml` | 配置（凭据、模型、心跳、日报、飞书） |
 | `hub.sh` | 服务管理脚本（start/stop/restart/status/watchdog） |
 | `.claude/skills/` | Claude Code Skills |
 | `data/` | 运行时状态（jobs.json, sessions.json, hub.pid, logs） |
-| `docs/feishu_scopes.md` | 飞书 Bot 已申请的 API 权限清单（按模块分类） |
+| `docs/feishu_scopes.json` | 飞书 Bot 权限集（可导入飞书开放平台） |
+| `docs/feishu_scopes.md` | 飞书 Bot 权限清单（按模块分类） |
 | `PLAN.md` | 架构设计文档 |
 
 ---
