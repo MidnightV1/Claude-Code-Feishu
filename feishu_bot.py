@@ -106,6 +106,7 @@ class PendingBatch:
     parts: list = field(default_factory=list)
     footers: list = field(default_factory=list)
     first_message_id: str = ""
+    latest_message_id: str = ""  # tracks newest message for queued card placement
     message_ids: set = field(default_factory=set)  # all message_ids in this batch
     chat_id: str = ""
     chat_type: str = ""
@@ -140,6 +141,8 @@ class FeishuBot:
         self._running_tasks: dict[str, asyncio.Task] = {}  # key → flush/LLM task (for cancel)
         self._thinking_cards: dict[str, str] = {}  # key → thinking card message_id
         self._msg_to_key: dict[str, str] = {}  # message_id → debounce key (for recall)
+        self._session_locks: dict[str, asyncio.Lock] = {}  # per-session serialization
+        self._queued_cards: dict[str, str] = {}  # key → queued indicator card message_id
         self._ws_client = None
         self._loop = None
         self._dedup: dict[str, float] = {}
@@ -399,10 +402,13 @@ class FeishuBot:
         if key not in self._pending:
             self._pending[key] = PendingBatch(
                 first_message_id=message_id,
+                latest_message_id=message_id,
                 chat_id=chat_id,
                 chat_type=chat_type,
                 sender_id=sender_id,
             )
+        else:
+            self._pending[key].latest_message_id = message_id
         self._pending[key].message_ids.add(message_id)
         self._msg_to_key[message_id] = key
         return self._pending[key]
@@ -446,7 +452,12 @@ class FeishuBot:
             pass
 
     async def _flush(self, key):
-        """Process the accumulated batch: combine parts → LLM → reply."""
+        """Coordinate batch processing with per-session serialization.
+
+        If another batch is already processing for this key, show a queued
+        indicator card and return — the processing loop will pick up the
+        pending batch when it finishes the current one.
+        """
         batch = self._pending.get(key)
         if not batch:
             return
@@ -454,13 +465,57 @@ class FeishuBot:
             # Media still processing; timer will be reset when it completes
             return
 
-        batch = self._pending.pop(key)
-        if not batch.parts:
-            for mid in batch.message_ids:
-                self._msg_to_key.pop(mid, None)
+        lock = self._session_locks.setdefault(key, asyncio.Lock())
+
+        if lock.locked():
+            # Previous batch still processing — show/update queued card
+            await self._update_queued_card(key, batch)
             return
 
-        # Register flush task early for recall support (covers setup gap before llm_task)
+        async with lock:
+            while True:
+                # Clean up queued card from waiting phase
+                await self._delete_queued_card(key)
+
+                batch = self._pending.get(key)
+                if not batch or batch.pending_media > 0:
+                    break
+                batch = self._pending.pop(key)
+                if not batch.parts:
+                    for mid in batch.message_ids:
+                        self._msg_to_key.pop(mid, None)
+                    break
+
+                await self._process_batch(key, batch)
+
+                # Check for more pending messages (arrived during processing)
+                if key not in self._pending:
+                    break
+
+    async def _update_queued_card(self, key, batch):
+        """Show or move the queued indicator card under the latest message."""
+        old_card = self._queued_cards.get(key)
+        if old_card:
+            asyncio.create_task(self._safe_delete_card(old_card))
+        card_id = await self.dispatcher.send_card_return_id(
+            batch.chat_id, "⏳ 以上消息排队中，等待当前任务完成…",
+            reply_to=batch.latest_message_id,
+        )
+        if card_id:
+            self._queued_cards[key] = card_id
+
+    async def _delete_queued_card(self, key):
+        """Remove queued indicator card if exists."""
+        card_id = self._queued_cards.pop(key, None)
+        if card_id:
+            await self._safe_delete_card(card_id)
+
+    async def _process_batch(self, key, batch):
+        """Process a single batch: combine parts → LLM → reply.
+
+        Must be called under session lock.
+        """
+        # Register flush task early for recall support
         self._running_tasks[key] = asyncio.current_task()
 
         combined = "\n\n".join(batch.parts)
@@ -470,7 +525,7 @@ class FeishuBot:
             else f"chat:{batch.chat_id}"
         )
 
-        # Send "thinking" card as immediate feedback (replaces Typing reaction)
+        # Send "thinking" card as immediate feedback
         thinking_msg_id = await self.dispatcher.send_card_return_id(
             batch.chat_id, "💭 正在思考…",
             reply_to=batch.first_message_id,
@@ -489,6 +544,11 @@ class FeishuBot:
                 file_context = self.file_store.get_context_prompt(session_key)
                 if file_context:
                     parts.append(file_context)
+                # Inject pending heartbeat notifications into context
+                notifications = self.heartbeat.drain_notifications(session_key)
+                if notifications:
+                    parts.append("# 系统通知（上次对话后发生的事件）\n"
+                                 + "\n".join(notifications))
                 llm_config = replace(llm_config, system_prompt="\n\n".join(parts))
 
             # ── Progress: tool activity + todo progress on thinking card ──
@@ -579,10 +639,8 @@ class FeishuBot:
                 result = await llm_task
             except asyncio.CancelledError:
                 log.info("LLM task cancelled for %s (user recalled)", key)
-                # Delete thinking card on cancel
                 if thinking_msg_id:
                     await self.dispatcher.delete_message(thinking_msg_id)
-                # Clean up any history saved in the race window
                 self.router.remove_last_round(session_key)
                 asyncio.create_task(self.router.save_sessions())
                 return
@@ -621,17 +679,14 @@ class FeishuBot:
                     batch.chat_id, reply_text,
                     reply_to=batch.first_message_id,
                 )
-                # Cache bot reply for quote lookup (API returns degraded content for cards)
                 if reply_mid:
                     self._cache_reply(reply_mid, reply_text)
         except asyncio.CancelledError:
-            # Cancelled during setup phase (before LLM task started)
             log.info("Flush cancelled for %s during setup (user recalled)", key)
             if thinking_msg_id:
                 asyncio.create_task(self._safe_delete_card(thinking_msg_id))
         except Exception as e:
             log.error("Batch processing error: %s", e, exc_info=True)
-            # Clean up thinking card and notify user
             if thinking_msg_id:
                 await self.dispatcher.delete_message(thinking_msg_id)
             err_type = type(e).__name__
@@ -650,7 +705,6 @@ class FeishuBot:
             self._thinking_cards.pop(key, None)
             self._running_tasks.pop(key, None)
             # Keep _msg_to_key entries for recall-after-completion support.
-            # Evict oldest if too many (dict is insertion-ordered).
             if len(self._msg_to_key) > 200:
                 excess = len(self._msg_to_key) - 200
                 it = iter(self._msg_to_key)

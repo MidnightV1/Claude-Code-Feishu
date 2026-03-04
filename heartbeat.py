@@ -13,6 +13,7 @@ import os
 import re
 import time
 import logging
+from collections import defaultdict
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from models import LLMConfig, LLMResult
@@ -42,17 +43,19 @@ TRIAGE_PROMPT = (
 )
 
 ACTION_PROMPT = (
-    "你是用户的 AI 助手，正在通过飞书 DM 给用户发消息。\n\n"
-    "心跳检测到以下任务需要关注：\n{triage_findings}\n\n"
+    "你是用户的 AI 助手，通过飞书 DM 给用户发提醒。\n\n"
+    "需要关注的任务：\n{triage_findings}\n\n"
     "任务快照：\n{task_snapshot}\n\n"
-    "请自主分析并采取需要的行动：\n"
-    "- 需要更新的任务（状态、截止日期）→ 用 task_ctl.py update/complete\n"
-    "- 需要创建的跟进任务 → 用 task_ctl.py create\n\n"
-    "工具：python3 .claude/skills/feishu-task/scripts/task_ctl.py <command>\n"
-    "命令：create, list, get, update, complete, assign, unassign, delete\n\n"
-    "执行完毕后，用自然口吻写一段简短提醒发给用户。\n"
-    "要求：像对话一样自然，不要用「行动报告」「心跳」等系统术语，"
-    "直接说「提醒你一下，XX 任务快到期了」这种风格。"
+    "可用工具（仅在需要修改任务时使用）：\n"
+    "python3 .claude/skills/feishu-task/scripts/task_ctl.py <command>\n"
+    "命令：update, complete, create\n\n"
+    "**输出规则（严格遵守）：**\n"
+    "- 只输出最终发给用户的消息文本\n"
+    "- 禁止输出分析过程、内部推理、行动计划\n"
+    "- 风格：像朋友提醒一样自然简短，一两句话\n"
+    "- 禁止使用「心跳」「行动报告」「任务状态确认」等系统术语\n"
+    "- 示例：「XX 快到期了，12:30 截止，要不要帮你标记完成？」\n"
+    "- 如果执行了工具操作，顺带提一句做了什么"
 )
 
 
@@ -94,6 +97,8 @@ class HeartbeatMonitor:
         self.dispatcher = dispatcher
         self._task: asyncio.Task | None = None
         self._last_sent_at: float | None = None
+        # Pending notifications per session key — consumed by feishu_bot on next user message
+        self._pending_notifications: dict[str, list[str]] = defaultdict(list)
 
     async def start(self):
         if not self.enabled:
@@ -192,10 +197,20 @@ class HeartbeatMonitor:
     # ═══ Internal ═══
 
     async def _deliver(self, text: str) -> str | None:
-        """Deliver message: DM to user if configured, else delivery target."""
+        """Deliver message and store for conversation context injection."""
         if self.notify_open_id:
-            return await self.dispatcher.send_to_user(self.notify_open_id, text)
+            result = await self.dispatcher.send_to_user(self.notify_open_id, text)
+            # Store for context injection: session_key matches feishu_bot p2p pattern
+            session_key = f"user:{self.notify_open_id}"
+            now = datetime.now(ZoneInfo(self.tz_name)).strftime("%H:%M")
+            self._pending_notifications[session_key].append(
+                f"[系统通知 {now}] 已向用户发送任务提醒：{text}")
+            return result
         return await self.dispatcher.send_to_delivery_target(text)
+
+    def drain_notifications(self, session_key: str) -> list[str]:
+        """Pop and return pending notifications for a session. Called by feishu_bot."""
+        return self._pending_notifications.pop(session_key, [])
 
     async def _loop(self):
         try:
