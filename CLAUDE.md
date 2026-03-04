@@ -51,12 +51,12 @@ CLI 超时策略（`claude_cli.py`）：
 
 | 场景 | 超时方式 | 默认值 |
 |------|----------|--------|
-| 聊天（无显式 timeout） | **空闲超时**：连续无 stream 输出才断开 | idle=120s, hard cap=1800s |
+| 聊天（无显式 timeout） | **空闲超时**：连续无 stream 输出才断开 | idle=180s, hard cap=1800s |
 | 心跳/压缩（显式 timeout） | **绝对超时**：到时间直接断开 | 由调用方指定 |
 
 上下文策略特点：
 - **无 TTL 限制** — 永远尝试 `--resume`，让 CLI 自行判断 session 可用性
-- **Retry 在 router 层** — resume 失败后带上下文重试，claude_cli 只做执行
+- **Retry 在 router 层** — resume 失败（含超时）后静默降级到带上下文的新 session，不返回错误给用户
 - **上下文注入走 system prompt** — 不污染 user message，CC 能区分历史和当前指令
 - **Sonnet 压缩（Gemini fallback）** — 结构化摘要保留决策、文件路径、任务状态
 - **恢复通知** — 降级时告知 CC 工具调用记录不可访问，需重新读取文件

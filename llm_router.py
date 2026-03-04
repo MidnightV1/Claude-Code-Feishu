@@ -323,10 +323,8 @@ class LLMRouter:
                 except Exception:
                     log.warning("Failed to persist session", exc_info=True)
                 return result
-            # Resume failed — check if timeout (don't retry, it would double the wait)
+            # Resume failed — fall through to fresh session with recovery context
             log.warning("Resume failed for %s: %s", session_key, result.text[:LOG_PREVIEW_LEN])
-            if "[Timeout" in result.text:
-                return result
 
         # ── Step 2: Fresh session with recovery context via system prompt ──
         effective_system = llm_config.system_prompt

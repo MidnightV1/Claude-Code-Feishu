@@ -145,6 +145,13 @@ class Dispatcher:
             return None
         return await self.send_text(self.delivery_chat_id, text)
 
+    async def send_card_to_delivery(self, text: str) -> str | None:
+        """Send a card to delivery chat, returning message_id for later update_card()."""
+        if not self.delivery_chat_id:
+            log.warning("No delivery_chat_id configured, skipping delivery")
+            return None
+        return await self.send_card_return_id(self.delivery_chat_id, text)
+
     async def send_to_user(self, open_id: str, text: str) -> str | None:
         """Send a DM to a user by open_id. Returns message_id or None."""
         if not text.strip():

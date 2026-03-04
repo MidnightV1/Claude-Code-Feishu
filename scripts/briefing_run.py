@@ -133,6 +133,50 @@ class BriefingRunner:
             return await self._run_step(step, date_str)
         return await self._run_full(date_str)
 
+    # Patterns that indicate LLM returned an error instead of content
+    _ERROR_PATTERNS = [
+        re.compile(r'API Error:\s*\d{3}', re.IGNORECASE),
+        re.compile(r'"error"\s*:\s*\{', re.IGNORECASE),
+        re.compile(r'Failed to authenticate', re.IGNORECASE),
+        re.compile(r'Request not allowed', re.IGNORECASE),
+        re.compile(r'rate limit', re.IGNORECASE),
+        re.compile(r'Inconsistency detected by ld\.so', re.IGNORECASE),
+    ]
+
+    def _is_error_content(self, text: str) -> str | None:
+        """Check if LLM output is actually an error message. Returns match or None."""
+        text_start = text[:500]
+        for pat in self._ERROR_PATTERNS:
+            m = pat.search(text_start)
+            if m:
+                return m.group(0)
+        # Briefing must contain markdown heading
+        if len(text.strip()) < 200 and '#' not in text:
+            return "output too short and no markdown"
+        return None
+
+    def _check_dedup(self, date_str: str) -> str | None:
+        """Check if this date was already successfully run. Returns reason or None."""
+        status = self._load_last_status()
+        if not status:
+            return None
+        if (status.get("date") == date_str
+                and status.get("status") in ("ok", "partial")
+                and status.get("started_at")):
+            elapsed_since = time.time() - status["started_at"]
+            if elapsed_since < 3600:  # within 1 hour
+                return f"already ran {elapsed_since:.0f}s ago (status={status['status']})"
+        return None
+
+    def _load_last_status(self) -> dict | None:
+        path = self.dc.data_dir / "run_status.json"
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return None
+
     async def _run_full(self, date_str: str) -> dict:
         start = time.time()
         status = {
@@ -144,18 +188,39 @@ class BriefingRunner:
         errors = []
         total_cost = 0.0
 
+        # ── Dedup guard ──
+        dedup_reason = self._check_dedup(date_str)
+        if dedup_reason:
+            log.warning("[%s] %s: skipped — %s", self.domain_name, date_str, dedup_reason)
+            status.update({"status": "skipped", "reason": dedup_reason})
+            return status
+
+        # ── Progress card (single card, updated in-place) ──
         review_tag = f" → Claude {self.review_model} 审稿" if self.review_enabled else ""
-        await self.dispatcher.send_to_delivery_target(
+        card_text = (
             f"📋 **{self.dc.display_name}** | {date_str}\n"
-            f"采集 → {self._gen_provider} 生成{review_tag} → 分发"
+            f"采集 → {self._gen_provider} 生成{review_tag} → 分发\n\n"
+            f"⏳ 采集中..."
         )
+        card_mid = await self.dispatcher.send_card_to_delivery(card_text)
+
+        async def _update_card(new_text: str):
+            """Update the progress card, or send new message as fallback."""
+            nonlocal card_mid
+            if card_mid:
+                ok = await self.dispatcher.update_card(card_mid, new_text)
+                if ok:
+                    return
+            card_mid = await self.dispatcher.send_card_to_delivery(new_text)
 
         # ── Step 1: Collect ──
         log.info("[%s] %s: collecting...", self.domain_name, date_str)
         ok, output = await self._run_collector(date_str)
         if not ok:
-            msg = f"❌ **采集失败** | {self.dc.display_name}\n```\n{output[-500:]}\n```"
-            await self.dispatcher.send_to_delivery_target(msg)
+            await _update_card(
+                f"❌ **{self.dc.display_name}** | {date_str}\n"
+                f"采集失败\n```\n{output[-500:]}\n```"
+            )
             status.update({"status": "error", "error": "collector failed"})
             self._save_status(status)
             return status
@@ -163,10 +228,11 @@ class BriefingRunner:
         # ── Step 1.5: Low-yield check ──
         article_count = self._count_collected_articles()
         if article_count == 0:
-            msg = (f"📭 **{self.dc.display_name}** | {date_str}\n"
-                   f"今日无新增匹配信号，跳过生成。")
             log.info("[%s] %s: 0 articles, skipping", self.domain_name, date_str)
-            await self.dispatcher.send_to_delivery_target(msg)
+            await _update_card(
+                f"📭 **{self.dc.display_name}** | {date_str}\n"
+                f"今日无新增匹配信号，跳过生成。"
+            )
             status.update({"status": "skipped", "elapsed_s": round(time.time() - start, 1)})
             self._save_status(status)
             return status
@@ -174,12 +240,30 @@ class BriefingRunner:
             log.info("[%s] %s: sparse day (%d articles)", self.domain_name, date_str, article_count)
 
         # ── Step 2: Generate ──
+        await _update_card(
+            f"📋 **{self.dc.display_name}** | {date_str}\n"
+            f"✅ 采集 {article_count} 篇 → ⏳ {self._gen_provider} 生成中..."
+        )
         log.info("[%s] %s: generating via %s...", self.domain_name, date_str, self._gen_provider)
         gen_result = await self._generate(date_str)
         if gen_result.is_error:
-            msg = f"❌ **生成失败** | {self.dc.display_name}\n{gen_result.text[:500]}"
-            await self.dispatcher.send_to_delivery_target(msg)
+            await _update_card(
+                f"❌ **{self.dc.display_name}** | {date_str}\n"
+                f"生成失败\n{gen_result.text[:500]}"
+            )
             status.update({"status": "error", "error": "generation failed"})
+            self._save_status(status)
+            return status
+
+        # Validate generation output
+        gen_error = self._is_error_content(gen_result.text)
+        if gen_error:
+            await _update_card(
+                f"❌ **{self.dc.display_name}** | {date_str}\n"
+                f"生成输出异常: {gen_error}\n```\n{gen_result.text[:300]}\n```"
+            )
+            log.error("[%s] Generation output is error content: %s", self.domain_name, gen_error)
+            status.update({"status": "error", "error": f"gen output invalid: {gen_error}"})
             self._save_status(status)
             return status
 
@@ -191,18 +275,26 @@ class BriefingRunner:
         # ── Step 3: Review ──
         review_model_used = "off"
         if self.review_enabled:
-            log.info("[%s] %s: reviewing via Claude %s...", self.domain_name, date_str, self.review_model)
-            await self.dispatcher.send_to_delivery_target(
-                f"🔍 **审稿中** | Claude {self.review_model}"
+            await _update_card(
+                f"📋 **{self.dc.display_name}** | {date_str}\n"
+                f"✅ 采集 → ✅ 生成 → ⏳ Claude {self.review_model} 审稿中..."
             )
+            log.info("[%s] %s: reviewing via Claude %s...", self.domain_name, date_str, self.review_model)
             review_result = await self._review(briefing_md, date_str)
             if review_result.is_error:
                 errors.append(f"审稿失败(用初稿): {review_result.text[:100]}")
+                log.warning("[%s] Review error (using draft): %s", self.domain_name, review_result.text[:200])
             else:
-                (self.dc.output_dir / f"{date_str}-draft.md").write_text(briefing_md, encoding="utf-8")
-                briefing_md = review_result.text
-                total_cost += review_result.cost_usd
-                review_model_used = self.review_model
+                # Validate review output — reject if it's an error message
+                review_error = self._is_error_content(review_result.text)
+                if review_error:
+                    errors.append(f"审稿输出异常(用初稿): {review_error}")
+                    log.warning("[%s] Review output is error content: %s", self.domain_name, review_error)
+                else:
+                    (self.dc.output_dir / f"{date_str}-draft.md").write_text(briefing_md, encoding="utf-8")
+                    briefing_md = review_result.text
+                    total_cost += review_result.cost_usd
+                    review_model_used = self.review_model
 
         output_path.write_text(briefing_md, encoding="utf-8")
 
@@ -213,18 +305,8 @@ class BriefingRunner:
         if self.dc.distribution.get("email", {}).get("enabled", True):
             log.info("[%s] %s: sending email...", self.domain_name, date_str)
             email_ok, email_out = await self._send_email(date_str)
-            if email_ok:
-                await self.dispatcher.send_to_delivery_target(
-                    f"✅ **{self.dc.display_name}** | {date_str}\n"
-                    f"生成: {self._gen_provider} ({gen_result.duration_ms / 1000:.1f}s)"
-                    + (f" | 审稿: Claude {review_model_used}" if review_model_used != "off" else "")
-                    + f"\n总成本: ${total_cost:.4f}"
-                )
-            else:
+            if not email_ok:
                 errors.append(f"邮件失败: {email_out[-200:]}")
-                await self.dispatcher.send_to_delivery_target(
-                    f"⚠️ **{self.dc.display_name}** 生成成功，邮件失败\n```\n{email_out[-300:]}\n```"
-                )
 
         # ── Step 4.5: Feishu Document ──
         doc_cfg = self.dc.distribution.get("feishu_doc", {})
@@ -232,9 +314,7 @@ class BriefingRunner:
             log.info("[%s] %s: creating Feishu doc...", self.domain_name, date_str)
             doc_ok, doc_out = await self._send_feishu_doc(date_str)
             if doc_ok:
-                await self.dispatcher.send_to_delivery_target(
-                    f"📄 **文档已创建** | [{self.dc.display_name} {date_str}]({doc_out})"
-                )
+                errors.append(f"📄 [文档]({doc_out})")  # include in final card
             else:
                 errors.append(f"飞书文档失败: {doc_out[-200:]}")
                 log.warning("[%s] Feishu doc failed: %s", self.domain_name, doc_out)
@@ -247,8 +327,9 @@ class BriefingRunner:
                 log.exception("[%s] Keyword evolution failed", self.domain_name)
 
         elapsed = time.time() - start
+        final_status = "ok" if not errors else "partial"
         status.update({
-            "status": "ok" if not errors else "partial",
+            "status": final_status,
             "elapsed_s": round(elapsed, 1),
             "model": self._gen_provider,
             "review_model": review_model_used,
@@ -256,6 +337,19 @@ class BriefingRunner:
             "errors": errors,
         })
         self._save_status(status)
+
+        # ── Final card update ──
+        icon = "✅" if final_status == "ok" else "⚠️"
+        final_text = (
+            f"{icon} **{self.dc.display_name}** | {date_str}\n"
+            f"生成: {self._gen_provider} ({gen_result.duration_ms / 1000:.1f}s)"
+        )
+        if review_model_used != "off":
+            final_text += f" | 审稿: Claude {review_model_used}"
+        final_text += f"\n成本: ${total_cost:.4f} | 耗时: {elapsed:.0f}s"
+        if errors:
+            final_text += "\n" + "\n".join(f"- {e}" for e in errors)
+        await _update_card(final_text)
 
         summary = (f"[{self.domain_name}] {date_str} | {self._gen_provider}"
                    + (f"+{review_model_used}" if review_model_used != "off" else "")
