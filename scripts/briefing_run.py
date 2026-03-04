@@ -30,6 +30,7 @@ from models import LLMResult  # noqa: E402
 from gemini_api import GeminiAPI  # noqa: E402
 from claude_cli import ClaudeCli  # noqa: E402
 from dispatcher import Dispatcher  # noqa: E402
+from feishu_api import FeishuAPI  # noqa: E402
 
 log = logging.getLogger("briefing.run")
 
@@ -96,12 +97,14 @@ class DomainConfig:
 class BriefingRunner:
     """Standalone briefing pipeline — no hub process dependency."""
 
-    def __init__(self, domain: str, gemini: GeminiAPI, claude: ClaudeCli, dispatcher: Dispatcher):
+    def __init__(self, domain: str, gemini: GeminiAPI, claude: ClaudeCli,
+                 dispatcher: Dispatcher, cfg: dict | None = None):
         self.domain_name = domain
         self.dc = DomainConfig(domain)
         self.gemini = gemini
         self.claude = claude
         self.dispatcher = dispatcher
+        self._cfg = cfg or {}
 
         gen_cfg = self.dc.models.get("generate", {})
         self.gen_model = gen_cfg.get("model", "3-Flash")
@@ -220,6 +223,19 @@ class BriefingRunner:
                 await self.dispatcher.send_to_delivery_target(
                     f"⚠️ **{self.dc.display_name}** 生成成功，邮件失败\n```\n{email_out[-300:]}\n```"
                 )
+
+        # ── Step 4.5: Feishu Document ──
+        doc_cfg = self.dc.distribution.get("feishu_doc", {})
+        if doc_cfg.get("enabled", False):
+            log.info("[%s] %s: creating Feishu doc...", self.domain_name, date_str)
+            doc_ok, doc_out = await self._send_feishu_doc(date_str)
+            if doc_ok:
+                await self.dispatcher.send_to_delivery_target(
+                    f"📄 **文档已创建** | [{self.dc.display_name} {date_str}]({doc_out})"
+                )
+            else:
+                errors.append(f"飞书文档失败: {doc_out[-200:]}")
+                log.warning("[%s] Feishu doc failed: %s", self.domain_name, doc_out)
 
         # ── Step 5: Keyword Evolution (inline, not fire-and-forget) ──
         if self.dc.keyword_evolution.get("enabled", False):
@@ -379,6 +395,81 @@ class BriefingRunner:
             return False, "Email timed out (60s)"
         except Exception as e:
             return False, str(e)
+
+    async def _send_feishu_doc(self, date_str: str) -> tuple[bool, str]:
+        """Create a Feishu document with the briefing content."""
+        output_file = self.dc.output_dir / f"{date_str}.md"
+        if not output_file.exists():
+            return False, f"Briefing not found: {output_file}"
+
+        try:
+            feishu_cfg = self._cfg.get("feishu", {})
+            api = FeishuAPI(
+                app_id=feishu_cfg.get("app_id", ""),
+                app_secret=feishu_cfg.get("app_secret", ""),
+                domain=feishu_cfg.get("domain", "https://open.feishu.cn"),
+            )
+        except Exception as e:
+            return False, f"FeishuAPI init failed: {e}"
+
+        title = f"{self.dc.display_name} | {date_str}"
+        doc_cfg = self.dc.distribution.get("feishu_doc", {})
+        body = {"title": title}
+        folder = doc_cfg.get("folder_token")
+        if folder:
+            body["folder_token"] = folder
+
+        resp = api.post("/open-apis/docx/v1/documents", body)
+        if resp.get("code") != 0:
+            return False, f"Create doc failed: {resp.get('msg')}"
+
+        doc_id = resp["data"]["document"]["document_id"]
+        content = output_file.read_text(encoding="utf-8")
+        blocks = self._text_to_blocks(content)
+        if blocks:
+            resp2 = api.post(
+                f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+                {"children": blocks, "index": 0},
+                params={"document_revision_id": "-1"},
+            )
+            if resp2.get("code") != 0:
+                log.warning("[%s] Doc content write partial: %s", self.domain_name, resp2.get("msg"))
+
+        share_to = doc_cfg.get("share_to")
+        if share_to:
+            api.post(
+                f"/open-apis/drive/v1/permissions/{doc_id}/members",
+                body={"member_type": "openid", "member_id": share_to, "perm": "full_access"},
+                params={"type": "docx", "need_notification": "true"},
+            )
+
+        domain = feishu_cfg.get("domain", "https://open.feishu.cn").replace("open.", "")
+        doc_url = f"{domain}/docx/{doc_id}"
+        log.info("[%s] Feishu doc created: %s", self.domain_name, doc_url)
+        return True, doc_url
+
+    @staticmethod
+    def _text_to_blocks(text: str) -> list[dict]:
+        """Convert markdown text to Feishu docx block children (headings + paragraphs)."""
+        blocks = []
+        for line in text.split("\n"):
+            line = line.rstrip()
+            if not line:
+                continue
+            heading_match = re.match(r"^(#{1,9})\s+(.+)$", line)
+            if heading_match:
+                level = len(heading_match.group(1))
+                key = f"heading{level}"
+                blocks.append({
+                    "block_type": 2 + level,
+                    key: {"elements": [{"text_run": {"content": heading_match.group(2)}}]},
+                })
+            else:
+                blocks.append({
+                    "block_type": 2,
+                    "text": {"elements": [{"text_run": {"content": line}}]},
+                })
+        return blocks
 
     # ── Helpers ──────────────────────────────────────────
 
@@ -735,7 +826,7 @@ async def async_main(args):
     dispatcher = Dispatcher(notify_cfg)
     await dispatcher.start()
 
-    runner = BriefingRunner(args.domain, gemini, claude, dispatcher)
+    runner = BriefingRunner(args.domain, gemini, claude, dispatcher, cfg=cfg)
 
     step = None
     if args.command == "evolve":
