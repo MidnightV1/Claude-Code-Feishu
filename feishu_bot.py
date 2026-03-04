@@ -40,7 +40,7 @@ FEISHU_SYSTEM_PROMPT = """\
 
 **多模态输入**
 - 图片：已下载压缩存储到会话目录，prompt 中提供绝对路径。**收到图片时请用 Read 工具直接读取图片文件**，你具备原生视觉理解能力
-- 文件（PDF）：Gemini Files API 解析全文，注入 prompt
+- 文件（PDF）：Gemini CLI/API 生成文档摘要，注入 prompt。追问具体内容时使用 gemini-doc skill
 - 文件（代码/文本）：直接读取注入（.py, .js, .json, .yaml, .md 等 30+ 格式）
 - 文件持久化到会话存储（`data/files/`），跨消息可引用
 
@@ -546,11 +546,15 @@ class FeishuBot:
                 file_context = self.file_store.get_context_prompt(session_key)
                 if file_context:
                     parts.append(file_context)
-                # Inject pending heartbeat notifications into context
+                # Inject pending heartbeat notifications into user prompt
+                # (not system_prompt — system-reminder blocks get treated as
+                #  ignorable metadata; user prompt prefix ensures the model
+                #  treats notifications as conversational context)
                 notifications = self.heartbeat.drain_notifications(session_key)
                 if notifications:
-                    parts.append("# 系统通知（上次对话后发生的事件）\n"
-                                 + "\n".join(notifications))
+                    prompt = ("# 系统通知（上次对话后发生的事件）\n"
+                              + "\n".join(notifications)
+                              + "\n\n" + prompt)
                 llm_config = replace(llm_config, system_prompt="\n\n".join(parts))
 
             # ── Progress: tool activity + todo progress on thinking card ──
@@ -1017,33 +1021,34 @@ class FeishuBot:
                 file_type=file_type,
             )
 
-            # PDF → Gemini Files API
+            # PDF → Gemini CLI (subscription) → Gemini API (fallback) → Claude Read
             if ext == ".pdf":
-                vision_config = LLMConfig(provider="gemini-api", model="3-Flash")
-                result = await self.router.run(
-                    prompt=(
-                        f"Parse this PDF file '{file_name}' and output its full content "
-                        "in structured Chinese. Preserve headings, lists, tables. "
-                        "Be faithful to the original content."
-                    ),
-                    llm_config=vision_config,
-                    files=[stored_path],
+                summary, footer, method = await self._parse_pdf(
+                    stored_path, file_name, session_key,
                 )
-                if result.is_error:
-                    log.warning("PDF parse failed: %s", result.text[:200])
-                    return None, ""
-                self.file_store.update_analysis(
-                    session_key, os.path.basename(stored_path), result.text[:500]
-                )
-                footer = ""
-                if result.cost_usd > 0:
-                    footer = (
-                        f"\n\n`parse: gemini-api/3-Flash"
-                        f" | ${result.cost_usd:.4f} | {result.duration_ms}ms`"
+                if summary:
+                    skill_hint = (
+                        "如需查看文档具体内容，可使用 gemini-doc skill 查询：\n"
+                        "`python3 .claude/skills/gemini-doc/scripts/"
+                        f'gemini_doc_ctl.py query {stored_path} "问题"`'
                     )
+                    return (
+                        f"[用户发送了文件: {file_name}]\n"
+                        f"文件路径: {stored_path}\n"
+                        f"文档摘要:\n{summary}\n\n{skill_hint}",
+                        footer,
+                    )
+                # All parsers failed — CC reads directly
+                self.file_store.update_analysis(
+                    session_key, os.path.basename(stored_path),
+                    "PDF（解析失败，需 Read 工具读取）",
+                )
                 return (
-                    f"[用户发送了文件: {file_name}]\n文件内容：\n{result.text}",
-                    footer,
+                    f"[用户发送了文件: {file_name}]\n"
+                    f"文件路径: {stored_path}\n"
+                    f"PDF 自动解析失败。请用 Read 工具直接读取此文件"
+                    f"（每次最多 20 页，用 pages 参数指定页码范围）。",
+                    "`parse: fallback to Claude Read`",
                 )
 
             # Text/code → read directly
@@ -1099,6 +1104,68 @@ class FeishuBot:
         except Exception as e:
             log.error("File download error: %s", e)
             return None
+
+    # ═══ PDF Parsing (Gemini CLI → Gemini API → Claude Read fallback) ═══
+
+    _PDF_SUMMARY_PROMPT = (
+        "Analyze this document. Output a structured summary in Chinese:\n"
+        "1. 文档类型和主题（一句话）\n"
+        "2. 核心内容摘要（3-5 要点）\n"
+        "3. 关键数据/结论（如有）\n"
+        "4. 文档结构（章节列表）\n"
+        "Be concise. Total output under 800 chars."
+    )
+
+    async def _parse_pdf(
+        self, file_path: str, file_name: str, session_key: str,
+    ) -> tuple[str | None, str, str]:
+        """Parse PDF via Gemini CLI → Gemini API fallback.
+
+        Returns (summary_text, footer, method).
+        summary_text is None if all methods fail.
+        """
+        prompt = f"File: '{file_name}'. {self._PDF_SUMMARY_PROMPT}"
+
+        # Tier 1: Gemini CLI (subscription, no per-token cost)
+        if self.router.gemini_cli.available:
+            result = await self.router.gemini_cli.run_with_file(
+                prompt, file_path, timeout_seconds=120,
+            )
+            if not result.is_error and result.text.strip():
+                summary = result.text.strip()
+                self.file_store.update_analysis(
+                    session_key, os.path.basename(file_path), summary[:500],
+                )
+                footer = f"\n\n`parse: gemini-cli | {result.duration_ms}ms`"
+                log.info("PDF parsed via Gemini CLI: %s", file_name)
+                return summary, footer, "gemini-cli"
+            log.warning("Gemini CLI parse failed for %s: %s",
+                        file_name, (result.text or "empty")[:200])
+
+        # Tier 2: Gemini API (paid, but still cheaper than full-text injection)
+        if self.router.gemini_api.api_key:
+            vision_config = LLMConfig(provider="gemini-api", model="3-Flash")
+            result = await self.router.run(
+                prompt=prompt, llm_config=vision_config, files=[file_path],
+            )
+            if not result.is_error and result.text.strip():
+                summary = result.text.strip()
+                self.file_store.update_analysis(
+                    session_key, os.path.basename(file_path), summary[:500],
+                )
+                footer = ""
+                if result.cost_usd > 0:
+                    footer = (
+                        f"\n\n`parse: gemini-api/3-Flash"
+                        f" | ${result.cost_usd:.4f} | {result.duration_ms}ms`"
+                    )
+                log.info("PDF parsed via Gemini API: %s", file_name)
+                return summary, footer, "gemini-api"
+            log.warning("Gemini API parse failed for %s: %s",
+                        file_name, (result.text or "empty")[:200])
+
+        # Tier 3: All failed
+        return None, "", "none"
 
     # ═══ Helpers ═══
 

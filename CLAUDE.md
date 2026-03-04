@@ -77,6 +77,7 @@ CLI 超时策略（`claude_cli.py`）：
 | `feishu-doc` | `.claude/skills/feishu-doc/` | 文档 CRUD、搜索、评论分析、所有权转移 |
 | `feishu-task` | `.claude/skills/feishu-task/` | 任务 CRUD、截止日期管理、心跳联动 |
 | `feishu-wiki` | `.claude/skills/feishu-wiki/` | 知识库空间浏览、页面 CRUD、内容读写 |
+| `gemini-doc` | `.claude/skills/gemini-doc/` | 文档分析 co-pilot（Gemini CLI 订阅制，CC 上下文不注入全文） |
 
 参考：https://code.claude.com/docs/en/skills
 
@@ -124,9 +125,10 @@ CLI 超时策略（`claude_cli.py`）：
 | Provider | 调用方式 | 适用场景 |
 |----------|----------|----------|
 | `claude-cli` | `claude -p` subprocess | 对话、工具、图片理解（Read 原生视觉） |
-| `gemini-api` | `google-genai` SDK | 大文档（Files API）、PDF 解析 |
+| `gemini-cli` | subprocess stdin pipe | 文档分析（订阅制，@file 语法，gemini-doc skill） |
+| `gemini-api` | `google-genai` SDK | 大文档 fallback（Files API）、历史压缩 |
 
-`gemini-cli` 接口已预留，因 tree-sitter 编译问题on the server暂不可用。
+PDF 处理降级链：Gemini CLI（订阅免费）→ Gemini API（按 token 计费）→ Claude Read（20 页/次）。
 
 心跳两层架构：Sonnet（triage，无工具）→ Sonnet（action，有工具，仅异常时触发）。通知发到用户 DM，自然口吻。
 
@@ -142,7 +144,8 @@ CLI 超时策略（`claude_cli.py`）：
 | `scripts/briefing_run.py` | 日报 pipeline 独立脚本（采集→生成→审稿→邮件→关键词进化） |
 | `scheduler.py` | 进程内 cron 调度器（croniter + asyncio timer） |
 | `heartbeat.py` | 心跳监控（两层 Sonnet：triage → action，DM 通知） |
-| `llm_router.py` | 多模型路由（claude-cli / gemini-api） |
+| `gemini_cli.py` | Gemini CLI subprocess 封装（stdin pipe，@file 语法，文档分析） |
+| `llm_router.py` | 多模型路由（claude-cli / gemini-cli / gemini-api） |
 | `dispatcher.py` | 飞书消息发送（卡片 JSON 2.0 markdown，分块，重试，卡片更新） |
 | `file_store.py` | 会话级文件存储（图片/文件持久化 + 上下文注入） |
 | `claude_cli.py` | Claude CLI subprocess 封装（stream-json + TodoWrite 进度流） |

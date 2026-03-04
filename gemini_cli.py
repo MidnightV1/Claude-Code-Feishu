@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Gemini CLI subprocess wrapper (headless mode).
+"""Gemini CLI subprocess wrapper (headless stdin-pipe mode).
 
-Currently unavailable on certain systems NAS due to tree-sitter native module build issues.
-Interface is kept for future enablement.
+Pipe mode constraints (v0.31.0):
+- --output-format json hangs → parse plain text stdout
+- No session persistence → each invocation is stateless
+- @/path/to/file syntax injects local files (cheap, no upload)
 """
 
 import asyncio
-import json
 import time
 import os
 import logging
@@ -37,6 +38,7 @@ class GeminiCli:
         system_prompt: str | None = None,
         timeout_seconds: int | None = None,
     ) -> LLMResult:
+        """Run prompt via stdin pipe. Returns plain text output."""
         if not self.available:
             return LLMResult(
                 text="[Gemini CLI not available on this system]",
@@ -44,20 +46,21 @@ class GeminiCli:
             )
 
         timeout = timeout_seconds or self.default_timeout
-        args = [self.path, "--output-format", "json"]
+        args = [self.path]
         if model:
             args.extend(["--model", model])
-        args.append(prompt)
 
         start = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
                 *args,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout,
+                proc.communicate(input=prompt.encode("utf-8")),
+                timeout=timeout,
             )
             duration = int((time.monotonic() - start) * 1000)
         except asyncio.TimeoutError:
@@ -78,20 +81,7 @@ class GeminiCli:
                 duration_ms=duration, is_error=True,
             )
 
-        # Parse JSONL - take last result event
-        raw = stdout.decode("utf-8", errors="replace").strip()
-        text = ""
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-                if obj.get("type") == "result":
-                    text = obj.get("result", "") or obj.get("text", "")
-            except json.JSONDecodeError:
-                if not text:
-                    text = line
+        text = stdout.decode("utf-8", errors="replace").strip()
 
         if not text and proc.returncode != 0:
             err = stderr.decode("utf-8", errors="replace")[:500] if stderr else ""
@@ -100,4 +90,17 @@ class GeminiCli:
                 duration_ms=duration, is_error=True,
             )
 
-        return LLMResult(text=text or raw, duration_ms=duration)
+        return LLMResult(text=text or "", duration_ms=duration)
+
+    async def run_with_file(
+        self,
+        prompt: str,
+        file_path: str,
+        model: str | None = None,
+        timeout_seconds: int | None = None,
+    ) -> LLMResult:
+        """Run prompt with @file_path attachment via stdin pipe."""
+        full_prompt = f"{prompt} @{file_path}"
+        return await self.run(
+            full_prompt, model=model, timeout_seconds=timeout_seconds,
+        )
