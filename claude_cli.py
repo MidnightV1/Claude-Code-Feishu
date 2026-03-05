@@ -3,8 +3,9 @@
 
 import asyncio
 import json
-import time
 import os
+import signal
+import time
 import logging
 from pathlib import PurePosixPath
 from typing import Awaitable, Callable
@@ -67,6 +68,18 @@ class ClaudeCli:
         self.workspace_dir = os.path.expanduser(
             config.get("workspace_dir", ".")
         )
+
+    @staticmethod
+    def _kill_tree(proc):
+        """Kill process and all children (process group). Prevents orphan subprocesses."""
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            proc.kill()  # fallback SIGKILL on the main process
+        except ProcessLookupError:
+            pass
 
     async def run(
         self,
@@ -146,6 +159,7 @@ class ClaudeCli:
                 limit=8 * 1024 * 1024,  # 8MB; CC result events can be very large
                 cwd=self.workspace_dir,
                 env=env,
+                start_new_session=True,  # own process group so we can kill children on timeout
             )
 
             # Send prompt and close stdin
@@ -230,11 +244,7 @@ class ClaudeCli:
         except asyncio.TimeoutError:
             duration = int((time.monotonic() - start) * 1000)
             elapsed = int(duration / 1000)
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                proc.kill()
+            self._kill_tree(proc)
             if elapsed >= self.max_timeout - 5:
                 reason = f"hard cap {self.max_timeout}s"
             else:
@@ -246,11 +256,7 @@ class ClaudeCli:
             )
         except asyncio.CancelledError:
             duration = int((time.monotonic() - start) * 1000)
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                proc.kill()
+            self._kill_tree(proc)
             log.info("Claude CLI cancelled after %dms", duration)
             return LLMResult(
                 text="[Cancelled]",

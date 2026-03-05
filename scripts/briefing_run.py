@@ -156,16 +156,18 @@ class BriefingRunner:
         return None
 
     def _check_dedup(self, date_str: str) -> str | None:
-        """Check if this date was already successfully run. Returns reason or None."""
+        """Check if this date was already run or is currently running. Returns reason or None."""
         status = self._load_last_status()
         if not status:
             return None
-        if (status.get("date") == date_str
-                and status.get("status") in ("ok", "partial")
-                and status.get("started_at")):
-            elapsed_since = time.time() - status["started_at"]
-            if elapsed_since < 3600:  # within 1 hour
-                return f"already ran {elapsed_since:.0f}s ago (status={status['status']})"
+        if status.get("date") != date_str or not status.get("started_at"):
+            return None
+        elapsed_since = time.time() - status["started_at"]
+        s = status.get("status")
+        if s in ("ok", "partial") and elapsed_since < 3600:
+            return f"already ran {elapsed_since:.0f}s ago (status={s})"
+        if s == "running" and elapsed_since < 1800:  # 30min guard
+            return f"already running ({elapsed_since:.0f}s ago)"
         return None
 
     def _load_last_status(self) -> dict | None:
@@ -194,6 +196,9 @@ class BriefingRunner:
             log.warning("[%s] %s: skipped — %s", self.domain_name, date_str, dedup_reason)
             status.update({"status": "skipped", "reason": dedup_reason})
             return status
+
+        # Claim this slot immediately to block concurrent runs
+        self._save_status(status)
 
         # ── Progress card (single card, updated in-place) ──
         review_tag = f" → Claude {self.review_model} 审稿" if self.review_enabled else ""
