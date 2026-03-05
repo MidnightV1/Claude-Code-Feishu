@@ -94,59 +94,53 @@ class FeishuAPI:
 
     # ── generic HTTP ───────────────────────────────────────
 
-    def get(self, path: str, params: dict | None = None) -> dict:
-        r = requests.get(f"{self.domain}{path}",
-                         headers=self._headers(), params=params, timeout=15)
-        r.raise_for_status()
+    @staticmethod
+    def _raise_for_status(r: requests.Response) -> None:
+        """Like raise_for_status but includes Feishu API error details."""
+        if r.ok:
+            return
+        detail = ""
+        try:
+            body = r.json()
+            code = body.get("code", "?")
+            msg = body.get("msg", "")
+            detail = f" [feishu code={code}: {msg}]"
+        except Exception:
+            pass
+        raise requests.HTTPError(
+            f"{r.status_code} {r.reason} for {r.request.method} {r.url}{detail}",
+            response=r)
+
+    def _request(self, method: str, path: str, *,
+                 body: dict | None = None,
+                 params: dict | None = None) -> dict:
+        fn = getattr(requests, method)
+        kwargs: dict = {"headers": self._headers(), "params": params, "timeout": 15}
+        if method in ("post", "patch", "put"):
+            kwargs["json"] = body
+        r = fn(f"{self.domain}{path}", **kwargs)
+        self._raise_for_status(r)
         data = r.json()
         if self._check_token_expired(data):
-            r = requests.get(f"{self.domain}{path}",
-                             headers=self._headers(), params=params, timeout=15)
-            r.raise_for_status()
+            kwargs["headers"] = self._headers()
+            r = fn(f"{self.domain}{path}", **kwargs)
+            self._raise_for_status(r)
             data = r.json()
         return data
+
+    def get(self, path: str, params: dict | None = None) -> dict:
+        return self._request("get", path, params=params)
 
     def post(self, path: str, body: dict | None = None,
              params: dict | None = None) -> dict:
-        r = requests.post(f"{self.domain}{path}",
-                          headers=self._headers(), json=body, params=params,
-                          timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        if self._check_token_expired(data):
-            r = requests.post(f"{self.domain}{path}",
-                              headers=self._headers(), json=body, params=params,
-                              timeout=15)
-            r.raise_for_status()
-            data = r.json()
-        return data
+        return self._request("post", path, body=body, params=params)
 
     def patch(self, path: str, body: dict | None = None,
               params: dict | None = None) -> dict:
-        r = requests.patch(f"{self.domain}{path}",
-                           headers=self._headers(), json=body, params=params,
-                           timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        if self._check_token_expired(data):
-            r = requests.patch(f"{self.domain}{path}",
-                               headers=self._headers(), json=body, params=params,
-                               timeout=15)
-            r.raise_for_status()
-            data = r.json()
-        return data
+        return self._request("patch", path, body=body, params=params)
 
     def delete(self, path: str, params: dict | None = None) -> dict:
-        r = requests.delete(f"{self.domain}{path}",
-                            headers=self._headers(), params=params, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        if self._check_token_expired(data):
-            r = requests.delete(f"{self.domain}{path}",
-                                headers=self._headers(), params=params, timeout=15)
-            r.raise_for_status()
-            data = r.json()
-        return data
+        return self._request("delete", path, params=params)
 
     def download(self, path: str, timeout: int = 30) -> requests.Response:
         """Download raw bytes (images, files). Returns the Response object."""
