@@ -21,7 +21,7 @@ Goal: lightweight Python service with scheduled tasks, heartbeat monitoring, and
 | 心跳检查 | Gemini 2.5-Flash-Lite | gemini-api（必须） | $0.1/M，极低成本 |
 | Cron 任务（视具体需求） | per-job 配置 | 任意 | 灵活指定 |
 
-> **备注**：除心跳必须走 gemini-api 外，其他表中标注 gemini-api 的任务均可用 gemini-cli 平替（免费，有工具能力）。初版先按上表实现，后续根据 Gemini CLI 的稳定性逐步迁移。
+> **备注**：除心跳必须走 gemini-api 外，其他表中标注 gemini-api 的任务均可用 gemini-cli 平替（免费，有工具能力）。初版先按上表实现，后续根据 Gemini CLI 在 NAS 上的稳定性逐步迁移。
 
 ### 三个 Provider
 

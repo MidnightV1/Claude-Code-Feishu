@@ -77,8 +77,8 @@ class ClaudeCli:
         except (ProcessLookupError, PermissionError):
             pass
         try:
-            proc.kill()  # fallback SIGKILL on the main process
-        except ProcessLookupError:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
             pass
 
     async def run(

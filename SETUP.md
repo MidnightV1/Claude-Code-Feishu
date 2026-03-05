@@ -60,7 +60,7 @@ If Claude CLI is missing, stop and tell the user:
 pip install -r requirements.txt
 ```
 
-If `pip` fails (e.g. no write access, Entware), try:
+If `pip` fails (e.g. no write access, QNAP Entware), try:
 ```bash
 TMPDIR=~/tmp python3 -m pip install -r requirements.txt
 ```

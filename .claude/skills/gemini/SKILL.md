@@ -1,6 +1,6 @@
 ---
 name: gemini
-description: Search the web, read URLs, analyze images/documents, and summarize long content via Gemini CLI (subscription-based, no API cost). Default web search tool — use for any search task, not just Chinese. Also handles URL reading, image understanding, document analysis, and long content summarization that would bloat CC context.
+description: Search the web (搜索/搜一下), read URLs (看看这个链接), analyze images/documents, and summarize long content (总结一下) via Gemini CLI (subscription-based, no API cost). Default web search tool — use for any search task. Also handles URL reading, image understanding, document analysis (文件分析), and long content summarization that would bloat CC context.
 ---
 
 # Gemini (Search / Web / Analyze / Summarize)

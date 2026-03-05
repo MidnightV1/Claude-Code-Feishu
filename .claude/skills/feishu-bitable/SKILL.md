@@ -1,11 +1,16 @@
 ---
 name: feishu-bitable
-description: Manage Feishu Bitable (multidimensional tables) — list apps/tables, query/add/update/delete records. Use when the user mentions bitable, spreadsheet database, multidimensional table, or wants to manage structured data in Feishu.
+description: Manage Feishu Bitable / multidimensional tables (多维表格) — list apps/tables, query/add/update/delete records with filtering. Use when the user mentions bitable, multidimensional table (多维表格), spreadsheet database (数据表), structured data, or wants to query/update table records in Feishu.
 ---
 
 # Feishu Bitable
 
 CRUD for Feishu Bitable (multidimensional tables / Base). Query records, add rows, update fields, manage tables.
+
+## Prerequisites
+
+- **Feishu app permission**: `bitable:app` (read/write bitable data)
+- Bot must be added as a collaborator on the target Bitable app (or the app must be in a shared folder accessible to the bot)
 
 ## Tool
 

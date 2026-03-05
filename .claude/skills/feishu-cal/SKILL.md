@@ -1,6 +1,6 @@
 ---
 name: feishu-cal
-description: Manage Feishu calendar events — create, list, update, delete events, invite attendees, manage contacts. Use when the user mentions meetings, schedule, calendar, events, appointments, or asks to block time / invite people.
+description: Manage Feishu calendar events (日历/日程) — create, list, update, delete events, invite attendees, manage contacts. Use when the user mentions meetings (会议/开会), schedule (日程/排期), calendar (日历), events, appointments, blocking time (约时间), or inviting people.
 ---
 
 <!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
@@ -99,3 +99,4 @@ python3 .claude/skills/feishu-cal/scripts/cal_ctl.py contact sync
 - When creating events with attendees, contacts are auto-learned from the API response
 - Use `event list` first to get event IDs for update/delete operations
 - The `--attendees` flag takes comma-separated names that must exist in the contacts store
+- **Shared ContactStore**: Contacts added here are also available in feishu-task and feishu-perm skills (same underlying store)

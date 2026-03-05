@@ -239,7 +239,7 @@ class LLMRouter:
         if not result.is_error:
             return False
         t = result.text
-        # ld.so dynamic linker crash
+        # QNAP ld.so dynamic linker crash
         if "ld.so" in t or "dl-open.c" in t:
             return True
         # Generic empty-result crash (no stderr info)
@@ -337,7 +337,7 @@ class LLMRouter:
                 parts.append(recovery)
                 effective_system = "\n\n".join(parts)
 
-        # Retry loop for transient errors (e.g. ld.so crash)
+        # Retry loop for transient errors (e.g. QNAP ld.so crash)
         result = None
         for attempt in range(1 + TRANSIENT_RETRY_MAX):
             result = await self.claude.run(

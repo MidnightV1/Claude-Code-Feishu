@@ -1,6 +1,6 @@
 ---
 name: feishu-task
-description: Manage Feishu tasks — create, list, update, complete, delete tasks with assignees and due dates. Integrates with heartbeat for deadline monitoring. Use when the user mentions tasks, to-do items, deadlines, or task assignments.
+description: Manage Feishu tasks (任务/待办) — create, list, update, complete, delete tasks with assignees and due dates. Integrates with heartbeat for deadline monitoring. Use when the user mentions tasks (任务), to-do items (待办/todo), deadlines (截止日期/ddl), or task assignments (指派).
 ---
 
 <!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
@@ -151,7 +151,7 @@ Snapshot output includes current time, assignee info, and open tasks without due
 
 - All tasks created by the bot are automatically added to the configured tasklist.
 - `list` shows open tasks by default. Use `--completed` for done tasks.
-- `--assignee` resolves names via ContactStore (same as calendar skill).
+- `--assignee` resolves names via shared ContactStore (contacts added in feishu-cal or feishu-perm are available here too).
 - Task timestamps use milliseconds (Feishu Task v2 API format). Time parsing handles this automatically.
 - `snapshot` exits silently (no output) if no open tasks, keeping heartbeat noise-free.
 - The bot uses `tenant_access_token`, so the global task list API is unavailable. All queries go through the dedicated tasklist endpoint.

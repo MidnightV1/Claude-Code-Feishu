@@ -1,6 +1,6 @@
 ---
 name: feishu-wiki
-description: Manage Feishu wiki spaces and pages — list spaces, browse node trees, create/move/read/write wiki pages. Use when the user mentions wiki, knowledge base, or wants to organize documentation in Feishu Wiki.
+description: Manage Feishu wiki spaces and pages (知识库) — list spaces, browse node trees, create/move/read/write wiki pages. Use when the user mentions wiki, knowledge base (知识库/知识空间), documentation organization (文档整理), or wants to manage wiki content in Feishu.
 ---
 
 <!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
@@ -41,6 +41,12 @@ Ask the user: "I need to set up wiki access. Can you add `wiki:wiki:readonly` an
 # Feishu Wiki
 
 Browse, create, and manage wiki spaces and pages. Read and write content to wiki docx nodes.
+
+## Limitations
+
+- **Search**: Wiki search API requires `user_access_token` (not available to bot). Use `node list` to browse, or search via Feishu client.
+- **Delete**: Wiki v2 API does not provide a direct node delete endpoint.
+- **Read/Write content**: Only `docx` type nodes support content read/write (via the Documents API).
 
 ## Tool
 

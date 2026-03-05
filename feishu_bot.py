@@ -647,8 +647,12 @@ class FeishuBot:
                 result = await llm_task
             except asyncio.CancelledError:
                 log.info("LLM task cancelled for %s (user recalled)", key)
+                # Ensure llm_task is also cancelled (in case outer task was cancelled)
+                if not llm_task.done():
+                    llm_task.cancel()
+                # Fire-and-forget to avoid double CancelledError on await
                 if thinking_msg_id:
-                    await self.dispatcher.delete_message(thinking_msg_id)
+                    asyncio.create_task(self._safe_delete_card(thinking_msg_id))
                 self.router.remove_last_round(session_key)
                 asyncio.create_task(self.router.save_sessions())
                 return
@@ -659,7 +663,7 @@ class FeishuBot:
 
             if result.cancelled:
                 if thinking_msg_id:
-                    await self.dispatcher.delete_message(thinking_msg_id)
+                    asyncio.create_task(self._safe_delete_card(thinking_msg_id))
                 return
 
             if result.is_error:
@@ -913,7 +917,7 @@ class FeishuBot:
 
         PIL compression runs in a subprocess to keep native libraries
         (libwebp, libjpeg) out of the main process — avoids ld.so dlopen
-        race conditions when forking Claude CLI on certain kernels.
+        race conditions when forking Claude CLI on QNAP kernels.
         """
         try:
             content = json.loads(content_str) if isinstance(content_str, str) else {}

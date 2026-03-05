@@ -1,6 +1,6 @@
 ---
 name: feishu-doc
-description: Create, read, edit, comment on, and analyze Feishu documents. Use when the user wants to create a document, write up discussion results, read a Feishu doc link, save content to a Feishu document, review/reply to document comments, or analyze document annotations.
+description: Create, read, edit, comment on, and analyze Feishu documents (飞书文档). Use when the user wants to create a document (写个文档/建个文档), write up discussion results, read a Feishu doc link, save content to a Feishu document, review/reply to document comments (评论), or analyze document annotations.
 ---
 
 <!-- ONBOARDING:START — Delete this section after first-run setup is complete -->

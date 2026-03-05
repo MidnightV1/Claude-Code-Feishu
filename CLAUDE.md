@@ -104,6 +104,7 @@ Error recovery:
 | `feishu-drive` | `.claude/skills/feishu-drive/` | Cloud drive file/folder browsing, creation, move, search |
 | `feishu-perm` | `.claude/skills/feishu-perm/` | Document permissions, collaborator management, public links |
 | `gemini` | `.claude/skills/gemini/` | Unified Gemini: search, web, file analysis, summarization (subscription-based, zero API cost) |
+| `skill-creator` | `.claude/skills/skill-creator/` | Skill development framework: create, test, evaluate, iterate (official Apache 2.0) |
 
 Reference: https://code.claude.com/docs/en/skills
 
@@ -161,3 +162,68 @@ Heartbeat two-layer architecture: Sonnet (triage, no tools) → Sonnet (action, 
 ```
 ./hub.sh start | stop | restart | status | watchdog
 ```
+
+---
+
+## Git Workflow
+
+Code is synchronized through a bare repository on the NAS server, not directly through GitHub.
+
+| Role | Repository Path |
+|------|-----------------|
+| **Bare repo (canonical)** | `~/repos/nas-claude-hub.git` on NAS |
+| **NAS working directory** | `~/workspace/nas-claude-hub` (remote: `origin`) |
+| **Client working directory** | `~/Agent_Space/nas-claude-hub` (remote: `origin` → bare repo) |
+
+Workflow:
+1. **After changes** → `git add` + `git commit` + `git push origin master`
+2. **Push triggers post-receive hook** → auto `git reset --hard` to NAS working directory
+3. **Python file changes** → hook logs to `data/deploy.log`, manual service restart needed
+4. **Fetch remote changes** → `git pull origin master` (pull before push to avoid conflicts)
+
+Rules:
+- **Pull before push** — always `git pull` first to check for remote changes
+- **Commit granularity** — one feature/fix per commit, clear message with what and why
+- **No force push** — master is shared; force push loses remote commits
+- `config.yaml`, `data/`, `__pycache__/` are in `.gitignore`
+
+---
+
+## Collaborators
+
+You are not the only agent. The user collaborates with:
+
+- **Windows client** — primary development environment, runs `~/Agent_Space/nas-claude-hub`
+- **NAS server** — this hub service, manages NAS-specific tasks
+- **Lark/Feishu Bot** — your external communication interface
+
+Principles:
+- After code/config changes, **sync documentation** (CLAUDE.md, PLAN.md, etc.)
+- Don't assume other endpoints' state; check git log before acting
+- Environment changes (packages, config, directories) must update documentation
+
+---
+
+## Directory Structure
+
+| File/Directory | Purpose |
+|----------------|---------|
+| `.claude/skills/` | Claude Code Skills |
+| `data/` | Runtime state (jobs.json, sessions.json, hub.pid, logs) |
+| `docs/` | Documentation (permissions, scopes) |
+| `scripts/` | Utility scripts (briefing pipeline, image compression) |
+
+---
+
+## Service Management
+
+`hub.sh` is managed by the user or external SSH:
+
+```
+./hub.sh start | stop | restart | status | watchdog
+```
+
+There are two independent Feishu Dispatchers (separate Feishu apps):
+- `cli_a915` — chat replies (FeishuBot)
+- `cli_a92e` — notifications, alerts, briefing (Notifier)
+

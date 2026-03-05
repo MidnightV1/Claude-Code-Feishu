@@ -1,6 +1,6 @@
 ---
 name: briefing
-description: Manage daily briefing pipelines — run briefings, check status, list domains, trigger keyword evolution. Use when the user asks about daily briefings, briefing status, adding domains, or keyword management.
+description: Manage daily briefing pipelines (日报/简报) — run briefings, check status, list domains, trigger keyword evolution. Use when the user asks about daily briefings (日报/简报), news digests (新闻推送), briefing status, adding domains, keyword management (关键词), or content collection.
 ---
 
 <!-- ONBOARDING:START — Delete this section after first-run setup is complete -->

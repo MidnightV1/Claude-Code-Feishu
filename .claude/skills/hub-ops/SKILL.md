@@ -1,6 +1,6 @@
 ---
 name: hub-ops
-description: Manage nas-claude-hub service operations — cron jobs, scheduler reload, service status. Use when the user asks about scheduled tasks, periodic jobs, adding/removing/enabling cron jobs, checking service status, or reloading configuration.
+description: Manage nas-claude-hub service operations — cron jobs (定时任务/计划任务), scheduler reload, service status. Use when the user asks about scheduled tasks, periodic jobs, adding/removing/enabling cron jobs, checking service status, reloading configuration, or mentions 定时任务、计划任务、cron、调度、服务状态.
 ---
 
 <!-- ONBOARDING:START — Delete this section after first-run setup is complete -->

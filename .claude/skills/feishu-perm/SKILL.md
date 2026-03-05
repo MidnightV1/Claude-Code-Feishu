@@ -1,6 +1,6 @@
 ---
 name: feishu-perm
-description: Manage Feishu document permissions — add/remove collaborators, set public sharing, check access levels. Use when the user mentions sharing, permissions, collaborators, access control, or wants to manage who can view/edit a document.
+description: Manage Feishu document permissions (权限管理) — add/remove collaborators, set public sharing, check access levels. Use when the user mentions sharing (分享/共享), permissions (权限), collaborators (协作者), access control, or wants to manage who can view/edit a document.
 ---
 
 # Feishu Permission Manager
@@ -59,7 +59,7 @@ Same as Drive: `docx`, `sheet`, `bitable`, `folder`, `file`, `slides`, `mindnote
 
 ## Behavior Notes
 
-- `--user` accepts both raw open_id and contact names (resolved via ContactStore).
+- `--user` accepts both raw open_id and contact names (resolved via shared ContactStore — contacts added in feishu-cal or feishu-task are available here too).
 - `transfer` changes ownership. The bot must have `full_access` to transfer.
 - `list` shows all collaborators with their permission levels.
 - Bot needs `drive:permission`, `drive:permission:readonly` scopes.
