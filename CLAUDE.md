@@ -99,7 +99,7 @@ CLI 超时策略（`claude_cli.py`）：
 | `feishu-bitable` | `.claude/skills/feishu-bitable/` | 多维表格 CRUD、记录查询/筛选 |
 | `feishu-drive` | `.claude/skills/feishu-drive/` | 云盘文件/文件夹浏览、创建、移动、搜索 |
 | `feishu-perm` | `.claude/skills/feishu-perm/` | 文档权限管理、协作者增删、公开链接设置 |
-| `gemini-doc` | `.claude/skills/gemini-doc/` | 文档分析 co-pilot（Gemini CLI 订阅制，CC 上下文不注入全文） |
+| `gemini` | `.claude/skills/gemini/` | 统一 Gemini 接口：搜索、网页、文件分析、长内容摘要（订阅制，零 API 成本） |
 
 参考：https://code.claude.com/docs/en/skills
 
@@ -147,7 +147,7 @@ CLI 超时策略（`claude_cli.py`）：
 | Provider | 调用方式 | 适用场景 |
 |----------|----------|----------|
 | `claude-cli` | `claude -p` subprocess | 对话、工具、图片理解（Read 原生视觉） |
-| `gemini-cli` | subprocess stdin pipe | 文档分析（订阅制，@file 语法，gemini-doc skill） |
+| `gemini-cli` | subprocess stdin pipe | 搜索、网页、文件分析、摘要（订阅制，gemini skill） |
 | `gemini-api` | `google-genai` SDK | 大文档 fallback（Files API）、历史压缩 |
 
 PDF 处理降级链：Gemini CLI（订阅免费）→ Gemini API（按 token 计费）→ Claude Read（20 页/次）。
