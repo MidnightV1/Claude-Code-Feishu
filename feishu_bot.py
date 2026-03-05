@@ -808,7 +808,7 @@ class FeishuBot:
 
     def _cmd_help(self) -> str:
         base = (
-            "**nas-claude-hub commands**\n\n"
+            "**claude-code-lark commands**\n\n"
             "**模型**\n"
             "| 命令 | 说明 |\n"
             "|------|------|\n"
@@ -917,7 +917,7 @@ class FeishuBot:
 
         PIL compression runs in a subprocess to keep native libraries
         (libwebp, libjpeg) out of the main process — avoids ld.so dlopen
-        race conditions when forking Claude CLI on QNAP kernels.
+        race conditions when forking Claude CLI on some Linux kernels.
         """
         try:
             content = json.loads(content_str) if isinstance(content_str, str) else {}

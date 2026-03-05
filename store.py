@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Atomic JSON persistence for nas-claude-hub."""
+"""Atomic JSON persistence for claude-code-lark."""
 
 import json
 import os

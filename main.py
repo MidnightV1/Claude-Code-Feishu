@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""nas-claude-hub entry point."""
+"""claude-code-lark entry point."""
 
 import asyncio
 import signal
@@ -70,7 +70,7 @@ async def main():
     # Logging
     setup_logging(cfg.get("logging", {}))
     log = logging.getLogger("hub.main")
-    log.info("nas-claude-hub starting...")
+    log.info("claude-code-lark starting...")
 
     # Validate
     validate_config(cfg)
@@ -147,7 +147,7 @@ async def main():
     try:
         ok = await asyncio.wait_for(
             notifier.send_to_delivery_target(
-                f"✅ **nas-claude-hub 已启动** (pid={os.getpid()})"
+                f"✅ **claude-code-lark 已启动** (pid={os.getpid()})"
             ),
             timeout=10,
         )
@@ -186,7 +186,7 @@ async def main():
     # Graceful shutdown
     log.info("Shutting down...")
     try:
-        await notifier.send_to_delivery_target("\u26a0\ufe0f **nas-claude-hub \u6b63\u5728\u5173\u95ed...**")
+        await notifier.send_to_delivery_target("\u26a0\ufe0f **claude-code-lark \u6b63\u5728\u5173\u95ed...**")
     except Exception:
         pass
     await bot.stop()

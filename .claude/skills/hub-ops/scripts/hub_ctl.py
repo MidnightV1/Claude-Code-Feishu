@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""nas-claude-hub control script — cron CRUD + reload signal.
+"""claude-code-lark control script — cron CRUD + reload signal.
 
 Operates directly on data/jobs.json without importing hub modules.
 Sends SIGUSR1 to hub process to trigger hot-reload after changes.

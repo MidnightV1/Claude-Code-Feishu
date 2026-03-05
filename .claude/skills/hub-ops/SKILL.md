@@ -1,6 +1,6 @@
 ---
 name: hub-ops
-description: Manage nas-claude-hub service operations — cron jobs (定时任务/计划任务), scheduler reload, service status. Use when the user asks about scheduled tasks, periodic jobs, adding/removing/enabling cron jobs, checking service status, reloading configuration, or mentions 定时任务、计划任务、cron、调度、服务状态.
+description: Manage claude-code-lark service operations — cron jobs (定时任务/计划任务), scheduler reload, service status. Use when the user asks about scheduled tasks, periodic jobs, adding/removing/enabling cron jobs, checking service status, reloading configuration, or mentions 定时任务、计划任务、cron、调度、服务状态.
 ---
 
 <!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
@@ -25,7 +25,7 @@ If status shows "running", you're good. If not, ask the user to run `./hub.sh st
 
 # Hub Operations
 
-You are running inside nas-claude-hub as a Claude CLI subprocess. Use the `hub_ctl.py` script to manage hub operations. **Never run `hub.sh restart` or `hub.sh stop` directly** — that would kill your own parent process.
+You are running inside claude-code-lark as a Claude CLI subprocess. Use the `hub_ctl.py` script to manage hub operations. **Never run `hub.sh restart` or `hub.sh stop` directly** — that would kill your own parent process.
 
 ## Tool
 

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Shared data structures for nas-claude-hub."""
+"""Shared data structures for claude-code-lark."""
 
 from dataclasses import dataclass, field, asdict
 from typing import Optional
