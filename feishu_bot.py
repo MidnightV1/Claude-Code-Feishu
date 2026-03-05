@@ -294,16 +294,42 @@ class FeishuBot:
 
             # Parse text for text/post/markdown types
             text = ""
+            post_image_keys: list[str] = []
             if msg_type in ("text", "post", "markdown"):
-                text = self._parse_content(msg.content, msg_type)
+                if msg_type == "post":
+                    try:
+                        content = (
+                            json.loads(msg.content)
+                            if isinstance(msg.content, str) else msg.content
+                        )
+                    except (json.JSONDecodeError, TypeError):
+                        content = {}
+                    if isinstance(content, dict):
+                        text, post_image_keys = self._parse_post_content(content)
+                    else:
+                        text = ""
+                else:
+                    text = self._parse_content(msg.content, msg_type)
                 # Strip @mentions
                 if chat_type == "group" and msg.mentions:
                     for m in msg.mentions:
                         text = text.replace(m.key, "").strip() if m.key else text
-                if not text:
+                if not text and not post_image_keys:
                     log.warning("Empty text after parsing msg_type=%s, raw content: %s",
                                 msg_type, msg.content[:500] if msg.content else "(none)")
                     return
+                # Process post embedded images
+                if post_image_keys:
+                    session_key = (
+                        f"user:{sender_id}" if chat_type == "p2p"
+                        else f"chat:{chat_id}"
+                    )
+                    for ik in post_image_keys:
+                        path = await self._process_image(
+                            message_id, "", session_key, image_key=ik
+                        )
+                        if path:
+                            text += f"\n[图片] {path}"
                 # Prepend quoted message content if this is a reply
                 if msg.parent_id:
                     quoted = self._fetch_quoted_text(msg.parent_id)
@@ -912,19 +938,23 @@ class FeishuBot:
 
     async def _process_image(
         self, message_id: str, content_str: str, session_key: str,
+        *, image_key: str | None = None,
     ) -> str | None:
         """Download, compress, and store image. Returns absolute stored path.
 
         PIL compression runs in a subprocess to keep native libraries
         (libwebp, libjpeg) out of the main process — avoids ld.so dlopen
         race conditions when forking Claude CLI on some Linux kernels.
-        """
-        try:
-            content = json.loads(content_str) if isinstance(content_str, str) else {}
-        except Exception:
-            content = {}
 
-        image_key = content.get("image_key", "") if isinstance(content, dict) else ""
+        If *image_key* is provided directly (e.g. from post message), skip
+        parsing content_str.
+        """
+        if not image_key:
+            try:
+                content = json.loads(content_str) if isinstance(content_str, str) else {}
+            except Exception:
+                content = {}
+            image_key = content.get("image_key", "") if isinstance(content, dict) else ""
         if not image_key:
             return None
 
@@ -1206,15 +1236,19 @@ class FeishuBot:
         if msg_type == "text":
             return content.get("text", "")
         elif msg_type == "post":
-            return self._parse_post_content(content)
+            text, _image_keys = self._parse_post_content(content)
+            return text
         elif msg_type == "markdown":
             return content.get("text", "")
         elif msg_type == "interactive":
             return self._parse_card_content(content)
         return ""
 
-    def _parse_post_content(self, content: dict) -> str:
-        """Parse post message content, handling both flat and multi-language structures."""
+    def _parse_post_content(self, content: dict) -> tuple[str, list[str]]:
+        """Parse post message content, handling both flat and multi-language structures.
+
+        Returns (text, image_keys) tuple.
+        """
         # Detect structure: flat {title, content: [[...]]} vs multi-lang {zh_cn: {title, content}}
         if "content" in content and isinstance(content["content"], list):
             # Flat structure (most common from Feishu client)
@@ -1223,11 +1257,12 @@ class FeishuBot:
         for lang_content in content.values():
             if isinstance(lang_content, dict) and "content" in lang_content:
                 return self._extract_post_body(lang_content)
-        return ""
+        return "", []
 
-    def _extract_post_body(self, post: dict) -> str:
-        """Extract text from a single post body {title, content: [[elements]]}."""
+    def _extract_post_body(self, post: dict) -> tuple[str, list[str]]:
+        """Extract text and image_keys from a single post body {title, content: [[elements]]}."""
         lines = []
+        image_keys = []
         title = post.get("title")
         if title:
             lines.append(title)
@@ -1250,10 +1285,14 @@ class FeishuBot:
                     parts.append(f"```{lang}\n{elem.get('text', '')}\n```")
                 elif tag == "emotion":
                     parts.append(f":{elem.get('emoji_type', '')}:")
-                # img/media/hr — skip, no text content
+                elif tag == "img":
+                    ik = elem.get("image_key", "")
+                    if ik:
+                        image_keys.append(ik)
+                # media/hr — skip, no text content
             if parts:
                 lines.append("".join(parts))
-        return "\n".join(lines)
+        return "\n".join(lines), image_keys
 
     @staticmethod
     def _parse_card_content(content: dict) -> str:
