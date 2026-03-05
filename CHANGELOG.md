@@ -10,9 +10,11 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ### Added
 - **Unified Gemini skill** — `search`, `web`, `analyze`, `summarize` subcommands, replacing single-purpose `gemini-doc` skill. Default web search via Google Search Grounding (zero API cost, subscription-based)
-- **Feishu channel workflow docs** — plan approval via Feishu doc (not ExitPlanMode), chunked output, file upload path
+- **skill-creator framework** — official Apache 2.0 skill for creating, testing, evaluating, and iterating skills
+- **飞书协作协议** — 5 behavioral protocols for Feishu channel: task externalization, plan approval via Feishu docs, document lifecycle management, periodic self-audit, proactive pattern capture
 
 ### Fixed
+- **Recall cancel robustness** — SIGKILL entire process group (not just main process) to prevent orphan node workers; explicit `llm_task.cancel()` + fire-and-forget card deletion to avoid double CancelledError in Python 3.13
 - **Scheduler double execution** — save `next_run_at` before execution, add `last_run_at` guard to prevent re-run on crash/restart
 - **Briefing dedup race** — write "running" status immediately after dedup check, prevent TOCTOU race between concurrent processes
 - **Process orphaning** — CLI timeout now kills entire process group (`start_new_session` + `os.killpg`), not just the parent
@@ -20,6 +22,7 @@ Format: feature-oriented grouping per release, not per-commit.
 - **Daily briefing `domain=None` crash** — add None guard + bind handler to explicit domain
 
 ### Changed
+- Refined skill descriptions across 10 skills — Chinese trigger keywords, structural consistency
 - CLI idle timeout 180s → 300s to cover long Bash tool executions
 - Transient errors (timeout, ld.so, empty result) keep session alive instead of resetting
 - LLM retry 2× → 3× with exponential backoff (2/4/8s)
@@ -31,7 +34,7 @@ Format: feature-oriented grouping per release, not per-commit.
 ## [0.2.0] — 2026-03-04
 
 ### Added
-- **New skills**: `feishu-bitable`, `feishu-drive`, `feishu-perm` — multidimensional tables, cloud drive, permission management
+- **New skills**: `feishu-bitable` (multidimensional table CRUD, record query/filter, field schema, URL parsing), `feishu-drive` (cloud file/folder management, search), `feishu-perm` (document permission management, collaborator CRUD, public sharing)
 - **Document ownership transfer** — `create --owner` + `transfer_owner` command in feishu-doc skill
 - **Briefing Gemini→Claude fallback** — configurable fallback model in domain.yaml
 - **Briefing Feishu document delivery** — push briefings to Feishu docs + email
@@ -61,7 +64,7 @@ Format: feature-oriented grouping per release, not per-commit.
 - **Context**: hybrid injection (summary for older rounds + raw for recent), Sonnet compression with Gemini API fallback
 - **Quote reply**: reply cache, degraded format fallback, interactive card content parsing
 - **Native Claude vision**: images via Read tool (replaced Gemini image pipeline)
-- **Image compression**: isolated PIL subprocess to prevent ld.so crash on QNAP
+- **Image compression**: isolated PIL subprocess to prevent ld.so crash
 - **Open-source readiness**: security hardening, DRY refactor across 13 files
 
 ---
@@ -71,3 +74,9 @@ Format: feature-oriented grouping per release, not per-commit.
 ### Added
 - Initial commit: hub service scaffold, Feishu bot, Claude CLI subprocess wrapper
 - Git collaboration setup (bare repo + post-receive hook)
+
+---
+
+## Acknowledgments
+
+- **[feishu-skills](https://github.com/autogame-17/feishu-skills)** by autogame-17 — 36 modular Feishu skill modules for AI agents. Our `feishu-bitable`, `feishu-drive`, and `feishu-perm` skills drew significant inspiration from this project's architecture and API integration patterns. MIT licensed.
