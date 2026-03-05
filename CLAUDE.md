@@ -9,13 +9,52 @@ You are Claude Code, running inside the `claude-code-lark` hub service as a Clau
 | **Lark/Feishu** | User DMs or @Bot in group chat | Routed via `feishu_bot.py`, supports image/file/multi-modal. Rendered as **Lark Card JSON 2.0** markdown |
 | **SSH CLI** | User runs `claude` directly via SSH | Full CLI capabilities, local filesystem, no Lark limitations |
 
-### Lark Channel Behavior
+### Lark Collaboration Protocols
 
-| Scenario | CLI Approach | Lark Approach |
-|----------|-------------|---------------|
-| **Plan approval** | `ExitPlanMode` → user sees plan file | Write Lark doc → share link → user approves → implement |
-| **Long output** | Direct output | Lark card 4000-char auto-chunking, mind formatting |
-| **File exchange** | Read/Write local files | User uploads via Lark, stored in `data/files/` |
+When operating via Lark, internal state must be externalized as user-visible Lark artifacts. The following 5 protocols are **behavioral defaults** for the Lark channel.
+
+#### 1. Task Externalization
+
+Cross-session to-dos go to Lark Tasks (feishu-task), not kept internally.
+
+| Scenario | Action |
+|----------|--------|
+| User mentions follow-up items | Create Lark task with due date (if applicable) |
+| CC discovers to-dos (e.g. audit TODOs) | Create Lark task, note the source |
+| Task completed | Mark Lark task as done |
+
+TodoWrite is only for current session progress tracking. Cross-session tracking always uses Lark Tasks.
+
+#### 2. Plan Approval
+
+Plan → Lark document → user comments → read comments → implement. Do not use `ExitPlanMode` (user cannot see plan files in Lark).
+
+#### 3. Document Lifecycle
+
+| Rule | Details |
+|------|---------|
+| Existing doc on same topic → update | Check memory doc tracking table; avoid duplicate creation |
+| New doc → record | Write doc_id + URL to memory |
+| Ownership transfer | Transfer to user after creation |
+
+#### 4. Periodic Self-Audit
+
+| Audit Item | Frequency | Method |
+|------------|-----------|--------|
+| Skills health | Weekly (`weekly-skill-review`) | Evaluate per skill-creator principles → Lark doc |
+| Lark task cleanup | Each session start | Check expired / completed-but-open tasks |
+| Document tracking | As needed | Maintain memory records on doc create/update |
+
+#### 5. Pattern Capture
+
+When discovering new, better, or user-preferred patterns during interaction, proactively add or update the relevant files (memory, CLAUDE.md, COGNITION.md). Don't wait for the user to ask; don't batch until session end.
+
+#### Channel Adaptation
+
+| Scenario | Lark Approach |
+|----------|--------------|
+| Long output | Card 4000-char auto-chunking; mind formatting completeness |
+| File exchange | User uploads → `data/files/`; CC reads with Read tool |
 
 ---
 
@@ -162,68 +201,3 @@ Heartbeat two-layer architecture: Sonnet (triage, no tools) → Sonnet (action, 
 ```
 ./hub.sh start | stop | restart | status | watchdog
 ```
-
----
-
-## Git Workflow
-
-Code is synchronized through a bare repository on the NAS server, not directly through GitHub.
-
-| Role | Repository Path |
-|------|-----------------|
-| **Bare repo (canonical)** | `~/repos/nas-claude-hub.git` on NAS |
-| **NAS working directory** | `~/workspace/nas-claude-hub` (remote: `origin`) |
-| **Client working directory** | `~/Agent_Space/nas-claude-hub` (remote: `origin` → bare repo) |
-
-Workflow:
-1. **After changes** → `git add` + `git commit` + `git push origin master`
-2. **Push triggers post-receive hook** → auto `git reset --hard` to NAS working directory
-3. **Python file changes** → hook logs to `data/deploy.log`, manual service restart needed
-4. **Fetch remote changes** → `git pull origin master` (pull before push to avoid conflicts)
-
-Rules:
-- **Pull before push** — always `git pull` first to check for remote changes
-- **Commit granularity** — one feature/fix per commit, clear message with what and why
-- **No force push** — master is shared; force push loses remote commits
-- `config.yaml`, `data/`, `__pycache__/` are in `.gitignore`
-
----
-
-## Collaborators
-
-You are not the only agent. The user collaborates with:
-
-- **Windows client** — primary development environment, runs `~/Agent_Space/nas-claude-hub`
-- **NAS server** — this hub service, manages NAS-specific tasks
-- **Lark/Feishu Bot** — your external communication interface
-
-Principles:
-- After code/config changes, **sync documentation** (CLAUDE.md, PLAN.md, etc.)
-- Don't assume other endpoints' state; check git log before acting
-- Environment changes (packages, config, directories) must update documentation
-
----
-
-## Directory Structure
-
-| File/Directory | Purpose |
-|----------------|---------|
-| `.claude/skills/` | Claude Code Skills |
-| `data/` | Runtime state (jobs.json, sessions.json, hub.pid, logs) |
-| `docs/` | Documentation (permissions, scopes) |
-| `scripts/` | Utility scripts (briefing pipeline, image compression) |
-
----
-
-## Service Management
-
-`hub.sh` is managed by the user or external SSH:
-
-```
-./hub.sh start | stop | restart | status | watchdog
-```
-
-There are two independent Feishu Dispatchers (separate Feishu apps):
-- `cli_a915` — chat replies (FeishuBot)
-- `cli_a92e` — notifications, alerts, briefing (Notifier)
-
