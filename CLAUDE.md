@@ -1,200 +1,163 @@
-# nas-claude-hub
+# claude-code-lark
 
-## 身份
+## Identity
 
-你是 Claude Code，运行在 server 上的 `nas-claude-hub` 服务内，作为 Claude CLI 子进程。你与用户所有的Claude Code共享灵魂（`~/.claude/CLAUDE.md`）和认知（`~/.claude/COGNITION.md`），遵循相同的原则和工作方式。
+You are Claude Code, running inside the `claude-code-lark` hub service as a Claude CLI subprocess. Your messages arrive via two channels:
 
-你的消息来自两个通道，通道决定场景：
+| Channel | Trigger | Characteristics |
+|---------|---------|----------------|
+| **Lark/Feishu** | User DMs or @Bot in group chat | Routed via `feishu_bot.py`, supports image/file/multi-modal. Rendered as **Lark Card JSON 2.0** markdown |
+| **SSH CLI** | User runs `claude` directly via SSH | Full CLI capabilities, local filesystem, no Lark limitations |
 
-| 通道 | 触发方式 | 特征 |
-|------|----------|------|
-| **飞书** | 用户在飞书 DM / 群聊 @Bot | 经 `feishu_bot.py` 路由，支持图片/文件/多模态。消息通过**飞书卡片 JSON 2.0** 的 markdown 组件渲染。详见飞书系统提示词 |
-| **SSH CLI** | 用户 SSH 到 NAS 直接 `claude` | 完整 CLI 能力，本地文件系统，无飞书能力限制 |
+### Lark Channel Behavior
 
-### 飞书通道行为差异
-
-| 场景 | CLI 做法 | 飞书做法 |
-|------|----------|----------|
-| **方案审批** | `ExitPlanMode` → 用户看 plan 文件 | 写飞书文档 → 给链接 → 用户审批后动手 |
-| **长文输出** | 直接输出 | 飞书卡片 4000 字符自动分块，注意格式 |
-| **文件交互** | Read/Write 本地文件 | 用户通过飞书上传，存到 `data/files/` |
+| Scenario | CLI Approach | Lark Approach |
+|----------|-------------|---------------|
+| **Plan approval** | `ExitPlanMode` → user sees plan file | Write Lark doc → share link → user approves → implement |
+| **Long output** | Direct output | Lark card 4000-char auto-chunking, mind formatting |
+| **File exchange** | Read/Write local files | User uploads via Lark, stored in `data/files/` |
 
 ---
 
-## 运行约束
+## Session Init
 
-- **禁止 `hub.sh restart/stop`** — 你是 hub 的子进程，执行等于自杀。`HUB_CHILD` 环境变量已拦截此操作
-- **禁止 sudo** — 全用户态运行
-- 需要重启时，告诉用户：「服务需要重启，因为 [原因]。请在飞书发送 `#restart` 或在服务端执行 `hub.sh restart`」
+On each new conversation (not `--resume`), execute in order:
 
-### 热加载 vs 重启
+1. **Version check** — run `git fetch origin --quiet && git log HEAD..origin/master --oneline`
+   - If new commits: read the latest section from `CHANGELOG.md`, show user what changed
+   - Ask: "New version [version] available. Changes: [summary]. Run `git pull origin master` to sync?"
+   - Pull on confirmation, skip otherwise
+   - If no new commits: silently skip
+2. **Enter normal conversation**
 
-| 变更 | 需要重启？ |
-|------|-----------|
-| 定时任务增删改 | **不需要** — hub_ctl.py 自动热加载（SIGUSR1） |
-| `sources.yaml`（日报搜索词） | **不需要** — collector 每次运行时读取 |
-| 飞书任务变更 | **不需要** — 心跳每周期重新拉取快照 |
-| `config.yaml`（凭据、模型默认值） | **需要** |
-| Hub Python 代码（main.py 等） | **需要** |
-| Python 依赖 | **需要** |
-
-### 对话上下文保持
-
-两层架构保持对话连续性：
-
-| 层 | 触发条件 | 上下文量 |
-|---|---------|---------|
-| **主路径** | `--resume` 成功 | Claude CLI 完整上下文窗口 |
-| **降级路径** | resume 失败/`#reset`/重启 | 历史注入 system prompt（Sonnet 压缩 + 近期原文） |
-
-关键参数（`llm_router.py`）：
-
-| 参数 | 值 | 含义 |
-|------|---|------|
-| `HISTORY_ROUNDS` | 8 | 保留最近 N 轮对话 |
-| `HISTORY_TRUNCATE` | 2000 字 | 单条消息截断长度 |
-| `SUMMARY_THRESHOLD` | 4 轮 | 超过此阈值触发摘要压缩 |
-
-CLI 超时策略（`claude_cli.py`）：
-
-| 场景 | 超时方式 | 默认值 |
-|------|----------|--------|
-| 聊天（无显式 timeout） | **空闲超时**：连续无 stream 输出才断开 | idle=300s, hard cap=1800s |
-| 心跳/压缩（显式 timeout） | **绝对超时**：到时间直接断开 | 由调用方指定 |
-
-错误恢复策略：
-
-| 层 | 机制 | 说明 |
-|---|------|------|
-| **CLI 层** | stream buffer 8MB, ValueError catch | 防止大 result event 导致 stream 断开 |
-| **Router 层** | transient retry ×3 (指数退避 2/4/8s) | ld.so crash、空结果自动重试 |
-| **Router 层** | resume 失败 → 静默降级 | 压缩上下文注入 system prompt，新 session |
-| **Bot 层** | 瞬态错误保留 session | timeout/ld.so/空结果不清 session，下次仍尝试 resume |
-| **Bot 层** | 非瞬态错误重置 session | 清 session_id（保留 history），用户重发继续 |
-| **Dispatcher 层** | 230011 降级 | 回复已撤回消息 → 自动改为非回复发送 |
-
-上下文策略特点：
-- **无 TTL 限制** — 永远尝试 `--resume`，让 CLI 自行判断 session 可用性
-- **上下文注入走 system prompt** — 不污染 user message，CC 能区分历史和当前指令
-- **Sonnet 压缩（Gemini fallback）** — 结构化摘要保留决策、文件路径、任务状态
-- **恢复通知** — 降级时告知 CC 工具调用记录不可访问，需重新读取文件
-- **Fallback model** — 始终显式传 `--model`，`--fallback-model` 自动选另一个模型
-
-降级触发场景：CLI session 文件丢失/损坏、LLM 报错 → resume 失败自动降级、`#reset` → 主动清除、服务重启 → CLI session 失效。
+> This check runs only on first turn of a new session and should not block the user's question — if the first message contains a task, append the update notice at the end of your reply.
 
 ---
 
-## Skills 优先
+## Runtime Constraints
 
-**新增运维能力必须优先创建 Skill（`.claude/skills/<name>/SKILL.md` + `scripts/`），而非在 `feishu_bot.py` 里硬编码 `#command`。**
+- **Never run `hub.sh restart/stop`** — you are a child process of the hub; executing this is self-termination. `HUB_CHILD` env var enforces this
+- **No sudo** — everything runs in userland
+- When restart is needed, tell the user: "Service needs restart because [reason]. Please send `#restart` in Lark or run `hub.sh restart` on the server."
 
-| Skill | 位置 | 用途 |
-|-------|------|------|
-| `hub-ops` | `.claude/skills/hub-ops/` | 定时任务 CRUD、服务状态、热加载 |
-| `briefing` | `.claude/skills/briefing/` | 日报 pipeline 管理、域管理、关键词进化 |
-| `feishu-cal` | `.claude/skills/feishu-cal/` | 日历日程 CRUD、参会人管理、联系人 |
-| `feishu-doc` | `.claude/skills/feishu-doc/` | 文档 CRUD、搜索、评论分析、所有权转移 |
-| `feishu-task` | `.claude/skills/feishu-task/` | 任务 CRUD、截止日期管理、心跳联动 |
-| `feishu-wiki` | `.claude/skills/feishu-wiki/` | 知识库空间浏览、页面 CRUD、内容读写 |
-| `feishu-bitable` | `.claude/skills/feishu-bitable/` | 多维表格 CRUD、记录查询/筛选 |
-| `feishu-drive` | `.claude/skills/feishu-drive/` | 云盘文件/文件夹浏览、创建、移动、搜索 |
-| `feishu-perm` | `.claude/skills/feishu-perm/` | 文档权限管理、协作者增删、公开链接设置 |
-| `gemini` | `.claude/skills/gemini/` | 统一 Gemini 接口：搜索、网页、文件分析、长内容摘要（订阅制，零 API 成本） |
+### Hot Reload vs Restart
 
-参考：https://code.claude.com/docs/en/skills
+| Change | Restart? |
+|--------|----------|
+| Cron job add/remove/modify | **No** — hub_ctl.py hot-reloads (SIGUSR1) |
+| `sources.yaml` (briefing keywords) | **No** — collector reads on each run |
+| Lark task changes | **No** — heartbeat re-fetches each cycle |
+| `config.yaml` (credentials, model defaults) | **Yes** |
+| Hub Python code (main.py etc.) | **Yes** |
+| Python dependencies | **Yes** |
+
+### Conversation Context
+
+Two-layer architecture for conversation continuity:
+
+| Layer | Trigger | Context |
+|-------|---------|---------|
+| **Primary** | `--resume` succeeds | Full Claude CLI context window |
+| **Fallback** | resume fails / `#reset` / restart | History injected into system prompt (Sonnet compression + recent raw messages) |
+
+Key parameters (`llm_router.py`):
+
+| Parameter | Value | Meaning |
+|-----------|-------|---------|
+| `HISTORY_ROUNDS` | 8 | Keep last N conversation rounds |
+| `HISTORY_TRUNCATE` | 2000 chars | Truncate single message length |
+| `SUMMARY_THRESHOLD` | 4 rounds | Trigger summary compression above this |
+
+CLI timeout strategy (`claude_cli.py`):
+
+| Scenario | Timeout Type | Default |
+|----------|-------------|---------|
+| Chat (no explicit timeout) | **Idle timeout**: disconnect on no stream output | idle=300s, hard cap=1800s |
+| Heartbeat/compression (explicit timeout) | **Absolute timeout**: disconnect at deadline | Caller-specified |
+
+Error recovery:
+
+| Layer | Mechanism | Description |
+|-------|-----------|-------------|
+| **CLI** | stream buffer 8MB, ValueError catch | Prevent large result events from breaking stream |
+| **Router** | transient retry x3 (exponential backoff 2/4/8s) | Auto-retry on crash or empty results |
+| **Router** | resume fail → silent fallback | Compressed context injected into system prompt, new session |
+| **Bot** | transient errors keep session | timeout/crash/empty don't clear session, retry on next message |
+| **Bot** | non-transient errors reset session | Clear session_id (keep history), user resends to continue |
+| **Dispatcher** | 230011 fallback | Reply to withdrawn message → auto-fallback to non-reply send |
 
 ---
 
-## 协作者
+## Skills
 
-你不是唯一的 agent。用户同时与以下端点协作：
+**New capabilities should be implemented as Skills (`.claude/skills/<name>/SKILL.md` + `scripts/`), not hardcoded as `#commands` in `feishu_bot.py`.**
 
-- **本机 CC**（Windows）— 主要开发环境，跑在 `YOUR_LOCAL_WORKSPACE/`
-- **NAS CC（你）** — 运行 hub 服务，管理 NAS 上的任务
-- **飞书 Bot** — 你的对外通信界面
+| Skill | Location | Purpose |
+|-------|----------|---------|
+| `hub-ops` | `.claude/skills/hub-ops/` | Cron job CRUD, service status, hot-reload |
+| `briefing` | `.claude/skills/briefing/` | Briefing pipeline, domain management, keyword evolution |
+| `feishu-cal` | `.claude/skills/feishu-cal/` | Calendar CRUD, attendee management, contacts |
+| `feishu-doc` | `.claude/skills/feishu-doc/` | Document CRUD, search, comment analysis, ownership transfer |
+| `feishu-task` | `.claude/skills/feishu-task/` | Task CRUD, due dates, heartbeat integration |
+| `feishu-wiki` | `.claude/skills/feishu-wiki/` | Wiki space browsing, page CRUD, content read/write |
+| `feishu-bitable` | `.claude/skills/feishu-bitable/` | Bitable CRUD, record query/filter |
+| `feishu-drive` | `.claude/skills/feishu-drive/` | Cloud drive file/folder browsing, creation, move, search |
+| `feishu-perm` | `.claude/skills/feishu-perm/` | Document permissions, collaborator management, public links |
+| `gemini` | `.claude/skills/gemini/` | Unified Gemini: search, web, file analysis, summarization (subscription-based, zero API cost) |
 
-原则：
-- 修改了代码/配置后**同步更新文档**（CLAUDE.md、PLAN.md、nas_env.md），其他 agent 依赖文档对齐
-- 不假设其他端点的状态，看到不认识的改动先查 git log 再行动
-- 环境变更（装包、改配置、加目录）必须更新 `nas_env.md`
-
-### Git 协作
-
-代码通过 NAS 上的 bare repo 同步，**不经 GitHub**。
-
-| 角色 | 仓库路径 |
-|------|----------|
-| **Bare repo（canonical）** | `~/repos/YOUR_PROJECT.git` |
-| **NAS 工作目录** | `~/workspace/nas-claude-hub`（remote: `origin`） |
-| **Windows 工作目录** | `YOUR_LOCAL_WORKSPACE/nas-claude-hub`（remote: `origin` → `ssh://USER@YOUR_SERVER_IP/~/repos/YOUR_PROJECT.git`） |
-
-工作流：
-1. **修改代码后** → `git add` + `git commit` + `git push origin master`
-2. **push 触发 post-receive hook** → 自动 `git reset --hard` 到 NAS 工作目录
-3. **Python 文件变更** → hook 会记录到 `data/deploy.log`，需手动重启服务
-4. **拉取对方变更** → `git pull origin master`（先 pull 再改，避免冲突）
-
-规则：
-- **先 pull 后 push** — 修改前先 `git pull` 确认是否有对方变更
-- **commit 粒度** — 一个功能/修复一个 commit，message 说清 what 和 why
-- **不要 force push** — 两端共享 master，force push 会丢对方的提交
-- `config.yaml`、`data/`、`__pycache__/` 已在 `.gitignore` 中排除
+Reference: https://code.claude.com/docs/en/skills
 
 ---
 
 ## LLM Providers
 
-| Provider | 调用方式 | 适用场景 |
-|----------|----------|----------|
-| `claude-cli` | `claude -p` subprocess | 对话、工具、图片理解（Read 原生视觉） |
-| `gemini-cli` | subprocess stdin pipe | 搜索、网页、文件分析、摘要（订阅制，gemini skill） |
-| `gemini-api` | `google-genai` SDK | 大文档 fallback（Files API）、历史压缩 |
+| Provider | Invocation | Use Case |
+|----------|-----------|----------|
+| `claude-cli` | `claude -p` subprocess | Chat, tools, image understanding (Read native vision) |
+| `gemini-cli` | subprocess stdin pipe | Search, web, file analysis, summarization (subscription, gemini skill) |
+| `gemini-api` | `google-genai` SDK | Large document fallback (Files API), history compression |
 
-PDF 处理降级链：Gemini CLI（订阅免费）→ Gemini API（按 token 计费）→ Claude Read（20 页/次）。
+PDF fallback chain: Gemini CLI (subscription, free) → Gemini API (per-token billing) → Claude Read (20 pages/request).
 
-心跳两层架构：Sonnet（triage，无工具）→ Sonnet（action，有工具，仅异常时触发）。通知发到用户 DM，自然口吻。
+Heartbeat two-layer architecture: Sonnet (triage, no tools) → Sonnet (action, with tools, triggered only on anomalies). Notifications sent to user DM in natural tone.
 
 ---
 
-## 文件目录
+## File Structure
 
-| 文件/目录 | 职责 |
-|-----------|------|
-| `main.py` | 入口，PID 文件写入，SIGUSR1 热加载信号 |
-| `feishu_bot.py` | 飞书 WebSocket Bot，消息路由，debounce，多模态处理 |
-| `briefing_plugin.py` | 日报 thin shim（subprocess launcher，不含逻辑） |
-| `scripts/briefing_run.py` | 日报 pipeline 独立脚本（采集→生成→审稿→投递→关键词进化） |
-| `scripts/compress_image.py` | 图片压缩子进程（隔离 PIL 避免 ld.so 冲突） |
-| `scheduler.py` | 进程内 cron 调度器（croniter + asyncio timer） |
-| `heartbeat.py` | 心跳监控（两层 Sonnet：triage → action，DM 通知） |
-| `gemini_cli.py` | Gemini CLI subprocess 封装（stdin pipe，@file 语法，文档分析） |
-| `llm_router.py` | 多模型路由（claude-cli / gemini-cli / gemini-api） |
-| `dispatcher.py` | 飞书消息发送（卡片 JSON 2.0 markdown，分块，重试，卡片更新） |
-| `file_store.py` | 会话级文件存储（图片/文件持久化 + 上下文注入） |
-| `claude_cli.py` | Claude CLI subprocess 封装（stream-json + TodoWrite 进度流） |
-| `gemini_api.py` | Gemini API SDK 封装（多模态 + Files API） |
-| `feishu_api.py` | 飞书 API 客户端（token 缓存 + HTTP + 联系人映射） |
-| `models.py` | 共享数据结构 |
-| `store.py` | JSON 原子持久化 |
-| `feishu_utils.py` | 共享工具函数（`text_to_blocks`, `parse_dt`） |
-| `config.yaml` | 配置（凭据、模型、心跳、日报、飞书） |
-| `hub.sh` | 服务管理脚本（start/stop/restart/status/watchdog） |
+| File/Directory | Purpose |
+|----------------|---------|
+| `main.py` | Entry point, PID file, SIGUSR1 hot-reload signal |
+| `feishu_bot.py` | Lark WebSocket Bot, message routing, debounce, multi-modal |
+| `briefing_plugin.py` | Briefing thin shim (subprocess launcher, no logic) |
+| `scripts/briefing_run.py` | Briefing pipeline script (collect → generate → review → deliver → keyword evolution) |
+| `scripts/compress_image.py` | Image compression subprocess (isolate PIL to prevent ld.so conflicts) |
+| `scheduler.py` | In-process cron scheduler (croniter + asyncio timer) |
+| `heartbeat.py` | Heartbeat monitor (two-layer Sonnet: triage → action, DM notification) |
+| `gemini_cli.py` | Gemini CLI subprocess wrapper (stdin pipe, @file syntax) |
+| `llm_router.py` | Multi-model router (claude-cli / gemini-cli / gemini-api) |
+| `dispatcher.py` | Lark message sender (card JSON 2.0 markdown, chunking, retry, card update) |
+| `file_store.py` | Session file store (image/file persistence + context injection) |
+| `claude_cli.py` | Claude CLI subprocess wrapper (stream-json + TodoWrite progress streaming) |
+| `gemini_api.py` | Gemini API SDK wrapper (multi-modal + Files API) |
+| `feishu_api.py` | Lark API client (token cache + HTTP + contact mapping) |
+| `models.py` | Shared data structures |
+| `store.py` | JSON atomic persistence |
+| `feishu_utils.py` | Shared utilities (`text_to_blocks`, `parse_dt`) |
+| `config.yaml` | Configuration (credentials, models, heartbeat, briefing, Lark) |
+| `hub.sh` | Service management script (start/stop/restart/status/watchdog) |
 | `.claude/skills/` | Claude Code Skills |
-| `data/` | 运行时状态（jobs.json, sessions.json, hub.pid, logs） |
-| `docs/feishu_scopes.json` | 飞书 Bot 权限集（可导入飞书开放平台） |
-| `docs/feishu_scopes.md` | 飞书 Bot 权限清单（按模块分类） |
-| `PLAN.md` | 架构设计文档 |
+| `data/` | Runtime state (jobs.json, sessions.json, hub.pid, logs) |
+| `docs/feishu_scopes.json` | Lark Bot permission set (importable to Lark Open Platform) |
+| `docs/feishu_scopes.md` | Lark Bot permission list (categorized by module) |
+| `PLAN.md` | Architecture design document |
 
 ---
 
-## 服务管理
+## Service Management
 
-`hub.sh` 仅限用户或外部 SSH 执行：
+`hub.sh` should only be run by the user or via external SSH:
 
 ```
 ./hub.sh start | stop | restart | status | watchdog
 ```
-
-两个 Dispatcher（独立飞书应用）：
-- `YOUR_CHAT_APP_ID` — 聊天回复（FeishuBot）
-- `YOUR_NOTIFY_APP_ID` — 通知/告警/日报（Notifier）
