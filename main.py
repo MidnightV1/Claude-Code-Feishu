@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""claude-code-lark entry point."""
+"""claude-code-feishu entry point."""
 
 import asyncio
 import signal
@@ -70,7 +70,7 @@ async def main():
     # Logging
     setup_logging(cfg.get("logging", {}))
     log = logging.getLogger("hub.main")
-    log.info("claude-code-lark starting...")
+    log.info("claude-code-feishu starting...")
 
     # Validate
     validate_config(cfg)
@@ -147,7 +147,7 @@ async def main():
     try:
         ok = await asyncio.wait_for(
             notifier.send_to_delivery_target(
-                f"✅ **claude-code-lark 已启动** (pid={os.getpid()})"
+                f"✅ **claude-code-feishu 已启动** (pid={os.getpid()})"
             ),
             timeout=10,
         )
@@ -186,7 +186,7 @@ async def main():
     # Graceful shutdown
     log.info("Shutting down...")
     try:
-        await notifier.send_to_delivery_target("\u26a0\ufe0f **claude-code-lark \u6b63\u5728\u5173\u95ed...**")
+        await notifier.send_to_delivery_target("\u26a0\ufe0f **claude-code-feishu \u6b63\u5728\u5173\u95ed...**")
     except Exception:
         pass
     await bot.stop()

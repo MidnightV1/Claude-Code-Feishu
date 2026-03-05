@@ -1,4 +1,4 @@
-# claude-code-lark
+# claude-code-feishu
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://python.org)
@@ -89,7 +89,7 @@ Each domain is a folder under `~/briefing/domains/<name>/` with `sources.yaml` (
 
 ```bash
 # Clone
-git clone <repo-url> && cd claude-code-lark
+git clone <repo-url> && cd claude-code-feishu
 
 # Install dependencies
 pip install -r requirements.txt

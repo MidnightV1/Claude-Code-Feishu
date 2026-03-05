@@ -1,33 +1,33 @@
-# claude-code-lark
+# claude-code-feishu
 
 ## Identity
 
-You are Claude Code, running inside the `claude-code-lark` hub service as a Claude CLI subprocess. Your messages arrive via two channels:
+You are Claude Code, running inside the `claude-code-feishu` hub service as a Claude CLI subprocess. Your messages arrive via two channels:
 
 | Channel | Trigger | Characteristics |
 |---------|---------|----------------|
-| **Lark/Feishu** | User DMs or @Bot in group chat | Routed via `feishu_bot.py`, supports image/file/multi-modal. Rendered as **Lark Card JSON 2.0** markdown |
-| **SSH CLI** | User runs `claude` directly via SSH | Full CLI capabilities, local filesystem, no Lark limitations |
+| **Feishu** | User DMs or @Bot in group chat | Routed via `feishu_bot.py`, supports image/file/multi-modal. Rendered as **Feishu Card JSON 2.0** markdown |
+| **SSH CLI** | User runs `claude` directly via SSH | Full CLI capabilities, local filesystem, no Feishu limitations |
 
-### Lark Collaboration Protocols
+### Feishu Collaboration Protocols
 
-When operating via Lark, internal state must be externalized as user-visible Lark artifacts. The following 5 protocols are **behavioral defaults** for the Lark channel.
+When operating via Feishu, internal state must be externalized as user-visible Feishu artifacts. The following 5 protocols are **behavioral defaults** for the Feishu channel.
 
 #### 1. Task Externalization
 
-Cross-session to-dos go to Lark Tasks (feishu-task), not kept internally.
+Cross-session to-dos go to Feishu Tasks (feishu-task), not kept internally.
 
 | Scenario | Action |
 |----------|--------|
-| User mentions follow-up items | Create Lark task with due date (if applicable) |
-| CC discovers to-dos (e.g. audit TODOs) | Create Lark task, note the source |
-| Task completed | Mark Lark task as done |
+| User mentions follow-up items | Create Feishu task with due date (if applicable) |
+| CC discovers to-dos (e.g. audit TODOs) | Create Feishu task, note the source |
+| Task completed | Mark Feishu task as done |
 
-TodoWrite is only for current session progress tracking. Cross-session tracking always uses Lark Tasks.
+TodoWrite is only for current session progress tracking. Cross-session tracking always uses Feishu Tasks.
 
 #### 2. Plan Approval
 
-Plan → Lark document → user comments → read comments → implement. Do not use `ExitPlanMode` (user cannot see plan files in Lark).
+Plan → Feishu document → user comments → read comments → implement. Do not use `ExitPlanMode` (user cannot see plan files in Feishu).
 
 #### 3. Document Lifecycle
 
@@ -41,8 +41,8 @@ Plan → Lark document → user comments → read comments → implement. Do not
 
 | Audit Item | Frequency | Method |
 |------------|-----------|--------|
-| Skills health | Weekly (`weekly-skill-review`) | Evaluate per skill-creator principles → Lark doc |
-| Lark task cleanup | Each session start | Check expired / completed-but-open tasks |
+| Skills health | Weekly (`weekly-skill-review`) | Evaluate per skill-creator principles → Feishu doc |
+| Feishu task cleanup | Each session start | Check expired / completed-but-open tasks |
 | Document tracking | As needed | Maintain memory records on doc create/update |
 
 #### 5. Pattern Capture
@@ -51,7 +51,7 @@ When discovering new, better, or user-preferred patterns during interaction, pro
 
 #### Channel Adaptation
 
-| Scenario | Lark Approach |
+| Scenario | Feishu Approach |
 |----------|--------------|
 | Long output | Card 4000-char auto-chunking; mind formatting completeness |
 | File exchange | User uploads → `data/files/`; CC reads with Read tool |
@@ -77,7 +77,7 @@ On each new conversation (not `--resume`), execute in order:
 
 - **Never run `hub.sh restart/stop`** — you are a child process of the hub; executing this is self-termination. `HUB_CHILD` env var enforces this
 - **No sudo** — everything runs in userland
-- When restart is needed, tell the user: "Service needs restart because [reason]. Please send `#restart` in Lark or run `hub.sh restart` on the server."
+- When restart is needed, tell the user: "Service needs restart because [reason]. Please send `#restart` in Feishu or run `hub.sh restart` on the server."
 
 ### Hot Reload vs Restart
 
@@ -85,7 +85,7 @@ On each new conversation (not `--resume`), execute in order:
 |--------|----------|
 | Cron job add/remove/modify | **No** — hub_ctl.py hot-reloads (SIGUSR1) |
 | `sources.yaml` (briefing keywords) | **No** — collector reads on each run |
-| Lark task changes | **No** — heartbeat re-fetches each cycle |
+| Feishu task changes | **No** — heartbeat re-fetches each cycle |
 | `config.yaml` (credentials, model defaults) | **Yes** |
 | Hub Python code (main.py etc.) | **Yes** |
 | Python dependencies | **Yes** |
@@ -168,7 +168,7 @@ Heartbeat two-layer architecture: Sonnet (triage, no tools) → Sonnet (action, 
 | File/Directory | Purpose |
 |----------------|---------|
 | `main.py` | Entry point, PID file, SIGUSR1 hot-reload signal |
-| `feishu_bot.py` | Lark WebSocket Bot, message routing, debounce, multi-modal |
+| `feishu_bot.py` | Feishu WebSocket Bot, message routing, debounce, multi-modal |
 | `briefing_plugin.py` | Briefing thin shim (subprocess launcher, no logic) |
 | `scripts/briefing_run.py` | Briefing pipeline script (collect → generate → review → deliver → keyword evolution) |
 | `scripts/compress_image.py` | Image compression subprocess (isolate PIL to prevent ld.so conflicts) |
@@ -176,20 +176,20 @@ Heartbeat two-layer architecture: Sonnet (triage, no tools) → Sonnet (action, 
 | `heartbeat.py` | Heartbeat monitor (two-layer Sonnet: triage → action, DM notification) |
 | `gemini_cli.py` | Gemini CLI subprocess wrapper (stdin pipe, @file syntax) |
 | `llm_router.py` | Multi-model router (claude-cli / gemini-cli / gemini-api) |
-| `dispatcher.py` | Lark message sender (card JSON 2.0 markdown, chunking, retry, card update) |
+| `dispatcher.py` | Feishu message sender (card JSON 2.0 markdown, chunking, retry, card update) |
 | `file_store.py` | Session file store (image/file persistence + context injection) |
 | `claude_cli.py` | Claude CLI subprocess wrapper (stream-json + TodoWrite progress streaming) |
 | `gemini_api.py` | Gemini API SDK wrapper (multi-modal + Files API) |
-| `feishu_api.py` | Lark API client (token cache + HTTP + contact mapping) |
+| `feishu_api.py` | Feishu API client (token cache + HTTP + contact mapping) |
 | `models.py` | Shared data structures |
 | `store.py` | JSON atomic persistence |
 | `feishu_utils.py` | Shared utilities (`text_to_blocks`, `parse_dt`) |
-| `config.yaml` | Configuration (credentials, models, heartbeat, briefing, Lark) |
+| `config.yaml` | Configuration (credentials, models, heartbeat, briefing, Feishu) |
 | `hub.sh` | Service management script (start/stop/restart/status/watchdog) |
 | `.claude/skills/` | Claude Code Skills |
 | `data/` | Runtime state (jobs.json, sessions.json, hub.pid, logs) |
-| `docs/feishu_scopes.json` | Lark Bot permission set (importable to Lark Open Platform) |
-| `docs/feishu_scopes.md` | Lark Bot permission list (categorized by module) |
+| `docs/feishu_scopes.json` | Feishu Bot permission set (importable to Feishu Open Platform) |
+| `docs/feishu_scopes.md` | Feishu Bot permission list (categorized by module) |
 | `PLAN.md` | Architecture design document |
 
 ---

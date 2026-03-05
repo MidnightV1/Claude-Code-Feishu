@@ -1,5 +1,5 @@
 #!/bin/bash
-# claude-code-lark service manager
+# claude-code-feishu service manager
 # Usage: hub.sh {start|stop|restart|status|check|watchdog}
 
 HUB_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -67,7 +67,7 @@ do_check() {
 # When Claude CLI (spawned by hub) tries to restart/stop, refuse with guidance.
 if [ "$HUB_CHILD" = "1" ] && [ "${1:-}" = "restart" -o "${1:-}" = "stop" ]; then
     cat <<'GUARD'
-[BLOCKED] You are running INSIDE claude-code-lark as a subprocess.
+[BLOCKED] You are running INSIDE claude-code-feishu as a subprocess.
 Running hub.sh restart/stop would kill your own parent process and yourself.
 
 When restart is actually needed (rare):

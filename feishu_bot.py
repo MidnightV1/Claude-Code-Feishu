@@ -808,7 +808,7 @@ class FeishuBot:
 
     def _cmd_help(self) -> str:
         base = (
-            "**claude-code-lark commands**\n\n"
+            "**claude-code-feishu commands**\n\n"
             "**模型**\n"
             "| 命令 | 说明 |\n"
             "|------|------|\n"

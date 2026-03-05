@@ -1,4 +1,4 @@
-# claude-code-lark configuration template
+# claude-code-feishu configuration template
 # Copy to config.yaml and fill in your credentials.
 
 feishu:

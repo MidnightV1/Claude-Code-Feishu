@@ -50,7 +50,7 @@ Goal: lightweight Python service with scheduled tasks, heartbeat monitoring, and
 ## 文件结构
 
 ```
-claude-code-lark/
+claude-code-feishu/
 ├── main.py               # 入口
 ├── llm_router.py          # 多模型路由（3 provider 统一接口）
 ├── claude_cli.py          # Claude Code CLI 封装

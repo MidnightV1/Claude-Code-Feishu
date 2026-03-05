@@ -1,4 +1,4 @@
-# claude-code-lark
+# claude-code-feishu
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://python.org)
@@ -89,7 +89,7 @@ Brave Search → 采集文章 → Gemini 生成草稿 → Claude 审稿 → 通�
 
 ```bash
 # 克隆
-git clone <repo-url> && cd claude-code-lark
+git clone <repo-url> && cd claude-code-feishu
 
 # 安装依赖
 pip install -r requirements.txt
