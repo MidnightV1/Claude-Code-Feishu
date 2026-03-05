@@ -53,6 +53,8 @@ class BriefingPlugin:
     async def run(self, domain: str = None, date_str: str = None) -> str:
         """Entry point for cron handlers."""
         domain = domain or self.default_domain
+        if not domain:
+            raise ValueError("No domain specified and no default_domain configured")
         result = await self._spawn("run", domain, date_str=date_str)
         try:
             data = json.loads(result)
