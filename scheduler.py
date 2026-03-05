@@ -191,6 +191,11 @@ class CronScheduler:
         log.info("Executing job %s (%s)", job.id, job.name)
         job.state.last_run_at = time.time()
 
+        # Advance next_run_at BEFORE execution to prevent re-execution on crash
+        if not job.one_shot:
+            job.state.next_run_at = self._compute_next_run(job)
+        await self._save_store()
+
         try:
             # Handler jobs bypass the LLM router
             if job.handler:
@@ -227,8 +232,6 @@ class CronScheduler:
             if job.one_shot:
                 job.enabled = False
                 log.info("One-shot job %s disabled", job.id)
-            else:
-                job.state.next_run_at = self._compute_next_run(job)
 
             await self._save_store()
             return result.text
@@ -293,6 +296,8 @@ class CronScheduler:
             j for j in self._jobs
             if j.enabled and j.state.next_run_at and j.state.next_run_at < now
             and not (j.one_shot and j.state.last_status == "ok")
+            # Guard: if last_run_at >= next_run_at, the job already ran for this slot
+            and not (j.state.last_run_at and j.state.last_run_at >= j.state.next_run_at)
         ]
         if missed:
             log.info("Running %d missed jobs", len(missed))
