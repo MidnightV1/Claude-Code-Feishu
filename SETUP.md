@@ -149,7 +149,7 @@ Each skill is independent. Activate based on what the user needs. Read the skill
 
 ### Gemini API (recommended)
 
-Many features (heartbeat, briefing, history compression) use the Gemini API.
+Briefing generation and history compression can use the Gemini API as a fallback.
 
 **Ask user**: "Do you have a Google AI Studio API key? (https://aistudio.google.com/apikey)"
 
@@ -233,15 +233,15 @@ Requires permissions: `wiki:wiki`, `wiki:node:*`
 Daily news digest pipeline. See the Daily Briefings section in [README.md](README.md) for details.
 
 Prerequisites:
-- Gemini API key (for content generation)
-- Brave Search MCP (for web search) or other search tool
+- Gemini CLI (preferred, free) or Gemini API key (for content generation)
 - At least one domain configured under `~/briefing/domains/<name>/`
 
 This is the most complex skill to set up. Read `.claude/skills/briefing/SKILL.md` for full domain configuration.
 
-### Gemini Doc (`gemini-doc`)
+### Gemini CLI (`gemini`)
 
-Document analysis co-pilot. Only needs Gemini CLI:
+Unified Gemini interface: web search, URL reading, file analysis, long content summarization. Subscription-based, zero API cost.
+
 ```bash
 npm install -g @google/gemini-cli
 gemini --version  # verify
@@ -290,3 +290,4 @@ Restart: ask user to run `hub.sh restart` or send `#restart` in Feishu.
 | "Token expired" errors | App secret wrong in config.yaml |
 | Heartbeat never triggers | `heartbeat.enabled: false` or outside `active_hours` |
 | Briefing fails | Missing Gemini API key or no domains configured |
+| Smoke test fails on deploy | Check `data/deploy.log`, fix issues, then re-run `scripts/promote.sh` |

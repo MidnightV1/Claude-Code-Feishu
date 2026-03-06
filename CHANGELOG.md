@@ -6,6 +6,23 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.4.0] — 2026-03-06
+
+### Added
+- **Dev/master branch workflow** — `dev` for daily development, `master` for production only. Merge via `scripts/promote.sh` (smoke test gate → merge → push → auto-deploy)
+- **`scripts/smoke_test.py`** — Pre-deploy validation: import checks, config.yaml structure, domain configs, collector imports, third-party dependencies
+- **`scripts/promote.sh`** — One-command dev→master promotion with smoke test gate
+- **Post-receive hook enhancement** — Master-only deployment + smoke test + auto-revert on failure + Feishu notification
+- **Gemini CLI as briefing generator** — Primary generation via Gemini CLI (zero API cost), Claude as fallback
+- **Gemini CLI system prompt support** — Prepend system_prompt to user prompt (CLI has no separate system prompt channel)
+- **Briefing progress card PID tracking** — All progress cards and run_status.json include process PID for debugging concurrent instances
+
+### Changed
+- Briefing generation timeout 180s → 300s (accommodates larger context from new Gemini Search sources)
+- Added `feedparser` to requirements.txt
+
+---
+
 ## [0.3.0] — 2026-03-05
 
 ### Added
@@ -64,7 +81,7 @@ Format: feature-oriented grouping per release, not per-commit.
 - **Context**: hybrid injection (summary for older rounds + raw for recent), Sonnet compression with Gemini API fallback
 - **Quote reply**: reply cache, degraded format fallback, interactive card content parsing
 - **Native Claude vision**: images via Read tool (replaced Gemini image pipeline)
-- **Image compression**: isolated PIL subprocess to prevent ld.so crash
+- **Image compression**: isolated PIL subprocess to prevent ld.so conflicts
 - **Open-source readiness**: security hardening, DRY refactor across 13 files
 
 ---
