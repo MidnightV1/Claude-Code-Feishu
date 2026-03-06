@@ -2,7 +2,7 @@
 """Compress image to WebP in an isolated subprocess.
 
 Keeps PIL/Pillow native libraries (libwebp, libjpeg, etc.) out of the
-main hub process, avoiding ld.so dlopen race conditions on some Linux kernels
+main hub process, avoiding ld.so dlopen race conditions
 when forking Claude CLI subprocesses.
 
 Usage: python compress_image.py <input_path> <output_path> [max_dim] [quality]

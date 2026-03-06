@@ -103,9 +103,9 @@ Key parameters (`llm_router.py`):
 
 | Parameter | Value | Meaning |
 |-----------|-------|---------|
-| `HISTORY_ROUNDS` | 8 | Keep last N conversation rounds |
-| `HISTORY_TRUNCATE` | 2000 chars | Truncate single message length |
-| `SUMMARY_THRESHOLD` | 4 rounds | Trigger summary compression above this |
+| `HISTORY_ROUNDS` | 15 | Keep last N conversation rounds |
+| `HISTORY_TRUNCATE` | 4000 chars | Truncate single message length |
+| `SUMMARY_THRESHOLD` | 5 rounds | Keep recent N rounds as raw text, compress older |
 
 CLI timeout strategy (`claude_cli.py`):
 
@@ -144,6 +144,8 @@ Error recovery:
 | `feishu-perm` | `.claude/skills/feishu-perm/` | Document permissions, collaborator management, public links |
 | `gemini` | `.claude/skills/gemini/` | Unified Gemini: search, web, file analysis, summarization (subscription-based, zero API cost) |
 | `skill-creator` | `.claude/skills/skill-creator/` | Skill development framework: create, test, evaluate, iterate (official Apache 2.0) |
+| `brave-web-search` | `.claude/skills/brave-web-search/` | Brave Web Search API (official skill, `brave/brave-search-skills`) |
+| `brave-news-search` | `.claude/skills/brave-news-search/` | Brave News Search API (official skill, `brave/brave-search-skills`) |
 
 Reference: https://code.claude.com/docs/en/skills
 
@@ -156,8 +158,11 @@ Reference: https://code.claude.com/docs/en/skills
 | `claude-cli` | `claude -p` subprocess | Chat, tools, image understanding (Read native vision) |
 | `gemini-cli` | subprocess stdin pipe | Search, web, file analysis, summarization (subscription, gemini skill) |
 | `gemini-api` | `google-genai` SDK | Large document fallback (Files API), history compression |
+| `brave-search` | Brave Search Skills + collector API | English authoritative source search (CC via skill, collector via urllib) |
 
 PDF fallback chain: Gemini CLI (subscription, free) → Gemini API (per-token billing) → Claude Read (20 pages/request).
+
+Briefing search strategy: Gemini CLI (primary, flash-lite model) + Brave Search (English authoritative sources, official skill + collector direct API) + TopHub (Chinese trending aggregation, short keywords only).
 
 Heartbeat two-layer architecture: Sonnet (triage, no tools) → Sonnet (action, with tools, triggered only on anomalies). Notifications sent to user DM in natural tone.
 

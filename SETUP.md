@@ -132,7 +132,7 @@ Set `scheduler.enabled: false` and `heartbeat.enabled: false` for first boot (en
 ./hub.sh start
 sleep 3
 ./hub.sh status
-tail -20 data/hub.log
+tail -20 data/claude-code-feishu.log
 ```
 
 **Verify**: Log should show "FeishuBot connected" or similar WebSocket success.

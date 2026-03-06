@@ -20,9 +20,9 @@ from store import load_json, save_json
 
 log = logging.getLogger("hub.router")
 
-HISTORY_ROUNDS = 8       # keep last N rounds for context fallback
-HISTORY_TRUNCATE = 2000  # max chars per message in history
-SUMMARY_THRESHOLD = 4    # rounds beyond this → compress older portion
+HISTORY_ROUNDS = 15      # keep last N rounds for context fallback
+HISTORY_TRUNCATE = 4000  # max chars per message in history
+SUMMARY_THRESHOLD = 5    # keep this many recent rounds as raw text, compress older
 
 COMPRESS_TIMEOUT_PRIMARY = 60
 COMPRESS_TIMEOUT_FALLBACK = 30
@@ -44,17 +44,19 @@ SUMMARY_PROMPT = (
     "将以下 Claude Code 飞书对话历史压缩为结构化摘要。\n\n"
     "## 输出格式\n\n"
     "### 对话主题\n一句话概括\n\n"
-    "### 关键决策\n- 具体决策（保留文件路径、配置值、技术选型）\n\n"
+    "### 关键决策与理由\n"
+    "- 决策内容（保留文件路径、配置值、技术选型）\n"
+    "- 决策理由和排除的备选方案\n\n"
     "### 当前状态\n"
     "- 已完成：...\n"
     "- 进行中：...\n"
     "- 待确认：...\n\n"
-    "### 涉及的文件与系统\n- 文件路径、服务名\n\n"
-    "### 用户偏好\n- 偏好和约束（如有）\n\n"
+    "### 涉及的文件与变更\n- 文件路径 + 改了什么方面\n\n"
+    "### 用户偏好与纠正\n- 用户明确表达的偏好、约束、对助手的纠正（如有）\n\n"
     "## 要求\n"
-    "- 500字以内\n"
+    "- 保持精炼，但不限字数——关键信息和决策逻辑的完整性优先\n"
     "- 保留具体文件路径、命令、配置值——恢复后需要\n"
-    "- 丢弃寒暄、重复、已否决方案、过程性试错\n"
+    "- 丢弃寒暄、重复、已否决方案的细节（仅记录「排除了 X，因为 Y」）\n"
     "- 代码修改只记录改了哪些文件的什么方面，不记录代码本身\n\n"
     "对话历史：\n{raw}"
 )
@@ -239,7 +241,7 @@ class LLMRouter:
         if not result.is_error:
             return False
         t = result.text
-        # ld.so dynamic linker crash (some embedded Linux kernels)
+        # ld.so dynamic linker crash
         if "ld.so" in t or "dl-open.c" in t:
             return True
         # Generic empty-result crash (no stderr info)

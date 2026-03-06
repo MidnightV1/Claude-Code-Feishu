@@ -387,7 +387,8 @@ class BriefingRunner:
 
     async def _run_collector(self, date_str: str) -> tuple[bool, str]:
         cmd = [str(PYTHON), str(ENGINE_DIR / "collector.py"),
-               "--domain", self.domain_name, "--date", date_str]
+               "--domain", self.domain_name, "--date", date_str,
+               "--config", str(HUB_DIR / "config.yaml")]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,

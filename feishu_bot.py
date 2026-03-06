@@ -33,23 +33,17 @@ ADMIN_OPEN_IDS: set[str] = set()
 FEISHU_SYSTEM_PROMPT = """\
 ## 飞书通道上下文
 
-你当前通过飞书消息与用户沟通。消息通过飞书卡片（JSON 2.0）渲染。
+你当前通过飞书消息与用户沟通。消息通过飞书卡片（JSON 2.0）的 markdown 组件渲染。
 
-### 已实现的能力
+飞书协作协议、能力声明、Skills 列表见项目 CLAUDE.md（CC 启动时自动加载）。本 prompt 仅补充飞书渲染特有规则。
 
-**多模态输入**
-- 图片：已下载压缩存储到会话目录，prompt 中提供绝对路径。**收到图片时请用 Read 工具直接读取图片文件**，你具备原生视觉理解能力
-- 文件（PDF）：Gemini CLI/API 生成文档摘要，注入 prompt。追问具体内容时使用 gemini-doc skill
-- 文件（代码/文本）：直接读取注入（.py, .js, .json, .yaml, .md 等 30+ 格式）
-- 文件持久化到会话存储（`data/files/`），跨消息可引用
+### 消息渲染（卡片 JSON 2.0）
 
-**消息渲染（卡片 JSON 2.0）**
-
-你的回复会被 hub 包裹在飞书卡片的 markdown 组件中发送。支持的 markdown 语法：
+支持的 markdown 语法：
 
 - 标题：`# ~ ######`
 - 格式：`**粗体**` `*斜体*` `~~删除线~~` `` `行内代码` ``
-- 代码块：` ```语言\n代码\n``` `（支持语言高亮）
+- 代码块：` ```语言\\n代码\\n``` `（支持语言高亮）
 - 列表：有序 `1.` / 无序 `-`（嵌套用 4 空格缩进）
 - 表格：标准 markdown 表格（原生渲染，单组件最多 4 个表格，超 5 行分页）
 - 链接：`[文本](url)`
@@ -61,19 +55,17 @@ FEISHU_SYSTEM_PROMPT = """\
 - 飞书表情：`:DONE:` `:OK:` `:THUMBSUP:`
 
 **渲染注意事项**
-- 换行用 `\n`（JSON 字符串中），或 `<br>`
+- 换行用 `\\n`（JSON 字符串中），或 `<br>`
 - **4+ 空格开头会触发代码块**——正文不要意外缩进
 - 加粗语法前后保留空格
 - 特殊字符（`< > * ~ [ ] ( ) # : + _ $`）如需原样展示，用 HTML 实体转义（如 `&#60;`）
 - 长文本 >4000 字符自动分块
 
-**会话管理**
-- DM 按 open_id 独立 session / 群聊按 chat_id 共享 session
-- `#reset` 重置 / `#opus` `#sonnet` 切换模型 / `#think` 开关推理 / `#usage` 查配额
+### 多模态输入
 
-**Skills**
-- `#plan` / `#review` / `#analyze` — Opus + 专属提示词
-- hub-ops skill — 定时任务管理
+- 图片：已下载压缩到会话目录，prompt 中提供路径。**收到图片时用 Read 工具直接读取**
+- 文件（PDF）：Gemini 生成摘要注入 prompt，追问用 gemini skill
+- 文件（代码/文本）：直接读取注入，持久化到 `data/files/`
 
 ### 回复规范
 
@@ -944,7 +936,7 @@ class FeishuBot:
 
         PIL compression runs in a subprocess to keep native libraries
         (libwebp, libjpeg) out of the main process — avoids ld.so dlopen
-        race conditions when forking Claude CLI on some Linux kernels.
+        race conditions when forking Claude CLI.
 
         If *image_key* is provided directly (e.g. from post message), skip
         parsing content_str.

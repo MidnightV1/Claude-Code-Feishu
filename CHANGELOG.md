@@ -6,13 +6,27 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.5.0] — 2026-03-06
+
+### Added
+- **Brave Search skills** — Official `brave-web-search` and `brave-news-search` skills (`brave/brave-search-skills`, Apache 2.0). English authoritative source search for both CC interactive use and briefing collector
+- **Unified API key management** — `api_keys` section in `config.yaml` for external service credentials (Brave Search, etc.), shared between skills and collector
+- **Briefing multi-source search** — Gemini CLI (primary) + Brave Search (English sources) + TopHub (Chinese trending), with per-source language affinity
+
+### Changed
+- **Context management optimization** — Resolved information conflicts between runtime prompt, CLAUDE.md, and Feishu system prompt by establishing clear document responsibilities:
+  - **CLAUDE.md** owns: identity, protocols, skills list, capabilities, session init, architecture
+  - **Feishu system prompt** owns: rendering syntax, multimodal input handling, reply formatting
+  - Eliminated duplicate content (skills list, session commands, capability declarations) that was injected from multiple sources simultaneously
+- **Compression prompt upgrade** — Summary now preserves decision **rationale and excluded alternatives** (not just decisions), user corrections, and file change context. Removed rigid 500-char limit in favor of completeness-first approach
+- **Context window expansion** — `HISTORY_ROUNDS` 8→15, `HISTORY_TRUNCATE` 2000→4000, `SUMMARY_THRESHOLD` 4→5 (more raw context preserved before compression)
+- Removed MCP-based Brave Search in favor of official Skills (simpler, no server process)
+
+---
+
 ## [0.4.0] — 2026-03-06
 
 ### Added
-- **Dev/master branch workflow** — `dev` for daily development, `master` for production only. Merge via `scripts/promote.sh` (smoke test gate → merge → push → auto-deploy)
-- **`scripts/smoke_test.py`** — Pre-deploy validation: import checks, config.yaml structure, domain configs, collector imports, third-party dependencies
-- **`scripts/promote.sh`** — One-command dev→master promotion with smoke test gate
-- **Post-receive hook enhancement** — Master-only deployment + smoke test + auto-revert on failure + Feishu notification
 - **Gemini CLI as briefing generator** — Primary generation via Gemini CLI (zero API cost), Claude as fallback
 - **Gemini CLI system prompt support** — Prepend system_prompt to user prompt (CLI has no separate system prompt channel)
 - **Briefing progress card PID tracking** — All progress cards and run_status.json include process PID for debugging concurrent instances
