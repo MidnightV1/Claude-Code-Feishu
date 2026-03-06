@@ -6,6 +6,15 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.6.1] — 2026-03-06
+
+### Fixed
+- **Path resolution after package restructure** — All `__file__`-relative paths (`briefing.py`, `api.py`, `bot.py`, `media.py`) now correctly traverse from their new `agent/` subdirectory back to project root for `scripts/`, `config.yaml`, and `data/`
+- **Recall cancel** — Router now checks `result.cancelled` before attempting history save or retry, preventing new subprocess spawn after message recall
+- **Keychain credential loading** — `check_quota.py` reads OAuth token from macOS Keychain (Claude Code 2.x), falls back to legacy `~/.claude/.credentials.json`
+
+---
+
 ## [0.6.0] — 2026-03-06
 
 ### Added

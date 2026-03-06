@@ -25,6 +25,9 @@ from agent.platforms.feishu.session import SessionMixin, SKILL_ROUTES
 
 log = logging.getLogger("hub.feishu_bot")
 
+# Project root: agent/platforms/feishu/bot.py → 3 levels up
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 DEDUP_TTL = 86400       # 24h
 DEDUP_MAX_SIZE = 1000
 DEBOUNCE_SECONDS = 3    # debounce window for multi-part messages
@@ -133,7 +136,7 @@ class FeishuBot(MediaMixin, SessionMixin):
         self._bot_open_id: str | None = None
         self._feishu_api = FeishuAPI(self.app_id, self.app_secret, self.domain)
         self._reply_cache_path = os.path.join(
-            os.path.dirname(__file__), "data", "reply_cache.json"
+            _PROJECT_ROOT, "data", "reply_cache.json"
         )
         self._reply_cache: dict[str, str] = load_json_sync(
             self._reply_cache_path, default={}
@@ -638,7 +641,7 @@ class FeishuBot(MediaMixin, SessionMixin):
             result = _sp.run(
                 ["python3", "scripts/check_quota.py", "--feishu"],
                 capture_output=True, text=True, timeout=20,
-                cwd=os.path.dirname(os.path.abspath(__file__)),
+                cwd=_PROJECT_ROOT,
             )
             if result.returncode != 0:
                 return f"Quota check failed: {result.stderr.strip()}"
@@ -650,15 +653,14 @@ class FeishuBot(MediaMixin, SessionMixin):
         """Wait for reply delivery, then trigger hub restart via launchctl."""
         await asyncio.sleep(3)
         import subprocess
-        hub_dir = os.path.dirname(os.path.abspath(__file__))
-        log_path = os.path.join(hub_dir, "data", "restart.log")
+        log_path = os.path.join(_PROJECT_ROOT, "data", "restart.log")
         with open(log_path, "a") as lf:
             subprocess.Popen(
                 ["/bin/sh", "-c",
                  "launchctl unload ~/Library/LaunchAgents/com.claude-hub.plist && "
                  "sleep 2 && "
                  "launchctl load ~/Library/LaunchAgents/com.claude-hub.plist"],
-                cwd=hub_dir,
+                cwd=_PROJECT_ROOT,
                 start_new_session=True,
                 stdout=lf,
                 stderr=lf,

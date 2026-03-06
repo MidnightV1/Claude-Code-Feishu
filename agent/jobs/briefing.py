@@ -15,7 +15,7 @@ from pathlib import Path
 log = logging.getLogger("hub.briefing")
 
 PYTHON = Path(os.environ.get("BRIEFING_PYTHON", sys.executable))
-SCRIPT = Path(__file__).resolve().parent / "scripts" / "briefing_run.py"
+SCRIPT = Path(__file__).resolve().parent.parent.parent / "scripts" / "briefing_run.py"
 DOMAINS_DIR = Path.home() / "briefing" / "domains"
 
 
@@ -25,7 +25,7 @@ class BriefingPlugin:
     def __init__(self, notify_config: dict, default_domain: str = None):
         self.default_domain = default_domain
         self.notify_config = notify_config
-        self._config_path = str(Path(__file__).resolve().parent / "config.yaml")
+        self._config_path = str(Path(__file__).resolve().parent.parent.parent / "config.yaml")
 
     def descriptor(self) -> dict:
         handlers = [{"name": "briefing", "fn": self._handler_default}]

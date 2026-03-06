@@ -14,11 +14,16 @@ from pathlib import Path
 import requests
 
 CREDENTIALS_PATH = Path.home() / ".claude" / ".credentials.json"
+KEYCHAIN_SERVICE = "Claude Code-credentials"
 
 
 def load_oauth_token() -> str:
-    """Load OAuth access token from Claude credentials."""
-    creds = json.loads(CREDENTIALS_PATH.read_text())
+    """Load OAuth access token from Claude credentials.
+
+    Tries macOS Keychain first (Claude Code 2.x), then falls back to
+    ~/.claude/.credentials.json (legacy).
+    """
+    creds = _load_credentials()
     oauth = creds.get("claudeAiOauth", {})
     token = oauth.get("accessToken")
     if not token:
@@ -30,6 +35,30 @@ def load_oauth_token() -> str:
             "OAuth token expired. Run `claude` to refresh."
         )
     return token
+
+
+def _load_credentials() -> dict:
+    """Load credentials from Keychain (macOS) or legacy file."""
+    # macOS Keychain (Claude Code 2.x+)
+    try:
+        import subprocess as _sp
+        result = _sp.run(
+            ["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout.strip())
+    except Exception:
+        pass
+
+    # Legacy file
+    if CREDENTIALS_PATH.exists():
+        return json.loads(CREDENTIALS_PATH.read_text())
+
+    raise RuntimeError(
+        f"No credentials found. Checked Keychain '{KEYCHAIN_SERVICE}' "
+        f"and {CREDENTIALS_PATH}"
+    )
 
 
 def fetch_quota() -> dict:

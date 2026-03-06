@@ -14,7 +14,7 @@ import requests
 
 log = logging.getLogger("hub.feishu_api")
 
-_PROJECT_ROOT = Path(__file__).resolve().parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 
 def _resolve(value: str) -> str:

@@ -60,7 +60,7 @@ class MediaMixin:
                 f"~/tmp/feishu_img_{image_key[:16]}.webp"
             )
             import sys
-            script = os.path.join(os.path.dirname(__file__), "scripts", "compress_image.py")
+            script = os.path.join(os.path.dirname(__file__), "..", "..", "..", "scripts", "compress_image.py")
             proc = await asyncio.create_subprocess_exec(
                 sys.executable, script, raw_path, compressed_path,
                 stdout=asyncio.subprocess.PIPE,

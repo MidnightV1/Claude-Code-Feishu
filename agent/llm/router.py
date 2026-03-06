@@ -318,6 +318,8 @@ class LLMRouter:
                 on_activity=on_activity,
                 on_todo=on_todo,
             )
+            if result.cancelled:
+                return result
             if not result.is_error:
                 self._save_result(session_key, result, prompt)
                 try:
@@ -352,6 +354,8 @@ class LLMRouter:
                 on_activity=on_activity,
                 on_todo=on_todo,
             )
+            if result.cancelled:
+                return result
             if not result.is_error or not self._is_transient(result):
                 break
             if attempt < TRANSIENT_RETRY_MAX:
