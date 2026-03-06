@@ -61,10 +61,22 @@ _TOOL_VERBS: dict[str, list[str]] = {
 _FALLBACK_VERBS = ["搞事情中...", "施法中...", "炼丹中...", "整活中...", "正在变形..."]
 
 
+_TOOL_ICONS: dict[str, str] = {
+    "Read": "📖", "Grep": "🔍", "Glob": "📂", "Bash": "⚡",
+    "Edit": "✏️", "Write": "📝", "Agent": "🤖", "Web": "🌐",
+    "mcp": "🔌", "Skill": "🎯", "TodoWrite": "📋",
+}
+_FALLBACK_ICON = "🔧"
+
+
 def _pick_verb(category: str) -> str:
     """Pick a random personality verb for a tool category."""
     pool = _TOOL_VERBS.get(category, _FALLBACK_VERBS)
     return random.choice(pool)
+
+
+def _icon(category: str) -> str:
+    return _TOOL_ICONS.get(category, _FALLBACK_ICON)
 
 
 def _make_tool_label(tool_name: str, tool_input: dict) -> str:
@@ -73,52 +85,59 @@ def _make_tool_label(tool_name: str, tool_input: dict) -> str:
         path = tool_input.get("file_path", "")
         name = PurePosixPath(path).name if path else ""
         verb = _pick_verb("Read")
-        return f"{verb} {name}" if name else verb
+        return f"{_icon('Read')} {verb} {name}" if name else f"{_icon('Read')} {verb}"
 
     if tool_name == "Grep":
         pat = tool_input.get("pattern", "")
         verb = _pick_verb("Grep")
-        return f"{verb}「{pat[:20]}」" if pat else verb
+        i = _icon("Grep")
+        return f"{i} {verb}「{pat[:20]}」" if pat else f"{i} {verb}"
 
     if tool_name == "Glob":
         pat = tool_input.get("pattern", "")
         verb = _pick_verb("Glob")
-        return f"{verb} {pat[:20]}" if pat else verb
+        i = _icon("Glob")
+        return f"{i} {verb} {pat[:20]}" if pat else f"{i} {verb}"
 
     if tool_name == "Bash":
         desc = tool_input.get("description", "")
         verb = _pick_verb("Bash")
-        return f"{verb} {desc[:30]}" if desc else verb
+        i = _icon("Bash")
+        return f"{i} {verb} {desc[:30]}" if desc else f"{i} {verb}"
 
     if tool_name in ("Edit", "Write"):
         path = tool_input.get("file_path", "")
         name = PurePosixPath(path).name if path else ""
         verb = _pick_verb(tool_name)
-        return f"{verb} {name}" if name else verb
+        i = _icon(tool_name)
+        return f"{i} {verb} {name}" if name else f"{i} {verb}"
 
     if tool_name == "Agent":
         desc = tool_input.get("description", "")
         verb = _pick_verb("Agent")
-        return f"{verb} {desc[:30]}" if desc else verb
+        i = _icon("Agent")
+        return f"{i} {verb} {desc[:30]}" if desc else f"{i} {verb}"
 
     if tool_name in ("WebFetch", "WebSearch"):
         query = tool_input.get("query", tool_input.get("prompt", ""))
         verb = _pick_verb("Web")
-        return f"{verb}「{query[:20]}」" if query else verb
+        i = _icon("Web")
+        return f"{i} {verb}「{query[:20]}」" if query else f"{i} {verb}"
 
     if tool_name == "Skill":
-        return _pick_verb("Skill")
+        return f"{_icon('Skill')} {_pick_verb('Skill')}"
 
     if tool_name == "TodoWrite":
-        return _pick_verb("TodoWrite")
+        return f"{_icon('TodoWrite')} {_pick_verb('TodoWrite')}"
 
     if tool_name.startswith("mcp__"):
         parts = tool_name.split("__")
         server = parts[1] if len(parts) > 1 else ""
         verb = _pick_verb("mcp")
-        return f"{verb} {server}" if server else verb
+        i = _icon("mcp")
+        return f"{i} {verb} {server}" if server else f"{i} {verb}"
 
-    return random.choice(_FALLBACK_VERBS)
+    return f"{_FALLBACK_ICON} {random.choice(_FALLBACK_VERBS)}"
 
 
 class ClaudeCli:
