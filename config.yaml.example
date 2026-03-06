@@ -64,11 +64,6 @@ logging:
   level: INFO
   file: data/hub.log
 
-# API keys for external services (used by collector and skills)
-api_keys:
-  brave_search: ""                  # Brave Search API key (for briefing collector)
-  # tophub: ""                      # TopHub API key (optional, Chinese trending)
-
 # Optional: second Feishu app for notifications (alerts, briefings)
 # If omitted, the main feishu app is used for everything.
 notify:

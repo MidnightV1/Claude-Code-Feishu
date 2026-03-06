@@ -25,7 +25,7 @@ do_start() {
     cd "$HUB_DIR" || exit 1
     env $(for v in $STRIP_VARS; do echo "-u $v"; done) \
         HUB_CHILD=1 \
-        screen -dmS "$SCREEN_NAME" "$PYTHON" main.py
+        screen -dmS "$SCREEN_NAME" "$PYTHON" -m agent.main
     sleep 2
     if is_running; then
         echo "Started OK"

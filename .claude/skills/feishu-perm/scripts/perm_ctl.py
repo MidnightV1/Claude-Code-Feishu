@@ -17,7 +17,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(BASE))
 
-from feishu_api import FeishuAPI, ContactStore  # noqa: E402
+from agent.platforms.feishu.api import FeishuAPI, ContactStore  # noqa: E402
 
 _PERM_DISPLAY = {
     "view": "view",

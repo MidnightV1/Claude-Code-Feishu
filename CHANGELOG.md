@@ -6,6 +6,28 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.6.0] — 2026-03-06
+
+### Added
+- **Package architecture** — Restructured from 16 flat root files into a layered `agent/` package with clear separation of concerns:
+  - `agent/platforms/feishu/` — Feishu platform adapter (bot, session, media, dispatcher, api, utils)
+  - `agent/llm/` — LLM clients (router, claude, gemini-cli, gemini-api)
+  - `agent/jobs/` — Scheduled tasks (scheduler, heartbeat, briefing)
+  - `agent/infra/` — Infrastructure (models, store, file_store)
+- **Multi-platform extensibility** — Package structure designed for future `platforms/wecom/`, `platforms/dingtalk/` adapters
+- **Full markdown support in `text_to_blocks()`** — Headings, dividers, bullet/ordered lists, blockquotes, inline bold/code/italic/strikethrough/links all render correctly in Feishu docx blocks
+
+### Changed
+- **Bot decomposition** — `feishu_bot.py` (1384 lines) split into `bot.py` (679) + `session.py` (340) + `media.py` (419) using mixin pattern
+- Entry point changed from `python3 main.py` to `python3 -m agent.main`
+- All skill scripts updated to import from `agent.platforms.feishu.api` / `agent.platforms.feishu.utils`
+
+### Fixed
+- `text_to_blocks()` — Feishu docx block API silently rejects block_type 16 (bullet) and 17 (ordered list) on creation; now renders as text blocks with visual prefixes
+- Callout blocks (block_type 19) lose inline elements silently; blockquotes now render as text blocks with visual prefix
+
+---
+
 ## [0.5.0] — 2026-03-06
 
 ### Added
@@ -42,7 +64,7 @@ Format: feature-oriented grouping per release, not per-commit.
 ### Added
 - **Unified Gemini skill** — `search`, `web`, `analyze`, `summarize` subcommands, replacing single-purpose `gemini-doc` skill. Default web search via Google Search Grounding (zero API cost, subscription-based)
 - **skill-creator framework** — official Apache 2.0 skill for creating, testing, evaluating, and iterating skills
-- **飞书协作协议** — 5 behavioral protocols for Feishu channel: task externalization, plan approval via Feishu docs, document lifecycle management, periodic self-audit, proactive pattern capture
+- **Feishu collaboration protocols** — 5 behavioral protocols for Feishu channel: task externalization, plan approval via Feishu docs, document lifecycle management, periodic self-audit, proactive pattern capture
 
 ### Fixed
 - **Recall cancel robustness** — SIGKILL entire process group (not just main process) to prevent orphan node workers; explicit `llm_task.cancel()` + fire-and-forget card deletion to avoid double CancelledError in Python 3.13

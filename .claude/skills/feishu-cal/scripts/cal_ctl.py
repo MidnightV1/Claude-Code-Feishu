@@ -23,8 +23,8 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(BASE))
 
-from feishu_api import FeishuAPI, ContactStore  # noqa: E402
-from feishu_utils import parse_dt  # noqa: E402
+from agent.platforms.feishu.api import FeishuAPI, ContactStore  # noqa: E402
+from agent.platforms.feishu.utils import parse_dt  # noqa: E402
 
 TZ = timezone(timedelta(hours=8))  # Asia/Shanghai
 

@@ -38,14 +38,12 @@ Feishu WebSocket ──> FeishuBot ──> LLMRouter ─┬─> claude -p       
 
 Key components:
 
-| Component | Role |
-|-----------|------|
-| `feishu_bot.py` | WebSocket event handler, debounce batching, multimodal input |
-| `llm_router.py` | Session management, resume-or-fallback, history compression |
-| `dispatcher.py` | Feishu card rendering, chunking, retry, real-time updates |
-| `claude_cli.py` | Claude CLI wrapper with streaming TodoWrite progress |
-| `scheduler.py` | In-process cron scheduler (croniter + asyncio) |
-| `heartbeat.py` | System health monitoring via LLM judgment |
+| Package | Role |
+|---------|------|
+| `agent/platforms/feishu/` | WebSocket bot, session management, media processing, card dispatch |
+| `agent/llm/` | Multi-model routing, resume-or-fallback, history compression |
+| `agent/jobs/` | Cron scheduler, heartbeat monitor, briefing launcher |
+| `agent/infra/` | Shared models, atomic JSON store, session file management |
 
 ## Features
 

@@ -6,7 +6,7 @@ You are Claude Code, running inside the `claude-code-feishu` hub service as a Cl
 
 | Channel | Trigger | Characteristics |
 |---------|---------|----------------|
-| **Feishu** | User DMs or @Bot in group chat | Routed via `feishu_bot.py`, supports image/file/multi-modal. Rendered as **Feishu Card JSON 2.0** markdown |
+| **Feishu** | User DMs or @Bot in group chat | Routed via `bot.py`, supports image/file/multi-modal. Rendered as **Feishu Card JSON 2.0** markdown |
 | **SSH CLI** | User runs `claude` directly via SSH | Full CLI capabilities, local filesystem, no Feishu limitations |
 
 ### Feishu Collaboration Protocols
@@ -86,8 +86,9 @@ On each new conversation (not `--resume`), execute in order:
 | Cron job add/remove/modify | **No** — hub_ctl.py hot-reloads (SIGUSR1) |
 | `sources.yaml` (briefing keywords) | **No** — collector reads on each run |
 | Feishu task changes | **No** — heartbeat re-fetches each cycle |
+| `.claude/skills/` and `scripts/` Python | **No** — CC calls dynamically, not hub process code |
 | `config.yaml` (credentials, model defaults) | **Yes** |
-| Hub Python code (main.py etc.) | **Yes** |
+| `agent/` package code (core runtime) | **Yes** |
 | Python dependencies | **Yes** |
 
 ### Conversation Context
@@ -99,7 +100,7 @@ Two-layer architecture for conversation continuity:
 | **Primary** | `--resume` succeeds | Full Claude CLI context window |
 | **Fallback** | resume fails / `#reset` / restart | History injected into system prompt (Sonnet compression + recent raw messages) |
 
-Key parameters (`llm_router.py`):
+Key parameters (`router.py`):
 
 | Parameter | Value | Meaning |
 |-----------|-------|---------|
@@ -107,7 +108,7 @@ Key parameters (`llm_router.py`):
 | `HISTORY_TRUNCATE` | 4000 chars | Truncate single message length |
 | `SUMMARY_THRESHOLD` | 5 rounds | Keep recent N rounds as raw text, compress older |
 
-CLI timeout strategy (`claude_cli.py`):
+CLI timeout strategy (`claude.py`):
 
 | Scenario | Timeout Type | Default |
 |----------|-------------|---------|
@@ -129,7 +130,7 @@ Error recovery:
 
 ## Skills
 
-**New capabilities should be implemented as Skills (`.claude/skills/<name>/SKILL.md` + `scripts/`), not hardcoded as `#commands` in `feishu_bot.py`.**
+**New capabilities should be implemented as Skills (`.claude/skills/<name>/SKILL.md` + `scripts/`), not hardcoded as `#commands` in the bot.**
 
 | Skill | Location | Purpose |
 |-------|----------|---------|
@@ -170,32 +171,40 @@ Heartbeat two-layer architecture: Sonnet (triage, no tools) → Sonnet (action, 
 
 ## File Structure
 
-| File/Directory | Purpose |
-|----------------|---------|
-| `main.py` | Entry point, PID file, SIGUSR1 hot-reload signal |
-| `feishu_bot.py` | Feishu WebSocket Bot, message routing, debounce, multi-modal |
-| `briefing_plugin.py` | Briefing thin shim (subprocess launcher, no logic) |
-| `scripts/briefing_run.py` | Briefing pipeline script (collect → generate → review → deliver → keyword evolution) |
-| `scripts/compress_image.py` | Image compression subprocess (isolate PIL to prevent ld.so conflicts) |
-| `scheduler.py` | In-process cron scheduler (croniter + asyncio timer) |
-| `heartbeat.py` | Heartbeat monitor (two-layer Sonnet: triage → action, DM notification) |
-| `gemini_cli.py` | Gemini CLI subprocess wrapper (stdin pipe, @file syntax) |
-| `llm_router.py` | Multi-model router (claude-cli / gemini-cli / gemini-api) |
-| `dispatcher.py` | Feishu message sender (card JSON 2.0 markdown, chunking, retry, card update) |
-| `file_store.py` | Session file store (image/file persistence + context injection) |
-| `claude_cli.py` | Claude CLI subprocess wrapper (stream-json + TodoWrite progress streaming) |
-| `gemini_api.py` | Gemini API SDK wrapper (multi-modal + Files API) |
-| `feishu_api.py` | Feishu API client (token cache + HTTP + contact mapping) |
-| `models.py` | Shared data structures |
-| `store.py` | JSON atomic persistence |
-| `feishu_utils.py` | Shared utilities (`text_to_blocks`, `parse_dt`) |
-| `config.yaml` | Configuration (credentials, models, heartbeat, briefing, Feishu) |
-| `hub.sh` | Service management script (start/stop/restart/status/watchdog) |
-| `.claude/skills/` | Claude Code Skills |
-| `data/` | Runtime state (jobs.json, sessions.json, hub.pid, logs) |
-| `docs/feishu_scopes.json` | Feishu Bot permission set (importable to Feishu Open Platform) |
-| `docs/feishu_scopes.md` | Feishu Bot permission list (categorized by module) |
-| `PLAN.md` | Architecture design document |
+```
+agent/                           # Core runtime (Python package)
+├── main.py                      # Entry point, PID file, SIGUSR1 hot-reload
+├── platforms/feishu/            # Feishu platform adapter
+│   ├── bot.py                   # WebSocket Bot, event dispatch, debounce, command routing
+│   ├── session.py               # LLM session management, skill matching, batch processing
+│   ├── media.py                 # Image/file/PDF processing, content parsing
+│   ├── dispatcher.py            # Card message sending (JSON 2.0, chunking, retry)
+│   ├── api.py                   # Feishu API client (token cache + HTTP)
+│   └── utils.py                 # Utilities (text_to_blocks, parse_dt)
+├── llm/                         # LLM clients
+│   ├── router.py                # Multi-model routing (claude/gemini-cli/gemini-api)
+│   ├── claude.py                # Claude CLI subprocess wrapper
+│   ├── gemini_cli.py            # Gemini CLI subprocess wrapper
+│   └── gemini_api.py            # Gemini API SDK wrapper
+├── jobs/                        # Scheduled tasks / proactive behaviors
+│   ├── scheduler.py             # In-process cron scheduler
+│   ├── heartbeat.py             # Heartbeat monitor (two-layer Sonnet)
+│   └── briefing.py              # Briefing thin shim
+└── infra/                       # Infrastructure
+    ├── models.py                # Shared data structures
+    ├── store.py                 # JSON atomic persistence
+    └── file_store.py            # Session-level file storage
+scripts/                         # Tool scripts
+├── briefing_run.py              # Briefing pipeline standalone script
+└── compress_image.py            # Image compression subprocess
+.claude/skills/                  # Claude Code Skills
+config.yaml                      # Configuration (credentials, models, heartbeat, briefing, Feishu)
+hub.sh                           # Service management script (start/stop/restart/status/watchdog)
+data/                            # Runtime state (jobs.json, sessions.json, hub.pid, logs)
+docs/feishu_scopes.json          # Feishu Bot permission set (importable to Feishu Open Platform)
+docs/feishu_scopes.md            # Feishu Bot permission list (categorized by module)
+PLAN.md                          # Architecture design document
+```
 
 ---
 

@@ -8,17 +8,17 @@ import os
 import logging
 import yaml
 
-from models import LLMConfig
-from claude_cli import ClaudeCli
-from gemini_cli import GeminiCli
-from gemini_api import GeminiAPI
-from llm_router import LLMRouter
-from dispatcher import Dispatcher
-from scheduler import CronScheduler
-from heartbeat import HeartbeatMonitor
-from feishu_bot import FeishuBot
-from file_store import FileStore
-from briefing_plugin import BriefingPlugin
+from agent.infra.models import LLMConfig
+from agent.llm.claude import ClaudeCli
+from agent.llm.gemini_cli import GeminiCli
+from agent.llm.gemini_api import GeminiAPI
+from agent.llm.router import LLMRouter
+from agent.platforms.feishu.dispatcher import Dispatcher
+from agent.jobs.scheduler import CronScheduler
+from agent.jobs.heartbeat import HeartbeatMonitor
+from agent.platforms.feishu.bot import FeishuBot
+from agent.infra.file_store import FileStore
+from agent.jobs.briefing import BriefingPlugin
 
 
 def setup_logging(config: dict):

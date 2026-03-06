@@ -38,14 +38,12 @@
 
 核心组件：
 
-| 组件 | 职责 |
+| 包 | 职责 |
 |------|------|
-| `feishu_bot.py` | WebSocket 事件处理、消息防抖、多模态输入 |
-| `llm_router.py` | 会话管理、resume-or-fallback、历史压缩 |
-| `dispatcher.py` | 飞书卡片渲染、分块、重试、实时更新 |
-| `claude_cli.py` | Claude CLI 封装，流式 TodoWrite 进度 |
-| `scheduler.py` | 进程内 cron 调度器（croniter + asyncio） |
-| `heartbeat.py` | LLM 驱动的系统健康监控 |
+| `agent/platforms/feishu/` | WebSocket Bot、会话管理、媒体处理、卡片分发 |
+| `agent/llm/` | 多模型路由、resume-or-fallback、历史压缩 |
+| `agent/jobs/` | Cron 调度器、心跳监控、日报启动器 |
+| `agent/infra/` | 共享模型、原子 JSON 存储、会话文件管理 |
 
 ## 功能
 

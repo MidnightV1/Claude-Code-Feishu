@@ -18,7 +18,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(BASE))
 
-from feishu_api import FeishuAPI  # noqa: E402
+from agent.platforms.feishu.api import FeishuAPI  # noqa: E402
 
 
 def _extract_token(s: str) -> str:

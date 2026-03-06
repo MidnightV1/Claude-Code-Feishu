@@ -33,7 +33,7 @@ class FileStore:
             return []
 
     def _save_meta(self, session_key: str, meta: list[dict]):
-        from store import save_json_sync
+        from agent.infra.store import save_json_sync
         save_json_sync(self._meta_path(session_key), meta)
 
     @staticmethod

@@ -27,13 +27,13 @@ import yaml
 HUB_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HUB_DIR))
 
-from models import LLMResult  # noqa: E402
-from gemini_api import GeminiAPI  # noqa: E402
-from gemini_cli import GeminiCli  # noqa: E402
-from claude_cli import ClaudeCli  # noqa: E402
-from dispatcher import Dispatcher  # noqa: E402
-from feishu_api import FeishuAPI  # noqa: E402
-from feishu_utils import text_to_blocks  # noqa: E402
+from agent.infra.models import LLMResult  # noqa: E402
+from agent.llm.gemini_api import GeminiAPI  # noqa: E402
+from agent.llm.gemini_cli import GeminiCli  # noqa: E402
+from agent.llm.claude import ClaudeCli  # noqa: E402
+from agent.platforms.feishu.dispatcher import Dispatcher  # noqa: E402
+from agent.platforms.feishu.api import FeishuAPI  # noqa: E402
+from agent.platforms.feishu.utils import text_to_blocks  # noqa: E402
 
 log = logging.getLogger("briefing.run")
 

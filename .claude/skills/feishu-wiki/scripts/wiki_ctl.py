@@ -19,7 +19,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(BASE))
 
-from feishu_api import FeishuAPI  # noqa: E402
+from agent.platforms.feishu.api import FeishuAPI  # noqa: E402
 
 
 def _load_config():
@@ -320,7 +320,7 @@ def _format_ts(ts) -> str:
         return str(ts)
 
 
-from feishu_utils import text_to_blocks as _text_to_blocks  # noqa: E402
+from agent.platforms.feishu.utils import text_to_blocks as _text_to_blocks  # noqa: E402
 
 
 # ── CLI ──────────────────────────────────────────────────
