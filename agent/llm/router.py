@@ -16,7 +16,7 @@ from agent.infra.models import LLMConfig, LLMResult
 from agent.llm.claude import ClaudeCli
 from agent.llm.gemini_cli import GeminiCli
 from agent.llm.gemini_api import GeminiAPI
-from agent.infra.store import load_json, save_json
+from agent.infra.store import load_json, save_json, update_json_key
 
 log = logging.getLogger("hub.router")
 
@@ -82,7 +82,14 @@ class LLMRouter:
         self._sessions = await load_json(self.sessions_path, {})
 
     async def save_sessions(self):
+        """Full dict save — only used for bulk operations (e.g. initial load rewrite)."""
         await save_json(self.sessions_path, self._sessions)
+
+    async def save_session(self, session_key: str):
+        """Per-key atomic save — safe under concurrent writes from different keys."""
+        entry = self._sessions.get(session_key)
+        if entry is not None:
+            await update_json_key(self.sessions_path, session_key, entry)
 
     def get_session_id(self, session_key: str) -> str | None:
         """Get session_id for resume. No TTL — always try resume, let CLI handle failures."""
@@ -323,7 +330,7 @@ class LLMRouter:
             if not result.is_error:
                 self._save_result(session_key, result, prompt)
                 try:
-                    await self.save_sessions()
+                    await self.save_session(session_key)
                 except Exception:
                     log.warning("Failed to persist session", exc_info=True)
                 return result
@@ -367,7 +374,7 @@ class LLMRouter:
 
         self._save_result(session_key, result, prompt)
         try:
-            await self.save_sessions()
+            await self.save_session(session_key)
         except Exception:
             log.warning("Failed to persist session", exc_info=True)
         return result

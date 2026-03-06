@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Feishu Document CLI — create, read, write, list, search, comment, analyze documents.
+"""Feishu Document CLI — create, read, write, update, list, search, comment, analyze documents.
 
 Usage:
     doc_ctl.py create "title" [--content "text"] [--folder TOKEN] [--share OPEN_ID] [--owner OPEN_ID]
     doc_ctl.py read <doc_id_or_url>
     doc_ctl.py append <doc_id> "content"
+    doc_ctl.py update <doc_id> "content"
+    doc_ctl.py replace <doc_id> --section "heading" "content"
     doc_ctl.py transfer_owner <doc_id_or_url> <open_id> [--file-type TYPE]
     doc_ctl.py list [--folder TOKEN]
     doc_ctl.py search "keyword" [--folder TOKEN]
@@ -169,6 +171,138 @@ def cmd_append(args, api, cfg):
         print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
         sys.exit(1)
     print(f"Appended {len(blocks)} blocks to {doc_id}")
+
+
+def _list_blocks(api, doc_id: str) -> list[dict]:
+    """List all top-level blocks in a document."""
+    blocks = []
+    page_token = None
+    while True:
+        params = {"page_size": "500", "document_revision_id": "-1"}
+        if page_token:
+            params["page_token"] = page_token
+        resp = api.get(f"/open-apis/docx/v1/documents/{doc_id}/blocks", params=params)
+        if resp.get("code") != 0:
+            print(f"ERROR listing blocks: {resp.get('msg')}", file=sys.stderr)
+            sys.exit(1)
+        blocks.extend(resp.get("data", {}).get("items", []))
+        if not resp.get("data", {}).get("has_more"):
+            break
+        page_token = resp["data"].get("page_token")
+    return blocks
+
+
+def _block_text(block: dict) -> str:
+    """Extract plain text from a block's elements."""
+    for key in ("heading1", "heading2", "heading3", "heading4",
+                "heading5", "heading6", "heading7", "heading8", "heading9",
+                "text"):
+        content = block.get(key)
+        if content:
+            parts = []
+            for el in content.get("elements", []):
+                tr = el.get("text_run", {})
+                parts.append(tr.get("content", ""))
+            return "".join(parts).strip()
+    return ""
+
+
+def _delete_blocks(api, doc_id: str, start_index: int, end_index: int):
+    """Delete blocks from start_index to end_index (exclusive) under doc root."""
+    if start_index >= end_index:
+        return
+    resp = api.delete(
+        f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children/batch_delete",
+        body={"start_index": start_index, "end_index": end_index},
+        params={"document_revision_id": "-1"},
+    )
+    if resp.get("code") != 0:
+        print(f"ERROR deleting blocks [{start_index}:{end_index}]: {resp.get('msg')}",
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def _insert_blocks(api, doc_id: str, blocks: list[dict], index: int):
+    """Insert blocks at the given index under doc root."""
+    if not blocks:
+        return
+    resp = api.post(
+        f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+        {"children": blocks, "index": index},
+        params={"document_revision_id": "-1"},
+    )
+    if resp.get("code") != 0:
+        print(f"ERROR inserting blocks at index {index}: {resp.get('msg')}",
+              file=sys.stderr)
+        sys.exit(1)
+
+
+def cmd_update(args, api, cfg):
+    """Replace entire document content."""
+    doc_id = _extract_doc_id(args.doc_id)
+    blocks = _list_blocks(api, doc_id)
+
+    # The first block is the document page block (block_type=1), skip it.
+    # Its children are the content blocks.
+    child_count = len(blocks) - 1  # exclude page block
+    if child_count > 0:
+        _delete_blocks(api, doc_id, 0, child_count)
+        print(f"Deleted {child_count} existing blocks")
+
+    new_blocks = _text_to_blocks(args.content)
+    if new_blocks:
+        _insert_blocks(api, doc_id, new_blocks, 0)
+        print(f"Inserted {len(new_blocks)} new blocks")
+
+    print(f"Updated {doc_id}")
+
+
+def cmd_replace(args, api, cfg):
+    """Replace a specific section identified by heading text."""
+    doc_id = _extract_doc_id(args.doc_id)
+    section = args.section
+    blocks = _list_blocks(api, doc_id)
+
+    # Find the heading block matching --section
+    # blocks[0] is the page block (type=1), content starts at index 1
+    content_blocks = blocks[1:] if blocks else []
+
+    heading_idx = None
+    heading_level = None
+    for i, b in enumerate(content_blocks):
+        bt = b.get("block_type", 0)
+        # Heading types: 3=h1, 4=h2, ... 11=h9
+        if 3 <= bt <= 11:
+            text = _block_text(b)
+            if text and section.lower() in text.lower():
+                heading_idx = i
+                heading_level = bt
+                break
+
+    if heading_idx is None:
+        print(f"ERROR: Section heading '{section}' not found in document", file=sys.stderr)
+        sys.exit(1)
+
+    # Find the end of this section (next heading at same or higher level)
+    section_end = len(content_blocks)
+    for i in range(heading_idx + 1, len(content_blocks)):
+        bt = content_blocks[i].get("block_type", 0)
+        if 3 <= bt <= 11 and bt <= heading_level:
+            section_end = i
+            break
+
+    # Delete the section (heading + body)
+    delete_count = section_end - heading_idx
+    _delete_blocks(api, doc_id, heading_idx, section_end)
+    print(f"Deleted section '{section}' ({delete_count} blocks)")
+
+    # Insert new content at the same position
+    new_blocks = _text_to_blocks(args.content)
+    if new_blocks:
+        _insert_blocks(api, doc_id, new_blocks, heading_idx)
+        print(f"Inserted {len(new_blocks)} new blocks")
+
+    print(f"Replaced section in {doc_id}")
 
 
 def cmd_comments(args, api, cfg):
@@ -527,6 +661,15 @@ def main():
     rp.add_argument("--file-type", dest="file_type", default="docx",
                     help="File type (docx, doc, sheet, etc.)")
 
+    up = sub.add_parser("update")
+    up.add_argument("doc_id", help="Document ID or URL")
+    up.add_argument("content", help="New content (replaces entire document)")
+
+    rpl = sub.add_parser("replace")
+    rpl.add_argument("doc_id", help="Document ID or URL")
+    rpl.add_argument("--section", required=True, help="Heading text to locate section")
+    rpl.add_argument("content", help="New content for the section")
+
     az = sub.add_parser("analyze")
     az.add_argument("doc_id", help="Document ID or URL")
     az.add_argument("--all", dest="show_all", action="store_true",
@@ -548,6 +691,8 @@ def main():
         "create": cmd_create,
         "read": cmd_read,
         "append": cmd_append,
+        "update": cmd_update,
+        "replace": cmd_replace,
         "transfer_owner": cmd_transfer_owner,
         "list": cmd_list,
         "search": cmd_search,

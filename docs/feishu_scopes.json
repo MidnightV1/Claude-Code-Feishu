@@ -68,6 +68,7 @@
       "calendar:time_off:delete",
       "calendar:timeoff",
       "contact:contact.base:readonly",
+      "contact:user.base:readonly",
       "docs:doc",
       "docs:doc:readonly",
       "docs:document.comment:create",

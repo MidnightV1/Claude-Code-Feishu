@@ -57,6 +57,35 @@ class SessionMixin:
             else f"chat:{batch.chat_id}"
         )
 
+        # ── Orchestrator confirmation intercept ──
+        if hasattr(self, 'orchestrator') and self.orchestrator and self.orchestrator.has_pending(session_key):
+            from agent.orchestrator.engine import Orchestrator
+            if Orchestrator.is_confirmation(combined):
+                plan = self.orchestrator.confirm(session_key)
+                if plan:
+                    plan.chat_id = batch.chat_id
+                    await self.dispatcher.send_text(
+                        batch.chat_id,
+                        "🚀 开始并行执行！执行期间你可以继续聊天。",
+                        reply_to=batch.first_message_id,
+                    )
+                    asyncio.create_task(
+                        self._orchestrate_execute(plan, batch.chat_id)
+                    )
+                    self._running_tasks.pop(key, None)
+                    return
+            elif Orchestrator.is_cancellation(combined):
+                self.orchestrator.cancel(session_key)
+                await self.dispatcher.send_text(
+                    batch.chat_id, "已取消并行任务。",
+                    reply_to=batch.first_message_id,
+                )
+                self._running_tasks.pop(key, None)
+                return
+            else:
+                # Not a confirmation — silently cancel pending plan, process as normal
+                self.orchestrator.cancel(session_key)
+
         # Send "thinking" card as immediate feedback
         thinking_msg_id = await self.dispatcher.send_card_return_id(
             batch.chat_id, "💭 正在思考…",
@@ -70,12 +99,41 @@ class SessionMixin:
 
             # Inject Feishu channel context + file context for Claude sessions
             if llm_config.provider == "claude-cli":
+                from agent.orchestrator.prompts import ORCHESTRATION_PROMPT
                 parts = [FEISHU_SYSTEM_PROMPT]
                 if llm_config.system_prompt:
                     parts.append(llm_config.system_prompt)
-                file_context = self.file_store.get_context_prompt(session_key)
+                # Orchestration capability (only for Opus main sessions)
+                if hasattr(self, 'orchestrator') and self.orchestrator:
+                    parts.append(ORCHESTRATION_PROMPT)
+                # Sender identity context
+                if batch.sender_name:
+                    sender_ctx = f"当前消息发送者：{batch.sender_name}"
+                    if batch.chat_type == "group":
+                        sender_ctx += f"（群聊 {batch.chat_id[:8]}）"
+                    parts.append(sender_ctx)
+                # File context: filtered by recent conversation history
+                session_entry = self.router._sessions.get(session_key, {})
+                history = session_entry.get("history", [])
+                from agent.llm.router import SUMMARY_THRESHOLD
+                recent = history[-(SUMMARY_THRESHOLD * 2):] if history else None
+                file_context = self.file_store.get_context_prompt(
+                    session_key, recent_history=recent,
+                )
                 if file_context:
                     parts.append(file_context)
+                # Time gap detection: warn if significant delay since last interaction
+                last_updated = session_entry.get("updated_at", 0)
+                if last_updated:
+                    gap_minutes = (time.time() - last_updated) / 60
+                    if gap_minutes > 10:
+                        gap_str = (f"{int(gap_minutes // 60)}小时{int(gap_minutes % 60)}分钟"
+                                   if gap_minutes >= 60
+                                   else f"{int(gap_minutes)}分钟")
+                        parts.append(
+                            f"⚠️ 距上次交互已过 {gap_str}，期间可能发生了会话中断或重建。"
+                            f"如果用户消息看起来缺少上下文，主动询问而非猜测。"
+                        )
                 # Inject pending heartbeat notifications into user prompt
                 notifications = self.heartbeat.drain_notifications(session_key)
                 if notifications:
@@ -179,7 +237,7 @@ class SessionMixin:
                 if thinking_msg_id:
                     asyncio.create_task(self._safe_delete_card(thinking_msg_id))
                 self.router.remove_last_round(session_key)
-                asyncio.create_task(self.router.save_sessions())
+                asyncio.create_task(self.router.save_session(session_key))
                 return
             finally:
                 self._running_tasks.pop(key, None)
@@ -201,7 +259,7 @@ class SessionMixin:
                 )
                 if not is_transient:
                     self.router.clear_session(session_key)
-                    asyncio.create_task(self.router.save_sessions())
+                    asyncio.create_task(self.router.save_session(session_key))
 
                 err_hint = ""
                 if "Timeout" in result.text:
@@ -214,6 +272,22 @@ class SessionMixin:
                 else:
                     reply_text = f"处理出错{err_hint}，已重置会话。请重新发送消息继续。"
             elif result.text:
+                # ── Orchestrator: detect <task_plan> in Opus response ──
+                if (hasattr(self, 'orchestrator') and self.orchestrator
+                        and "<task_plan>" in result.text):
+                    from agent.orchestrator.engine import Orchestrator as Orch
+                    clean_text, plan = Orch.extract_plan_from_response(result.text)
+                    if plan:
+                        plan.chat_id = batch.chat_id
+                        self.orchestrator.set_pending(session_key, plan)
+                        # Replace result with clean text + plan confirmation card
+                        result = result.__class__(
+                            text=clean_text + "\n\n" + plan.render_plan(),
+                            session_id=result.session_id,
+                            duration_ms=result.duration_ms,
+                            cost_usd=result.cost_usd,
+                        )
+
                 footer_parts = [f for f in batch.footers if f]
                 if llm_config.provider == "gemini-api" and result.cost_usd > 0:
                     footer_parts.append(

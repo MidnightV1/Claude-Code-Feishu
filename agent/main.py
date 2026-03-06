@@ -18,6 +18,9 @@ from agent.jobs.scheduler import CronScheduler
 from agent.jobs.heartbeat import HeartbeatMonitor
 from agent.platforms.feishu.bot import FeishuBot
 from agent.infra.file_store import FileStore
+from agent.infra.user_store import UserStore
+from agent.orchestrator.pool import WorkerPool
+from agent.orchestrator.engine import Orchestrator
 from agent.jobs.briefing import BriefingPlugin
 
 
@@ -123,10 +126,33 @@ async def main():
 
     file_store = FileStore(base_dir="data/files")
 
+    feishu_cfg = cfg.get("feishu", {})
+    from agent.platforms.feishu.api import FeishuAPI
+    feishu_api = FeishuAPI(
+        feishu_cfg.get("app_id", ""),
+        feishu_cfg.get("app_secret", ""),
+        feishu_cfg.get("domain", "https://open.feishu.cn"),
+    )
+    user_store = UserStore(path="data/users.json", feishu_api=feishu_api)
+    await user_store.load()
+
+    # Seed admin roles from config (idempotent)
+    for admin_id in feishu_cfg.get("admin_open_ids", []):
+        u = await user_store.get_or_create(admin_id)
+        if not u.is_admin():
+            await user_store.set_role(admin_id, "admin")
+
+    # Orchestrator: Opus planning + Sonnet worker pool
+    orch_cfg = cfg.get("orchestrator", {})
+    worker_pool = WorkerPool(claude, max_concurrent=orch_cfg.get("max_concurrent", 3))
+    orchestrator = Orchestrator(claude, worker_pool)
+
     bot = FeishuBot(
-        cfg.get("feishu", {}),
+        feishu_cfg,
         router, scheduler, hb, dispatcher, default_llm,
         file_store=file_store,
+        user_store=user_store,
+        orchestrator=orchestrator,
     )
 
     # Plugins

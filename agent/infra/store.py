@@ -53,3 +53,37 @@ async def load_json(path: str, default=None):
 
 async def save_json(path: str, data):
     await asyncio.to_thread(save_json_sync, path, data)
+
+
+# ═══ Per-Key Atomic Updates ═══
+
+# One lock per file path — serialises read-modify-write cycles on the same file.
+_file_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_file_lock(path: str) -> asyncio.Lock:
+    if path not in _file_locks:
+        _file_locks[path] = asyncio.Lock()
+    return _file_locks[path]
+
+
+async def update_json_key(path: str, key: str, value):
+    """Atomically update a single key in a JSON dict file.
+
+    read → modify → write under asyncio.Lock, so concurrent updates
+    to *different* keys in the same file don't clobber each other.
+    """
+    lock = _get_file_lock(path)
+    async with lock:
+        data = await load_json(path, {})
+        data[key] = value
+        await save_json(path, data)
+
+
+async def delete_json_key(path: str, key: str):
+    """Atomically remove a key from a JSON dict file."""
+    lock = _get_file_lock(path)
+    async with lock:
+        data = await load_json(path, {})
+        data.pop(key, None)
+        await save_json(path, data)

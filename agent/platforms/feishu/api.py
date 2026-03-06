@@ -116,7 +116,7 @@ class FeishuAPI:
                  params: dict | None = None) -> dict:
         fn = getattr(requests, method)
         kwargs: dict = {"headers": self._headers(), "params": params, "timeout": 15}
-        if method in ("post", "patch", "put"):
+        if body is not None:
             kwargs["json"] = body
         r = fn(f"{self.domain}{path}", **kwargs)
         self._raise_for_status(r)
@@ -139,8 +139,9 @@ class FeishuAPI:
               params: dict | None = None) -> dict:
         return self._request("patch", path, body=body, params=params)
 
-    def delete(self, path: str, params: dict | None = None) -> dict:
-        return self._request("delete", path, params=params)
+    def delete(self, path: str, body: dict | None = None,
+               params: dict | None = None) -> dict:
+        return self._request("delete", path, body=body, params=params)
 
     def download(self, path: str, timeout: int = 30) -> requests.Response:
         """Download raw bytes (images, files). Returns the Response object."""

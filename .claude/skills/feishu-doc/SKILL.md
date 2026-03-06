@@ -63,6 +63,12 @@ python3 .claude/skills/feishu-doc/scripts/doc_ctl.py read "https://xxx.feishu.cn
 # Append content to existing document
 python3 .claude/skills/feishu-doc/scripts/doc_ctl.py append <doc_id> "新增内容"
 
+# Replace entire document content (delete all blocks, write new)
+python3 .claude/skills/feishu-doc/scripts/doc_ctl.py update <doc_id> "# 新标题\n新内容"
+
+# Replace a specific section (heading + body until next same-level heading)
+python3 .claude/skills/feishu-doc/scripts/doc_ctl.py replace <doc_id> --section "目标章节标题" "## 目标章节标题\n替换后的内容"
+
 # Transfer document ownership (bot must be current owner)
 python3 .claude/skills/feishu-doc/scripts/doc_ctl.py transfer_owner <doc_id_or_url> <open_id>
 

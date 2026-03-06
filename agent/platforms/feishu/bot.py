@@ -18,6 +18,8 @@ from agent.jobs.scheduler import CronScheduler
 from agent.jobs.heartbeat import HeartbeatMonitor
 from agent.platforms.feishu.dispatcher import Dispatcher
 from agent.infra.file_store import FileStore
+from agent.infra.user_store import UserStore
+from agent.orchestrator.engine import Orchestrator
 from agent.platforms.feishu.api import FeishuAPI
 from agent.infra.store import load_json_sync
 from agent.platforms.feishu.media import MediaMixin
@@ -95,6 +97,7 @@ class PendingBatch:
     chat_id: str = ""
     chat_type: str = ""
     sender_id: str = ""
+    sender_name: str = ""    # display name from UserStore
     timer: asyncio.Task | None = None
     pending_media: int = 0   # media items currently being analyzed
 
@@ -109,11 +112,15 @@ class FeishuBot(MediaMixin, SessionMixin):
         dispatcher: Dispatcher,
         default_llm: LLMConfig,
         file_store: FileStore,
+        user_store: UserStore | None = None,
+        orchestrator: Orchestrator | None = None,
     ):
         self.app_id = config.get("app_id", "")
+        self.orchestrator = orchestrator
         self.app_secret = config.get("app_secret", "")
         self.domain = config.get("domain", "https://open.feishu.cn")
-        # Load admin allowlist from config
+        self.user_store = user_store
+        # Legacy fallback: load admin allowlist from config
         global ADMIN_OPEN_IDS
         ADMIN_OPEN_IDS = set(config.get("admin_open_ids", []))
         self.router = router
@@ -178,6 +185,39 @@ class FeishuBot(MediaMixin, SessionMixin):
         self._loop.run_in_executor(None, _start_ws)
         log.info("Feishu bot WebSocket connecting (app_id=%s)", self.app_id[:8])
 
+        # Health monitor: check WebSocket connectivity, exit process if dead
+        asyncio.ensure_future(self._ws_health_monitor())
+
+    async def _ws_health_monitor(self):
+        """Periodically check WebSocket health. Exit process if connection is dead.
+
+        Lark SDK bug: runtime disconnection (keepalive timeout) leaves _select()
+        spinning forever without reconnecting. Detect via _conn state and force exit
+        to let launchd restart the process.
+        """
+        await asyncio.sleep(30)  # initial grace period
+        consecutive_failures = 0
+        while True:
+            await asyncio.sleep(30)
+            try:
+                conn = getattr(self._ws_client, '_conn', None)
+                if conn is None:
+                    consecutive_failures += 1
+                elif hasattr(conn, 'closed') and conn.closed:
+                    consecutive_failures += 1
+                elif hasattr(conn, 'open') and not conn.open:
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
+                    continue
+                if consecutive_failures >= 3:
+                    log.error("WebSocket dead for %ds, exiting for launchd restart",
+                              consecutive_failures * 30)
+                    import sys
+                    sys.exit(1)
+            except Exception:
+                pass
+
     async def _fetch_bot_open_id(self):
         try:
             data = self._feishu_api.get("/open-apis/bot/v3/info")
@@ -239,7 +279,7 @@ class FeishuBot(MediaMixin, SessionMixin):
             # Case C: already completed → remove last history round
             log.info("Recall: removing history for completed message %s (session=%s)", message_id, key)
             self.router.remove_last_round(key)
-            asyncio.create_task(self.router.save_sessions())
+            asyncio.create_task(self.router.save_session(key))
         except Exception as e:
             log.warning("Recall handler error: %s", e)
 
@@ -262,6 +302,12 @@ class FeishuBot(MediaMixin, SessionMixin):
             if self._is_duplicate(message_id):
                 return
             self._record_message(message_id)
+
+            # Resolve user identity
+            if self.user_store and sender_id:
+                user = await self.user_store.get_or_create(sender_id)
+            else:
+                user = None
 
             # Group: check @bot mention
             if chat_type == "group":
@@ -336,9 +382,12 @@ class FeishuBot(MediaMixin, SessionMixin):
                             )
                             return
 
-                log.info("Message from %s in %s: %s", sender_id[:8], chat_type, text[:100])
+                sender_name = user.name if user else ""
+                log.info("Message from %s(%s) in %s: %s",
+                         sender_name or sender_id[:8], sender_id[:8], chat_type, text[:100])
                 key = self._debounce_key(chat_type, chat_id, sender_id)
-                await self._enqueue(key, text, "", message_id, chat_id, chat_type, sender_id)
+                await self._enqueue(key, text, "", message_id, chat_id, chat_type, sender_id,
+                                    sender_name)
                 return
             elif msg_type not in ("image", "file"):
                 log.warning("Unhandled msg_type=%s, content: %s",
@@ -350,9 +399,11 @@ class FeishuBot(MediaMixin, SessionMixin):
             )
             key = self._debounce_key(chat_type, chat_id, sender_id)
 
+            sender_name = user.name if user else ""
+
             if msg_type == "image":
                 batch = await self._ensure_batch(
-                    key, message_id, chat_id, chat_type, sender_id
+                    key, message_id, chat_id, chat_type, sender_id, sender_name
                 )
                 batch.pending_media += 1
                 stored_path = await self._process_image(
@@ -372,7 +423,7 @@ class FeishuBot(MediaMixin, SessionMixin):
 
             if msg_type == "file":
                 batch = await self._ensure_batch(
-                    key, message_id, chat_id, chat_type, sender_id
+                    key, message_id, chat_id, chat_type, sender_id, sender_name
                 )
                 batch.pending_media += 1
                 file_text, footer = await self._process_file(
@@ -412,7 +463,8 @@ class FeishuBot(MediaMixin, SessionMixin):
             return f"p2p:{sender_id}"
         return f"group:{chat_id}:{sender_id}"
 
-    async def _ensure_batch(self, key, message_id, chat_id, chat_type, sender_id):
+    async def _ensure_batch(self, key, message_id, chat_id, chat_type, sender_id,
+                            sender_name=""):
         """Create batch if needed. Thinking card in _flush provides processing feedback."""
         if key not in self._pending:
             self._pending[key] = PendingBatch(
@@ -421,6 +473,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                 chat_id=chat_id,
                 chat_type=chat_type,
                 sender_id=sender_id,
+                sender_name=sender_name,
             )
         else:
             self._pending[key].latest_message_id = message_id
@@ -428,9 +481,10 @@ class FeishuBot(MediaMixin, SessionMixin):
         self._msg_to_key[message_id] = key
         return self._pending[key]
 
-    async def _enqueue(self, key, part, footer, message_id, chat_id, chat_type, sender_id):
+    async def _enqueue(self, key, part, footer, message_id, chat_id, chat_type, sender_id,
+                       sender_name=""):
         """Ensure batch exists and enqueue a part."""
-        await self._ensure_batch(key, message_id, chat_id, chat_type, sender_id)
+        await self._ensure_batch(key, message_id, chat_id, chat_type, sender_id, sender_name)
         await self._enqueue_part(key, part, footer)
 
     async def _enqueue_part(self, key, part, footer=""):
@@ -544,10 +598,24 @@ class FeishuBot(MediaMixin, SessionMixin):
         elif cmd == "#jobs":
             return self._cmd_jobs()
         elif cmd == "#restart":
-            if sender_id not in ADMIN_OPEN_IDS:
+            is_admin = (
+                (self.user_store and self.user_store.get(sender_id) and self.user_store.get(sender_id).is_admin())
+                or sender_id in ADMIN_OPEN_IDS
+            )
+            if not is_admin:
                 return "权限不足，仅管理员可执行 #restart"
             asyncio.create_task(self._do_server_restart())
             return "服务将在 3 秒后重启..."
+        elif cmd == "#parallel":
+            task_text = parts[1] if len(parts) > 1 else ""
+            if not task_text:
+                return "用法：`#parallel <任务描述>`"
+            if not self.orchestrator:
+                return "并行执行功能未启用。"
+            asyncio.create_task(
+                self._orchestrate_plan(task_text, session_key, chat_id)
+            )
+            return "📋 正在分析任务…"
         elif cmd == "#opus":
             return self._cmd_switch_model("opus", session_key)
         elif cmd == "#sonnet":
@@ -591,7 +659,7 @@ class FeishuBot(MediaMixin, SessionMixin):
 
     def _cmd_reset(self, session_key: str) -> str:
         self.router.clear_session(session_key)
-        asyncio.create_task(self.router.save_sessions())
+        asyncio.create_task(self.router.save_session(session_key))
         return "会话已重置，下条消息开始新对话。"
 
     def _cmd_switch_model(self, model: str, session_key: str) -> str:
@@ -600,7 +668,7 @@ class FeishuBot(MediaMixin, SessionMixin):
         current["provider"] = "claude-cli"
         current["model"] = model
         self.router.set_session_llm(session_key, current)
-        asyncio.create_task(self.router.save_sessions())
+        asyncio.create_task(self.router.save_session(session_key))
         return f"已切换到 **{model.capitalize()}**"
 
     def _cmd_think(self, session_key: str) -> str:
@@ -610,12 +678,12 @@ class FeishuBot(MediaMixin, SessionMixin):
         if is_low:
             current.pop("effort", None)
             self.router.set_session_llm(session_key, current)
-            asyncio.create_task(self.router.save_sessions())
+            asyncio.create_task(self.router.save_session(session_key))
             return "深度推理 **已开启**（默认模式）"
         else:
             current["effort"] = "low"
             self.router.set_session_llm(session_key, current)
-            asyncio.create_task(self.router.save_sessions())
+            asyncio.create_task(self.router.save_session(session_key))
             return "深度推理 **已关闭**（低消耗模式）"
 
     def _cmd_jobs(self) -> str:
@@ -665,6 +733,66 @@ class FeishuBot(MediaMixin, SessionMixin):
                 stdout=lf,
                 stderr=lf,
             )
+
+    # ═══ Orchestration ═══
+
+    async def _orchestrate_plan(self, task: str, session_key: str, chat_id: str):
+        """Background: create plan and send to user for confirmation."""
+        try:
+            plan = await self.orchestrator.create_plan(task)
+            if not plan:
+                await self.dispatcher.send_text(
+                    chat_id,
+                    "该任务不适合并行处理（依赖链或单步操作）。请直接描述给我，我来处理。"
+                )
+                return
+            plan.chat_id = chat_id
+            self.orchestrator.set_pending(session_key, plan)
+            await self.dispatcher.send_text(chat_id, plan.render_plan())
+        except Exception as e:
+            log.error("Orchestrate plan error: %s", e, exc_info=True)
+            await self.dispatcher.send_text(chat_id, f"任务分析出错：{type(e).__name__}")
+
+    async def _orchestrate_execute(self, plan, chat_id: str):
+        """Background: dispatch workers, track progress, validate, send result."""
+        progress_mid = None
+        try:
+            progress_mid = await self.dispatcher.send_card_return_id(
+                chat_id, plan.render_progress()
+            )
+
+            async def on_progress():
+                if progress_mid:
+                    try:
+                        await self.dispatcher.update_card(
+                            progress_mid, plan.render_progress()
+                        )
+                    except Exception:
+                        pass
+
+            await self.orchestrator.execute(plan, on_progress=on_progress)
+
+            # Update card: validating
+            if progress_mid:
+                await self.dispatcher.update_card(
+                    progress_mid, plan.render_progress()
+                )
+
+            # Opus validation
+            final_text = await self.orchestrator.validate(plan)
+
+            # Delete progress card, send final result
+            if progress_mid:
+                await self.dispatcher.delete_message(progress_mid)
+            await self.dispatcher.send_text(chat_id, final_text)
+
+        except Exception as e:
+            log.error("Orchestrate execute error: %s", e, exc_info=True)
+            if progress_mid:
+                await self.dispatcher.update_card(
+                    progress_mid,
+                    f"❌ **执行出错**\n{type(e).__name__}: {e}"
+                )
 
     # ═══ Dedup ═══
 

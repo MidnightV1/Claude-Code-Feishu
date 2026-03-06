@@ -62,7 +62,7 @@ class ClaudeCli:
         self.path = os.path.expanduser(config.get("path", "claude"))
         self.default_timeout = config.get("timeout_seconds", 600)
         # Idle timeout: kill only when no stream output for this long
-        self.idle_timeout = config.get("idle_timeout_seconds", 300)
+        self.idle_timeout = config.get("idle_timeout_seconds", 600)
         # Hard cap: absolute maximum regardless of activity
         self.max_timeout = config.get("max_timeout_seconds", 1800)
         self.workspace_dir = os.path.expanduser(
@@ -91,6 +91,7 @@ class ClaudeCli:
         effort: str | None = None,
         on_activity: Callable[[str], Awaitable[None]] | None = None,
         on_todo: Callable[[list[dict]], Awaitable[None]] | None = None,
+        setting_sources: str | None = None,
     ) -> LLMResult:
         """Execute Claude CLI with streaming progress.
 
@@ -105,6 +106,7 @@ class ClaudeCli:
             prompt, session_id=session_id, model=model,
             system_prompt=system_prompt, timeout_seconds=timeout_seconds,
             effort=effort, on_activity=on_activity, on_todo=on_todo,
+            setting_sources=setting_sources,
         )
 
     async def _execute(
@@ -117,6 +119,7 @@ class ClaudeCli:
         effort: str | None = None,
         on_activity: Callable[[str], Awaitable[None]] | None = None,
         on_todo: Callable[[list[dict]], Awaitable[None]] | None = None,
+        setting_sources: str | None = None,
     ) -> LLMResult:
         # Timeout strategy:
         # - Explicit timeout_seconds (heartbeat, compression) → absolute timeout (old behavior)
@@ -144,6 +147,8 @@ class ClaudeCli:
             args.extend(["--append-system-prompt", system_prompt])
         if effort:
             args.extend(["--effort", effort])
+        if setting_sources:
+            args.extend(["--setting-sources", setting_sources])
 
         # Prevent "nested session" error: strip all Claude Code session markers
         _strip = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"}

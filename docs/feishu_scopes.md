@@ -1,6 +1,6 @@
 # Feishu Bot Scopes
 
-Bot app API permissions. Last updated: 2026-03-04.
+Bot app API permissions. Last updated: 2026-03-07.
 
 ## 按模块分类
 
@@ -99,7 +99,7 @@ Bot app API permissions. Last updated: 2026-03-04.
 - `board:whiteboard:node:create` / `board:whiteboard:node:delete` / `board:whiteboard:node:read` / `board:whiteboard:node:update`
 
 ### Contact (通讯录)
-- `contact:contact.base:readonly`
+- `contact:contact.base:readonly` / `contact:user.base:readonly`
 
 ### VC (视频会议)
 - `vc:alert:readonly` / `vc:export` / `vc:meeting` / `vc:meeting.all_meeting:readonly` / `vc:meeting:readonly`
