@@ -29,6 +29,7 @@ sys.path.insert(0, str(HUB_DIR))
 
 from models import LLMResult  # noqa: E402
 from gemini_api import GeminiAPI  # noqa: E402
+from gemini_cli import GeminiCli  # noqa: E402
 from claude_cli import ClaudeCli  # noqa: E402
 from dispatcher import Dispatcher  # noqa: E402
 from feishu_api import FeishuAPI  # noqa: E402
@@ -100,10 +101,12 @@ class BriefingRunner:
     """Standalone briefing pipeline — no hub process dependency."""
 
     def __init__(self, domain: str, gemini: GeminiAPI, claude: ClaudeCli,
-                 dispatcher: Dispatcher, cfg: dict | None = None):
+                 dispatcher: Dispatcher, cfg: dict | None = None,
+                 gemini_cli: GeminiCli | None = None):
         self.domain_name = domain
         self.dc = DomainConfig(domain)
         self.gemini = gemini
+        self.gemini_cli = gemini_cli
         self.claude = claude
         self.dispatcher = dispatcher
         self._cfg = cfg or {}
@@ -113,7 +116,8 @@ class BriefingRunner:
         self.gen_thinking = gen_cfg.get("thinking", None)
         self.gen_timeout = gen_cfg.get("timeout_seconds", 180)
         self._gen_fallback = gen_cfg.get("fallback_model", "sonnet")
-        self._gen_provider = (f"Gemini {self.gen_model}" if gemini.api_key
+        self._gen_provider = (f"Gemini CLI {self.gen_model}"
+                              if gemini_cli and gemini_cli.available
                               else f"Claude {self._gen_fallback}")  # updated by _generate()
 
         rev_cfg = self.dc.models.get("review", {})
@@ -181,11 +185,13 @@ class BriefingRunner:
 
     async def _run_full(self, date_str: str) -> dict:
         start = time.time()
+        pid = os.getpid()
         status = {
             "domain": self.domain_name,
             "date": date_str,
             "started_at": start,
             "status": "running",
+            "pid": pid,
         }
         errors = []
         total_cost = 0.0
@@ -201,11 +207,12 @@ class BriefingRunner:
         self._save_status(status)
 
         # ── Progress card (single card, updated in-place) ──
+        pid_tag = f"\n<font color='grey'>pid:{pid}</font>"
         review_tag = f" → Claude {self.review_model} 审稿" if self.review_enabled else ""
         card_text = (
             f"📋 **{self.dc.display_name}** | {date_str}\n"
             f"采集 → {self._gen_provider} 生成{review_tag} → 分发\n\n"
-            f"⏳ 采集中..."
+            f"⏳ 采集中...{pid_tag}"
         )
         card_mid = await self.dispatcher.send_card_to_delivery(card_text)
 
@@ -224,7 +231,7 @@ class BriefingRunner:
         if not ok:
             await _update_card(
                 f"❌ **{self.dc.display_name}** | {date_str}\n"
-                f"采集失败\n```\n{output[-500:]}\n```"
+                f"采集失败\n```\n{output[-500:]}\n```{pid_tag}"
             )
             status.update({"status": "error", "error": "collector failed"})
             self._save_status(status)
@@ -236,7 +243,7 @@ class BriefingRunner:
             log.info("[%s] %s: 0 articles, skipping", self.domain_name, date_str)
             await _update_card(
                 f"📭 **{self.dc.display_name}** | {date_str}\n"
-                f"今日无新增匹配信号，跳过生成。"
+                f"今日无新增匹配信号，跳过生成。{pid_tag}"
             )
             status.update({"status": "skipped", "elapsed_s": round(time.time() - start, 1)})
             self._save_status(status)
@@ -247,14 +254,14 @@ class BriefingRunner:
         # ── Step 2: Generate ──
         await _update_card(
             f"📋 **{self.dc.display_name}** | {date_str}\n"
-            f"✅ 采集 {article_count} 篇 → ⏳ {self._gen_provider} 生成中..."
+            f"✅ 采集 {article_count} 篇 → ⏳ {self._gen_provider} 生成中...{pid_tag}"
         )
         log.info("[%s] %s: generating via %s...", self.domain_name, date_str, self._gen_provider)
         gen_result = await self._generate(date_str)
         if gen_result.is_error:
             await _update_card(
                 f"❌ **{self.dc.display_name}** | {date_str}\n"
-                f"生成失败\n{gen_result.text[:500]}"
+                f"生成失败\n{gen_result.text[:500]}{pid_tag}"
             )
             status.update({"status": "error", "error": "generation failed"})
             self._save_status(status)
@@ -265,7 +272,7 @@ class BriefingRunner:
         if gen_error:
             await _update_card(
                 f"❌ **{self.dc.display_name}** | {date_str}\n"
-                f"生成输出异常: {gen_error}\n```\n{gen_result.text[:300]}\n```"
+                f"生成输出异常: {gen_error}\n```\n{gen_result.text[:300]}\n```{pid_tag}"
             )
             log.error("[%s] Generation output is error content: %s", self.domain_name, gen_error)
             status.update({"status": "error", "error": f"gen output invalid: {gen_error}"})
@@ -282,7 +289,7 @@ class BriefingRunner:
         if self.review_enabled:
             await _update_card(
                 f"📋 **{self.dc.display_name}** | {date_str}\n"
-                f"✅ 采集 → ✅ 生成 → ⏳ Claude {self.review_model} 审稿中..."
+                f"✅ 采集 → ✅ 生成 → ⏳ Claude {self.review_model} 审稿中...{pid_tag}"
             )
             log.info("[%s] %s: reviewing via Claude %s...", self.domain_name, date_str, self.review_model)
             review_result = await self._review(briefing_md, date_str)
@@ -354,6 +361,7 @@ class BriefingRunner:
         final_text += f"\n成本: ${total_cost:.4f} | 耗时: {elapsed:.0f}s"
         if errors:
             final_text += "\n" + "\n".join(f"- {e}" for e in errors)
+        final_text += pid_tag
         await _update_card(final_text)
 
         summary = (f"[{self.domain_name}] {date_str} | {self._gen_provider}"
@@ -430,17 +438,17 @@ class BriefingRunner:
             f"{sparse_hint}"
             f"Generate the daily briefing following the system instructions precisely."
         )
-        # Try Gemini first; fall back to Claude if unavailable or failed
-        if self.gemini.api_key:
-            result = await self.gemini.run(
+        # Try Gemini CLI first; fall back to Claude if unavailable or failed
+        if self.gemini_cli and self.gemini_cli.available:
+            result = await self.gemini_cli.run(
                 prompt=user_prompt, system_prompt=system_prompt,
-                model=self.gen_model, thinking=self.gen_thinking,
+                model=self.gen_model,
                 timeout_seconds=self.gen_timeout,
             )
             if not result.is_error:
-                self._gen_provider = f"Gemini {self.gen_model}"
+                self._gen_provider = f"Gemini CLI {self.gen_model}"
                 return result
-            log.warning("[%s] Gemini generation failed, falling back to Claude: %s",
+            log.warning("[%s] Gemini CLI generation failed, falling back to Claude: %s",
                         self.domain_name, result.text[:200])
 
         log.info("[%s] Generating via Claude %s (fallback)...", self.domain_name, self._gen_fallback)
@@ -898,13 +906,15 @@ async def async_main(args):
 
     llm_cfg = cfg.get("llm", {})
     gemini = GeminiAPI(llm_cfg.get("gemini-api", {}))
+    gemini_cli = GeminiCli(llm_cfg.get("gemini-cli", {}))
     claude = ClaudeCli(llm_cfg.get("claude-cli", {}))
 
     notify_cfg = cfg.get("notify", {}) or cfg.get("feishu", {})
     dispatcher = Dispatcher(notify_cfg)
     await dispatcher.start()
 
-    runner = BriefingRunner(args.domain, gemini, claude, dispatcher, cfg=cfg)
+    runner = BriefingRunner(args.domain, gemini, claude, dispatcher, cfg=cfg,
+                            gemini_cli=gemini_cli)
 
     step = None
     if args.command == "evolve":

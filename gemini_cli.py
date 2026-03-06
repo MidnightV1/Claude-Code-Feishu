@@ -50,6 +50,11 @@ class GeminiCli:
         if model:
             args.extend(["--model", model])
 
+        # Gemini CLI has no separate system prompt channel; prepend to user prompt
+        full_prompt = prompt
+        if system_prompt:
+            full_prompt = f"{system_prompt}\n\n---\n\n{full_prompt}"
+
         start = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -59,7 +64,7 @@ class GeminiCli:
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode("utf-8")),
+                proc.communicate(input=full_prompt.encode("utf-8")),
                 timeout=timeout,
             )
             duration = int((time.monotonic() - start) * 1000)
