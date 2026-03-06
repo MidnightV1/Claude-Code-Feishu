@@ -6,6 +6,17 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.8.1] — 2026-03-07
+
+### Added
+- **Personality-driven status words** — Thinking card now shows fun Chinese verbs instead of mechanical labels. 49 tool-specific words across 10 categories + 43 idle thinking words (regular + long thinking pools). Inspired by Claude Code CLI's 239 hidden spinner states.
+
+### Fixed
+- **doc_ctl batch insert** — `_insert_blocks` now splits into batches of 30 to avoid Feishu API 400 errors on large documents
+- **doc_ctl file path support** — `update` and `replace` commands now accept file paths as content argument (auto-detected, reads file content)
+
+---
+
 ## [0.4.0] — 2026-03-06
 
 ### Added

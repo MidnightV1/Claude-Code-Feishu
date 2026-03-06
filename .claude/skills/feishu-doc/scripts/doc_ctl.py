@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -222,19 +223,30 @@ def _delete_blocks(api, doc_id: str, start_index: int, end_index: int):
         sys.exit(1)
 
 
-def _insert_blocks(api, doc_id: str, blocks: list[dict], index: int):
-    """Insert blocks at the given index under doc root."""
+def _insert_blocks(api, doc_id: str, blocks: list[dict], index: int,
+                    batch_size: int = 30):
+    """Insert blocks at the given index under doc root, batched to avoid API limits."""
     if not blocks:
         return
-    resp = api.post(
-        f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-        {"children": blocks, "index": index},
-        params={"document_revision_id": "-1"},
-    )
-    if resp.get("code") != 0:
-        print(f"ERROR inserting blocks at index {index}: {resp.get('msg')}",
-              file=sys.stderr)
-        sys.exit(1)
+    for i in range(0, len(blocks), batch_size):
+        batch = blocks[i:i + batch_size]
+        resp = api.post(
+            f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+            {"children": batch, "index": index + i},
+            params={"document_revision_id": "-1"},
+        )
+        if resp.get("code") != 0:
+            print(f"ERROR inserting blocks at index {index + i}: {resp.get('msg')}",
+                  file=sys.stderr)
+            sys.exit(1)
+
+
+def _resolve_content(text: str) -> str:
+    """If text looks like a file path and the file exists, read it."""
+    if "\n" not in text and os.path.isfile(text):
+        with open(text, "r", encoding="utf-8") as f:
+            return f.read()
+    return text
 
 
 def cmd_update(args, api, cfg):
@@ -249,7 +261,8 @@ def cmd_update(args, api, cfg):
         _delete_blocks(api, doc_id, 0, child_count)
         print(f"Deleted {child_count} existing blocks")
 
-    new_blocks = _text_to_blocks(args.content)
+    content = _resolve_content(args.content)
+    new_blocks = _text_to_blocks(content)
     if new_blocks:
         _insert_blocks(api, doc_id, new_blocks, 0)
         print(f"Inserted {len(new_blocks)} new blocks")

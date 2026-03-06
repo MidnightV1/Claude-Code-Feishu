@@ -88,7 +88,7 @@ class SessionMixin:
 
         # Send "thinking" card as immediate feedback
         thinking_msg_id = await self.dispatcher.send_card_return_id(
-            batch.chat_id, "💭 正在思考…",
+            batch.chat_id, "💭 脑子在转…",
             reply_to=batch.first_message_id,
         )
         if thinking_msg_id:
@@ -147,12 +147,53 @@ class SessionMixin:
             _MIN_INTERVAL = 5.0
             _todos: list[dict] = []  # latest TodoWrite snapshot
 
-            _IDLE_PHASES = [
-                (10, "💭 仍在思考…"),
-                (20, "💭 正在深入分析…"),
-                (40, "💭 问题有些复杂，还在处理…"),
-                (70, "💭 仍在努力中…"),
-                (110, "💭 快了，还在整理…"),
+            _THINKING_POOL = [
+                "腌制中，让想法入味…",
+                "慢炖，用文火…",
+                "酝酿中…",
+                "思考中…",
+                "神游中…",
+                "脑子在转…",
+                "在线发呆（其实在想）…",
+                "CPU 过热中…",
+                "正在顿悟…",
+                "酝酿思路…",
+                "沉淀中…",
+                "进入意识流…",
+                "脑细胞正在开会…",
+                "正在加载人生经验…",
+                "让我消化一下…",
+            ]
+            # After 60s: relaxed but implies working hard. Rotate on each pulse.
+            _LONG_THINKING = [
+                "慢工出细活，不要慌…",
+                "卧槽，大活儿，还得想想…",
+                "差点顿悟了，让我冷静下…",
+                "GPU已经起飞…",
+                "喝口水，别急，你也喝点，干杯",
+                "Moss，这道题怎么解呀...",
+                "正在求助祖师爷...",
+                "神经网络迸发出了灵感...",
+                "正在唤醒专家网络...",
+                "正在烧香...",
+                "正在掐指一算...",
+                "嘿嘿嘿...",
+                "什么情况...",
+                "？？？",
+                "hummmm...",
+                "哦...",
+                "嗯？",
+                "尝试甩锅给CPU...",
+                "正在蒸馏deepseek...",
+                "正在和自己对线...",
+                "Warning: 思路溢出...",
+                "脑子：已读不回",
+                "正在请求上级支援...",
+                "快了快了（经典谎言）",
+                "等等，好像悟了...又没有",
+                "别催，灵感不接受加班",
+                "正在向赛博佛祖祈祷...",
+                "道生一，一生二，二生 bug...",
             ]
 
             _last_tool_label = [""]  # persists latest tool activity across renders
@@ -161,7 +202,7 @@ class SessionMixin:
                 """Build card content: activity on top, todos below divider."""
                 if activity:
                     _last_tool_label[0] = activity
-                top = _last_tool_label[0] or "💭 正在思考…"
+                top = _last_tool_label[0] or "💭 脑子在转…"
                 if not _todos:
                     return top
                 _icons = {"completed": "✅", "in_progress": "🔄", "pending": "⬜"}
@@ -173,13 +214,14 @@ class SessionMixin:
                 return "\n".join(lines)
 
             def _idle_label(elapsed: float) -> str:
-                label = "💭 正在思考…"
-                for threshold, text in _IDLE_PHASES:
-                    if elapsed >= threshold:
-                        label = text
-                m, s = divmod(int(elapsed), 60)
-                ts = f"{m}m{s:02d}s" if m else f"{s}s"
-                return f"{label} {ts}"
+                import random
+                pool = _LONG_THINKING if elapsed >= 60 else _THINKING_POOL
+                label = random.choice(pool)
+                if elapsed >= 30:
+                    m, s = divmod(int(elapsed), 60)
+                    ts = f"{m}m{s:02d}s" if m else f"{s}s"
+                    return f"💭 {label} ({ts})"
+                return f"💭 {label}"
 
             async def _on_todo(todos: list[dict]):
                 _todos.clear()

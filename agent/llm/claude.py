@@ -4,6 +4,7 @@
 import asyncio
 import json
 import os
+import random
 import signal
 import time
 import logging
@@ -14,47 +15,110 @@ from agent.infra.models import LLMResult
 
 log = logging.getLogger("hub.claude_cli")
 
+# ── Personality-driven status words ──
+# Inspired by Claude Code's 239 hidden spinner states.
+# Each tool type maps to a pool of fun verbs; one is picked at random.
+
+_TOOL_VERBS: dict[str, list[str]] = {
+    "Read": [
+        "正在考古...", "正在审查屎山...", "正在认真阅读",
+        "正在一目十行", "正在偷看源码...", "好长，但我假装看完了",
+    ],
+    "Grep": [
+        "正在掘地三尺", "正在大海捞针", "正在顺藤摸瓜",
+        "排查线索中...", "正在查水表",
+    ],
+    "Glob": [
+        "踩点中", "正在翻箱倒柜", "正在翻阅", "到处找人...",
+    ],
+    "Bash": [
+        "搞事中...", "正在摇人", "正在鞭策主机",
+        "听我口令...", "按下了不该按的按钮...",
+    ],
+    "Edit": [
+        "雕花中...", "填坑中...", "修改中...",
+        "外科手术般精准修改...", "我改了，别慌",
+    ],
+    "Write": [
+        "正在编辑", "创作中...", "正在努力写bug...",
+        "码字中...", "正在无中生有...",
+    ],
+    "Agent": [
+        "召唤分身", "正在裂开", "影分身！",
+        "分身去打工了", "派出小弟...",
+    ],
+    "Web": [
+        "上网查找", "正在搜索", "网上冲浪中",
+        "百度一下（才怪", "正在请教互联网",
+    ],
+    "mcp": [
+        "呼叫外援", "连线场外观众", "正在搬救兵...", "找了个帮手",
+    ],
+    "Skill": ["上绝活", "放大招", "发动技能", "看招！"],
+    "TodoWrite": ["立 flag 中...", "列清单", "写入小本本...", "先给自己画个饼"],
+}
+
+_FALLBACK_VERBS = ["搞事情中...", "施法中...", "炼丹中...", "整活中...", "正在变形..."]
+
+
+def _pick_verb(category: str) -> str:
+    """Pick a random personality verb for a tool category."""
+    pool = _TOOL_VERBS.get(category, _FALLBACK_VERBS)
+    return random.choice(pool)
+
 
 def _make_tool_label(tool_name: str, tool_input: dict) -> str:
-    """Map a tool_use event to a human-readable progress label."""
+    """Map a tool_use event to a personality-driven progress label."""
     if tool_name == "Read":
         path = tool_input.get("file_path", "")
         name = PurePosixPath(path).name if path else ""
-        return f"📖 读取 {name}" if name else "📖 读取文件"
+        verb = _pick_verb("Read")
+        return f"{verb} {name}" if name else verb
 
     if tool_name == "Grep":
         pat = tool_input.get("pattern", "")
-        return f"🔍 搜索 {pat[:30]}" if pat else "🔍 搜索代码"
+        verb = _pick_verb("Grep")
+        return f"{verb}「{pat[:20]}」" if pat else verb
 
     if tool_name == "Glob":
         pat = tool_input.get("pattern", "")
-        return f"📂 查找 {pat[:30]}" if pat else "📂 查找文件"
+        verb = _pick_verb("Glob")
+        return f"{verb} {pat[:20]}" if pat else verb
 
     if tool_name == "Bash":
         desc = tool_input.get("description", "")
-        return f"⚡ {desc[:40]}" if desc else "⚡ 执行命令"
+        verb = _pick_verb("Bash")
+        return f"{verb} {desc[:30]}" if desc else verb
 
     if tool_name in ("Edit", "Write"):
         path = tool_input.get("file_path", "")
         name = PurePosixPath(path).name if path else ""
-        icon = "✏️" if tool_name == "Edit" else "📝"
-        return f"{icon} {name}" if name else f"{icon} 编辑文件"
+        verb = _pick_verb(tool_name)
+        return f"{verb} {name}" if name else verb
 
     if tool_name == "Agent":
         desc = tool_input.get("description", "")
-        return f"🤖 {desc[:40]}" if desc else "🤖 子任务分析"
+        verb = _pick_verb("Agent")
+        return f"{verb} {desc[:30]}" if desc else verb
 
     if tool_name in ("WebFetch", "WebSearch"):
         query = tool_input.get("query", tool_input.get("prompt", ""))
-        return f"🌐 {query[:30]}" if query else "🌐 搜索网页"
+        verb = _pick_verb("Web")
+        return f"{verb}「{query[:20]}」" if query else verb
+
+    if tool_name == "Skill":
+        return _pick_verb("Skill")
+
+    if tool_name == "TodoWrite":
+        return _pick_verb("TodoWrite")
 
     if tool_name.startswith("mcp__"):
-        # mcp__brave-search__brave_web_search → brave 搜索
         parts = tool_name.split("__")
-        server = parts[1] if len(parts) > 1 else "扩展"
-        return f"🔌 {server}"
+        server = parts[1] if len(parts) > 1 else ""
+        verb = _pick_verb("mcp")
+        return f"{verb} {server}" if server else verb
 
-    return f"🔧 {tool_name}"
+    return random.choice(_FALLBACK_VERBS)
 
 
 class ClaudeCli:
