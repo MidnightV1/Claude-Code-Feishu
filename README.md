@@ -3,141 +3,142 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://python.org)
 
-English | [中文](README.zh-CN.md)
+[English](README.en.md) | 中文
 
-Claude Code Feishu — let AI truly collaborate with you.
+Claude Code Feishu，让 AI 真正与你协同起来。
 
-## From Tool to Colleague
+## 从工具到同事
 
-Claude Code is a powerful programming tool in the terminal. But coding is only part of the job — you also need to schedule meetings, write proposals, track tasks, do research, and monitor progress.
+Claude Code 在终端里是强大的编程工具。但编程只是工作的一部分——你还需要排日程、写方案、跟任务、做调研、盯进度。
 
-These things happen in Feishu/Lark, not in the IDE.
+这些事情发生在飞书里，不在 IDE 里。
 
-This project brings Claude Code into Feishu, but it's not just "message forwarding." It gives Claude full Feishu collaboration capabilities: calendar, documents, tasks, wiki, bitable, drive. Combined with Claude Code's native file I/O, code editing, shell execution, and sub-agent coordination — you get an AI collaborator whose capabilities far exceed the CLI.
+这个项目把 Claude Code 带进飞书，但不只是「消息转发」。它让 Claude 拥有飞书的全部协作能力：日历、文档、任务、知识库、多维表格、云盘。加上 Claude Code 原生的文件读写、代码编辑、命令执行、子 Agent 协作——你得到的是一个能力边界远超 CLI 的 AI 协作者。
 
-## Three Scenarios
+## 三个场景
 
-**Scenario 1: Opening Feishu in the morning**
+**场景一：早上打开飞书**
 
-You haven't sent a message yet, but AI is already working. Daily briefings arrive automatically — keywords self-evolve, coverage gets more precise over time. Overdue task reminders appear in your DM. This isn't passive response — it's proactive collaboration.
+你还没发消息，AI 已经在工作了。每日简报自动送达——关键词会自动进化，覆盖面越来越精准。过期任务的提醒出现在私聊里。这不是被动响应，是主动协作。
 
-**Scenario 2: One sentence becomes three people's work**
+**场景二：一句话拆成三个人的活**
 
-You say "fix the briefing link bug, and add a replace feature to feishu-doc skill." Opus researches both issues, designs solutions, splits them into independent subtasks for Sonnet to execute in parallel. You keep chatting with Opus about other things — when execution finishes, it validates and reports back.
+你说「帮我修日报的链接 bug，顺便把 feishu-doc skill 加个 replace 功能」。Opus 调研完两个问题，设计方案，拆成独立子任务交给 Sonnet 并行执行。你继续和 Opus 聊别的事，执行完了它自动验收汇报。
 
-**Scenario 3: Proposal discussion stays in Feishu**
+**场景三：方案讨论全程在飞书**
 
-No need to jump between CLI and Feishu. Claude creates a Feishu document to write the proposal, you add comments in the document, Claude reads and responds to each comment, then updates the same document. Tasks, calendar, wiki — all extensions of the same conversation.
+不需要在 CLI 和飞书之间来回跳。Claude 直接创建飞书文档写方案，你在文档里加评论，Claude 读取评论逐条回应，修改后更新同一份文档。任务、日程、知识库都是同一个对话的延伸。
 
-## CLI vs Feishu: More Than a Different Interface
+## CLI vs 飞书：不只是界面不同
 
-| Dimension | CLI / IDE | Feishu Collaboration |
-|-----------|-----------|---------------------|
-| Interaction | You initiate commands | It also reaches out (briefings, deadline reminders, alerts) |
-| Capabilities | Code + Files + Shell | + Calendar + Docs + Tasks + Wiki + Bitable |
-| Collaboration | 1:1 synchronous | Async — you can leave, it keeps working, notifies when done |
-| Identity | Anonymous session | Recognizes each user, maintains independent context |
-| Task Orchestration | You split and assign | Opus designs → Sonnet executes in parallel → Opus validates |
-| Multi-user | Single user | Multiple users with isolated sessions |
-| Context Recovery | Close and it's gone | Resume preserves full context, compressed fallback on failure |
+| 维度 | CLI / IDE | 飞书协作 |
+|------|-----------|----------|
+| 交互方式 | 你主动发指令 | 它也会主动找你（日报、DDL 提醒、异常告警） |
+| 能力边界 | 代码 + 文件 + Shell | + 日历 + 文档 + 任务 + 知识库 + 多维表格 |
+| 协作模式 | 1:1 同步等待 | 异步——你可以离开，它继续干，干完飞书通知你 |
+| 身份感知 | 匿名 session | 识别每个用户，维护独立上下文和认知档案 |
+| 任务编排 | 你拆任务分配 | Opus 调研设计 → Sonnet 并行执行 → Opus 验收 |
+| 多人协作 | 单人使用 | 多用户各自会话，互不干扰 |
+| 上下文恢复 | 关掉就没了 | resume 恢复完整上下文，失败时压缩降级 |
+| 多 Bot 支持 | 单实例 | 多 Bot 实例，独立人设 / 模型 / 会话，支持工作目录隔离 |
 
-## Architecture
+## 架构
 
-Single Python process — no Docker, Redis, or database required.
+单 Python 进程，无需 Docker / Redis / 数据库。
 
 ```
-Feishu WebSocket → FeishuBot → LLMRouter ─┬→ claude -p    (chat/tools)
-                      │            │       ├→ gemini cli   (search/docs)
-                      │            │       └→ gemini api   (large docs/fallback)
-                      ├→ Orchestrator (Opus planning + Sonnet worker pool)
-                      ├→ CronScheduler (scheduled jobs)
-                      ├→ HeartbeatMonitor (health checks)
-                      └→ Dispatcher → Feishu Card JSON 2.0
+飞书 WebSocket → FeishuBot → LLMRouter ─┬→ claude -p    (对话/工具)
+                     │            │      ├→ gemini cli   (搜索/文档)
+                     │            │      └→ gemini api   (大文档/fallback)
+                     ├→ Orchestrator（Opus 编排 + Sonnet 工作池）
+                     ├→ CronScheduler（定时任务）
+                     ├→ HeartbeatMonitor（心跳监控）
+                     └→ Dispatcher → 飞书卡片 JSON 2.0
 ```
 
-Core design:
+核心设计：
 
-- **Session isolation**: Independent CLI session per user with per-user atomic persistence
-- **Context resilience**: `--resume` first for full context; on failure, Sonnet compresses history into structured summaries injected into new sessions — seamless degradation
-- **Multi-model collaboration**: Claude CLI for chat + Gemini CLI for search and document analysis, each playing to their strengths
-- **Token efficiency**: Gemini CLI (subscription-based, zero cost) handles large file reading and document analysis, keeping Claude's context for deep reasoning work
-- **Task orchestration**: Opus researches and plans → user confirms → Sonnet executes in parallel → Opus validates
+- **会话隔离**：每个用户独立 CLI session，per-user 原子持久化
+- **上下文韧性**：优先 `--resume` 恢复完整上下文；失败时 Sonnet 压缩历史为结构化摘要注入新 session，无感降级
+- **多模型协作**：Claude CLI 对话 + Gemini CLI 搜索与文档分析，各取所长
+- **Token 节省**：用 Gemini CLI（订阅制零成本）处理大文件读取、文档分析等高 token 消耗任务，将 Claude 上下文留给需要深度推理的工作
+- **任务编排**：Opus 调研拆分 → 用户确认 → Sonnet 并行执行 → Opus 验收
 
-## Capabilities
+## 能力一览
 
-**Chat & Understanding**
+**对话与理解**
 
-- Full Claude Code conversations via Feishu DM
-- Image understanding (Claude native vision)
-- PDF / file analysis (multi-model fallback chain)
-- Real-time progress cards (TodoWrite streaming updates)
+- 飞书私聊的完整 Claude Code 对话
+- 图片理解（Claude 原生视觉）
+- PDF / 文件分析（多模型降级链）
+- 实时进度卡片（TodoWrite 流式更新）
 
-**Deep Feishu Integration**
+**飞书深度集成**
 
-| Skill | Capability |
-|-------|-----------|
-| `feishu-cal` | Calendar event CRUD, attendee management, contacts |
-| `feishu-doc` | Document create / read / update / section replace / comment analysis |
-| `feishu-task` | Task management + heartbeat deadline monitoring |
-| `feishu-wiki` | Wiki space browsing, page CRUD |
-| `feishu-bitable` | Bitable record query / filter / CRUD |
-| `feishu-drive` | Drive file and folder management |
-| `feishu-perm` | Document permission management, collaborator CRUD |
-| `hub-ops` | Cron job CRUD, service status, hot-reload |
-| `briefing` | Daily briefing pipeline, custom data sources, multi-domain, keyword self-evolution |
-| `gemini` | Search / web / file analysis / summarization (subscription, zero cost) |
+| Skill | 能力 |
+|-------|------|
+| `feishu-cal` | 日历事件增删改查、参会人管理、联系人 |
+| `feishu-doc` | 文档创建 / 阅读 / 更新 / 按章节替换 / 评论分析 |
+| `feishu-task` | 任务管理 + 心跳截止日期监控 |
+| `feishu-wiki` | 知识库空间浏览、页面增删改查 |
+| `feishu-bitable` | 多维表格记录查询 / 筛选 / 增删改 |
+| `feishu-drive` | 云盘文件与文件夹管理 |
+| `feishu-perm` | 文档权限管理、协作者增删 |
+| `hub-ops` | 定时任务 CRUD、服务状态、热加载 |
+| `briefing` | 每日简报 pipeline、自定义数据源、多域管理、关键词自进化 |
+| `gemini` | 搜索 / 网页 / 文件分析 / 摘要（订阅制零成本） |
 
-Each Skill is opt-in — activate only what you need.
+每个 Skill 独立启用，按需配置。
 
-**Autonomous Behaviors**
+**自主行为**
 
-- **Daily briefings**: Multi-source collection → LLM generation → review → delivery, with automatic keyword evolution
-- **Heartbeat monitoring**: Two-layer Sonnet triage (triage → action), automatic DM alerts on anomalies
-- **Task deadline reminders**: Heartbeat reads task snapshots, proactively alerts on overdue / upcoming deadlines
+- **每日简报**：多源采集 → LLM 生成 → 审稿 → 投递，关键词自动进化
+- **心跳监控**：两层 Sonnet 研判（triage → action），异常自动 DM 通知
+- **任务到期提醒**：心跳读取任务快照，逾期 / 即将到期主动提醒
 
-**Task Orchestration**
+**任务编排**
 
-Opus thinks, Sonnet executes:
+Opus 负责思考，Sonnet 负责动手：
 
-1. User describes a complex task
-2. Opus researches, designs the solution, splits into independent subtasks
-3. User confirms the plan in Feishu
-4. Sonnet worker processes execute in parallel (Opus is freed for other conversations)
-5. Opus validates results, resolves conflicts, reports back
+1. 用户提出复杂任务
+2. Opus 调研分析，设计方案，拆解为独立子任务
+3. 用户在飞书确认计划
+4. Sonnet 工作进程并行执行（Opus 释放，可继续对话）
+5. Opus 验收结果，处理冲突，汇报
 
-## Quick Start
+## 快速开始
 
-**Prerequisites**
+**前置要求**
 
 - Python 3.10+
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
-- Feishu/Lark custom app (Bot capability + WebSocket mode)
-- (Recommended) Claude Code on subscription; install [Gemini CLI](https://github.com/google-gemini/gemini-cli) with Gemini basic subscription to maximize token cost savings
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) 已安装并认证
+- 飞书自建应用（启用 Bot 能力 + WebSocket 连接模式）
+- （推荐）Claude Code 使用订阅模式；安装 [Gemini CLI](https://github.com/google-gemini/gemini-cli) 并订阅 Gemini 基础会员，最大化节省 token 成本
 
 ```bash
 git clone https://github.com/MidnightV1/Claude-Code-Feishu.git
 cd Claude-Code-Feishu
 pip install -r requirements.txt
 cp config.yaml.example config.yaml
-# Edit config.yaml — fill in Feishu app credentials
+# 编辑 config.yaml 填入飞书凭据
 ./hub.sh start
 ```
 
-For detailed setup, see [SETUP.md](SETUP.md).
+详细部署指南见 [SETUP.md](docs/SETUP.md)（[中文](docs/SETUP.zh-CN.md)）。
 
 ---
 
-*The following is for AI Agents (Claude Code or others) — if you're an agent setting up this service for the first time, read on.*
+*以下内容面向 AI Agent（Claude Code 或其他 agent）——如果你是首次部署此服务的 agent，继续阅读。*
 
-## For AI Agents
+## 给 AI Agent 的说明
 
-If you're a Claude Code or other agent reading this project for the first time:
+如果你是 Claude Code 或其他 agent 首次阅读这个项目：
 
-- `SETUP.md` is a step-by-step deployment guide — follow it directly
-- Each `SKILL.md` under `.claude/skills/` has an Onboarding section for first-time setup
-- `config.yaml.example` has comments explaining all configuration options
-- User says "scheduled task" → `hub-ops`, "briefing" → `briefing`, "document" → `feishu-doc`
+- `SETUP.md` 是逐步部署指南，直接跟着做
+- `.claude/skills/` 下每个 `SKILL.md` 都有 Onboarding 段落，首次加载时引导用户完成配置
+- `config.yaml.example` 有所有配置项的注释说明
+- 用户说「定时任务」→ `hub-ops`，说「日报」→ `briefing`，说「文档」→ `feishu-doc`
 
-## License
+## 许可证
 
 [MIT](LICENSE)
