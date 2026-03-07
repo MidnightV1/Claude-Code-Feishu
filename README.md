@@ -1,170 +1,142 @@
-# claude-code-lark
+# Claude Code Feishu
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://python.org)
 
 English | [中文](README.zh-CN.md)
 
-Give Claude Code a Feishu/Lark messaging interface — with calendar, documents, tasks, wiki, daily briefings, and autonomous health monitoring.
+Claude Code Feishu — let AI truly collaborate with you.
 
-## What is this
+## From Tool to Colleague
 
-A lightweight Python service that connects Claude Code CLI to Feishu (Lark) via WebSocket. Users chat with Claude in Feishu DMs or group chats, and Claude has full tool access (file I/O, shell, web search) through the CLI subprocess.
+Claude Code is a powerful programming tool in the terminal. But coding is only part of the job — you also need to schedule meetings, write proposals, track tasks, do research, and monitor progress.
 
-**Not a wrapper.** The bot runs an actual Claude Code CLI session per user, with persistent conversation context, tool use, and all Claude Code capabilities.
+These things happen in Feishu/Lark, not in the IDE.
+
+This project brings Claude Code into Feishu, but it's not just "message forwarding." It gives Claude full Feishu collaboration capabilities: calendar, documents, tasks, wiki, bitable, drive. Combined with Claude Code's native file I/O, code editing, shell execution, and sub-agent coordination — you get an AI collaborator whose capabilities far exceed the CLI.
+
+## Three Scenarios
+
+**Scenario 1: Opening Feishu in the morning**
+
+You haven't sent a message yet, but AI is already working. Daily briefings arrive automatically — keywords self-evolve, coverage gets more precise over time. Overdue task reminders appear in your DM. This isn't passive response — it's proactive collaboration.
+
+**Scenario 2: One sentence becomes three people's work**
+
+You say "fix the briefing link bug, and add a replace feature to feishu-doc skill." Opus researches both issues, designs solutions, splits them into independent subtasks for Sonnet to execute in parallel. You keep chatting with Opus about other things — when execution finishes, it validates and reports back.
+
+**Scenario 3: Proposal discussion stays in Feishu**
+
+No need to jump between CLI and Feishu. Claude creates a Feishu document to write the proposal, you add comments in the document, Claude reads and responds to each comment, then updates the same document. Tasks, calendar, wiki — all extensions of the same conversation.
+
+## CLI vs Feishu: More Than a Different Interface
+
+| Dimension | CLI / IDE | Feishu Collaboration |
+|-----------|-----------|---------------------|
+| Interaction | You initiate commands | It also reaches out (briefings, deadline reminders, alerts) |
+| Capabilities | Code + Files + Shell | + Calendar + Docs + Tasks + Wiki + Bitable |
+| Collaboration | 1:1 synchronous | Async — you can leave, it keeps working, notifies when done |
+| Identity | Anonymous session | Recognizes each user, maintains independent context |
+| Task Orchestration | You split and assign | Opus designs → Sonnet executes in parallel → Opus validates |
+| Multi-user | Single user | Multiple users with isolated sessions |
+| Context Recovery | Close and it's gone | Resume preserves full context, compressed fallback on failure |
 
 ## Architecture
 
-```
-Feishu WebSocket ──> FeishuBot ──> LLMRouter ─┬─> claude -p       (claude-cli)
-                        │              │       ├─> gemini cli       (gemini-cli)
-                        │              │       └─> google-genai     (gemini-api)
-                        ├──> CronScheduler (per-job model routing)
-                        └──> HeartbeatMonitor (two-layer triage → action)
-                                  │
-                           Dispatcher ──> Feishu Card JSON 2.0
-```
-
-Key components:
-
-| Component | Role |
-|-----------|------|
-| `feishu_bot.py` | WebSocket event handler, debounce batching, multimodal input |
-| `llm_router.py` | Session management, resume-or-fallback, history compression |
-| `dispatcher.py` | Feishu card rendering, chunking, retry, real-time updates |
-| `claude_cli.py` | Claude CLI wrapper with streaming TodoWrite progress |
-| `scheduler.py` | In-process cron scheduler (croniter + asyncio) |
-| `heartbeat.py` | System health monitoring via LLM judgment |
-
-## Features
-
-- **Chat** — Full Claude Code conversations via Feishu DM or group @mention
-- **Multimodal** — Image understanding (native Claude vision), PDF/file analysis (Gemini CLI → API → Claude fallback)
-- **Calendar** — Create, list, update, delete Feishu calendar events; contact management
-- **Documents** — Create, read, search, comment on Feishu documents; ownership transfer
-- **Tasks** — Feishu task CRUD with assignees, due dates, and heartbeat deadline monitoring
-- **Wiki** — Browse wiki spaces, create/move/read/write wiki pages
-- **Daily Briefings** — Automated multi-domain news digest (see below)
-- **Document Co-pilot** — Deep document analysis via Gemini CLI without polluting chat context
-- **Progress Tracking** — Real-time TodoWrite progress on thinking cards for complex tasks
-- **Cron Jobs** — Scheduled tasks with hot-reload (no restart needed)
-- **Heartbeat** — Periodic health checks with two-layer LLM triage and DM alerts
-- **Session Continuity** — `--resume` first, fallback to compressed history injection
-
-## Daily Briefings
-
-An automated news digest pipeline that runs on a cron schedule:
+Single Python process — no Docker, Redis, or database required.
 
 ```
-Brave Search → Collect articles → Gemini generates draft → Claude reviews → Deliver via email/Feishu
+Feishu WebSocket → FeishuBot → LLMRouter ─┬→ claude -p    (chat/tools)
+                      │            │       ├→ gemini cli   (search/docs)
+                      │            │       └→ gemini api   (large docs/fallback)
+                      ├→ Orchestrator (Opus planning + Sonnet worker pool)
+                      ├→ CronScheduler (scheduled jobs)
+                      ├→ HeartbeatMonitor (health checks)
+                      └→ Dispatcher → Feishu Card JSON 2.0
 ```
 
-- **Multi-domain**: Configure separate briefing domains (e.g. "tech", "finance"), each with its own keywords, prompts, and delivery targets
-- **Keyword evolution**: After each cycle, the LLM analyzes coverage gaps and suggests new search keywords — the keyword list improves over time
-- **Review layer**: Optional Claude review pass catches hallucinations and improves quality before delivery
-- **Flexible delivery**: Email (SMTP), Feishu IM card, Feishu document, or any combination
+Core design:
 
-Each domain is a folder under `~/briefing/domains/<name>/` with `sources.yaml` (keywords), `domain.yaml` (models + delivery config), and prompt templates. See `.claude/skills/briefing/SKILL.md` for full setup.
+- **Session isolation**: Independent CLI session per user with per-user atomic persistence
+- **Context resilience**: `--resume` first for full context; on failure, Sonnet compresses history into structured summaries injected into new sessions — seamless degradation
+- **Multi-model collaboration**: Claude CLI for chat + Gemini CLI for search and document analysis, each playing to their strengths
+- **Token efficiency**: Gemini CLI (subscription-based, zero cost) handles large file reading and document analysis, keeping Claude's context for deep reasoning work
+- **Task orchestration**: Opus researches and plans → user confirms → Sonnet executes in parallel → Opus validates
 
-## Prerequisites
+## Capabilities
 
-- Python 3.10+ with pip
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
-- A Feishu (Lark) custom app with Bot capability and WebSocket enabled
-- Google AI Studio API key (for Gemini — multimodal, heartbeat, briefings)
-- (Optional) Gemini CLI for document analysis co-pilot
+**Chat & Understanding**
+
+- Full Claude Code conversations via Feishu DM
+- Image understanding (Claude native vision)
+- PDF / file analysis (multi-model fallback chain)
+- Real-time progress cards (TodoWrite streaming updates)
+
+**Deep Feishu Integration**
+
+| Skill | Capability |
+|-------|-----------|
+| `feishu-cal` | Calendar event CRUD, attendee management, contacts |
+| `feishu-doc` | Document create / read / update / section replace / comment analysis |
+| `feishu-task` | Task management + heartbeat deadline monitoring |
+| `feishu-wiki` | Wiki space browsing, page CRUD |
+| `feishu-bitable` | Bitable record query / filter / CRUD |
+| `feishu-drive` | Drive file and folder management |
+| `feishu-perm` | Document permission management, collaborator CRUD |
+| `hub-ops` | Cron job CRUD, service status, hot-reload |
+| `briefing` | Daily briefing pipeline, custom data sources, multi-domain, keyword self-evolution |
+| `gemini` | Search / web / file analysis / summarization (subscription, zero cost) |
+
+Each Skill is opt-in — activate only what you need.
+
+**Autonomous Behaviors**
+
+- **Daily briefings**: Multi-source collection → LLM generation → review → delivery, with automatic keyword evolution
+- **Heartbeat monitoring**: Two-layer Sonnet triage (triage → action), automatic DM alerts on anomalies
+- **Task deadline reminders**: Heartbeat reads task snapshots, proactively alerts on overdue / upcoming deadlines
+
+**Task Orchestration**
+
+Opus thinks, Sonnet executes:
+
+1. User describes a complex task
+2. Opus researches, designs the solution, splits into independent subtasks
+3. User confirms the plan in Feishu
+4. Sonnet worker processes execute in parallel (Opus is freed for other conversations)
+5. Opus validates results, resolves conflicts, reports back
 
 ## Quick Start
 
-```bash
-# Clone
-git clone <repo-url> && cd claude-code-lark
+**Prerequisites**
 
-# Install dependencies
+- Python 3.10+
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+- Feishu/Lark custom app (Bot capability + WebSocket mode)
+- (Recommended) Claude Code on subscription; install [Gemini CLI](https://github.com/google-gemini/gemini-cli) with Gemini basic subscription to maximize token cost savings
+
+```bash
+git clone https://github.com/MidnightV1/Claude-Code-Feishu.git
+cd Claude-Code-Feishu
 pip install -r requirements.txt
-
-# Configure
 cp config.yaml.example config.yaml
-# Edit config.yaml — fill in Feishu app credentials, Gemini API key, etc.
-
-# Start
+# Edit config.yaml — fill in Feishu app credentials
 ./hub.sh start
-
-# Check status
-./hub.sh status
-
-# View logs
-tail -f data/hub.log
 ```
 
-For detailed setup with an AI agent guiding you through each step, see [SETUP.md](SETUP.md).
+For detailed setup, see [SETUP.md](SETUP.md).
 
-## Feishu App Setup
+---
 
-We recommend creating **two** Feishu apps — one for interactive chat, one for notifications/alerts:
-
-| App | Purpose | Why separate |
-|-----|---------|-------------|
-| **Chat Bot** | User conversations, tool use | Interactive sessions, per-user context |
-| **Notifier** | Heartbeat alerts, briefing delivery, scheduled messages | Background tasks, no user session needed |
-
-This separation keeps notification delivery independent of chat sessions. A single app works too — just skip the `notify` section in config.
-
-### For each app:
-
-1. Go to [Feishu Open Platform](https://open.feishu.cn/app) → Create Custom App
-2. Enable **Bot** capability
-3. Enable **WebSocket** mode (not HTTP callback) — *chat app only*
-4. Subscribe to events (chat app only):
-   - `im.message.receive_v1` — receive messages
-   - `im.message.recalled_v1` — handle message recall
-5. Grant permissions — import [`docs/feishu_scopes.json`](docs/feishu_scopes.json) for a complete set, or grant individually per skill
-6. Publish a version to activate the bot
-7. Copy App ID and App Secret to `config.yaml`
-
-## Skills
-
-Skills are modular capabilities in `.claude/skills/`. Each has a `SKILL.md` with usage docs and a setup guide.
-
-| Skill | Purpose | Key Config |
-|-------|---------|------------|
-| `hub-ops` | Cron jobs, service status, hot-reload | (built-in) |
-| `briefing` | Daily news briefing pipeline | Gemini API key, domain configs |
-| `feishu-cal` | Calendar event CRUD, contacts | `feishu.calendar.calendar_id` |
-| `feishu-doc` | Document CRUD, search, comments | `feishu.docs.shared_folders` |
-| `feishu-task` | Task management, deadline monitoring | `feishu.tasks.tasklist_guid` |
-| `feishu-wiki` | Wiki space and page management | (add bot to wiki space) |
-| `gemini-doc` | Document analysis co-pilot | Gemini CLI installed |
-
-Each skill is opt-in — activate only what you need.
-
-## Configuration
-
-See `config.yaml.example` for all options. Key sections:
-
-| Section | Purpose |
-|---------|---------|
-| `feishu` | App credentials, calendar, docs, tasks, contacts |
-| `llm` | Default provider/model, CLI paths, timeouts |
-| `gemini-api` | Google AI Studio API key |
-| `briefing` | Briefing pipeline model config |
-| `scheduler` | Enable/disable cron, store path |
-| `heartbeat` | Interval, active hours, LLM model |
-| `notify` | Optional second Feishu app for alerts |
-
-## Service Management
-
-```bash
-./hub.sh start       # Start in background
-./hub.sh stop        # Stop gracefully
-./hub.sh restart     # Stop + start
-./hub.sh status      # Check if running
-./hub.sh watchdog    # Start if not running (for cron)
-```
+*The following is for AI Agents (Claude Code or others) — if you're an agent setting up this service for the first time, read on.*
 
 ## For AI Agents
 
-If you're a Claude Code instance setting up this service for the first time, read [`SETUP.md`](SETUP.md) — it's a step-by-step bootstrap guide designed for you to walk the user through the entire setup interactively.
+If you're a Claude Code or other agent reading this project for the first time:
+
+- `SETUP.md` is a step-by-step deployment guide — follow it directly
+- Each `SKILL.md` under `.claude/skills/` has an Onboarding section for first-time setup
+- `config.yaml.example` has comments explaining all configuration options
+- User says "scheduled task" → `hub-ops`, "briefing" → `briefing`, "document" → `feishu-doc`
 
 ## License
 

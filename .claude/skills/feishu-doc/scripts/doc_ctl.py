@@ -242,10 +242,14 @@ def _insert_blocks(api, doc_id: str, blocks: list[dict], index: int,
 
 
 def _resolve_content(text: str) -> str:
-    """If text looks like a file path and the file exists, read it."""
-    if "\n" not in text and os.path.isfile(text):
-        with open(text, "r", encoding="utf-8") as f:
-            return f.read()
+    """If text looks like a file path, read it. Error if path-like but missing."""
+    if "\n" not in text and (text.startswith("/") or text.startswith(".")):
+        if os.path.isfile(text):
+            with open(text, "r", encoding="utf-8") as f:
+                return f.read()
+        # Looks like a path but file doesn't exist — error, don't write path as content
+        print(f"ERROR: '{text}' looks like a file path but file not found", file=sys.stderr)
+        sys.exit(1)
     return text
 
 
