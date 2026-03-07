@@ -22,6 +22,7 @@ from agent.infra.user_store import UserStore
 from agent.orchestrator.engine import Orchestrator
 from agent.platforms.feishu.api import FeishuAPI
 from agent.infra.store import load_json_sync
+from agent.infra.message_store import content_hash as make_content_hash, media_hash as make_media_hash
 from agent.platforms.feishu.media import MediaMixin
 from agent.platforms.feishu.session import SessionMixin, SKILL_ROUTES
 
@@ -101,6 +102,7 @@ class PendingBatch:
     sender_name: str = ""    # display name from UserStore
     timer: asyncio.Task | None = None
     pending_media: int = 0   # media items currently being analyzed
+    received_at: float = 0.0  # time.time() of first message in batch
 
 
 class FeishuBot(MediaMixin, SessionMixin):
@@ -115,6 +117,7 @@ class FeishuBot(MediaMixin, SessionMixin):
         file_store: FileStore,
         user_store: UserStore | None = None,
         orchestrator: Orchestrator | None = None,
+        message_store=None,
     ):
         # Bot identity: "main" uses un-prefixed keys for backward compat
         self.name = config.get("name", "main")
@@ -144,7 +147,8 @@ class FeishuBot(MediaMixin, SessionMixin):
         self._queued_cards: dict[str, str] = {}  # key → queued indicator card message_id
         self._ws_client = None
         self._loop = None
-        self._dedup: dict[str, float] = {}
+        self._dedup: dict[str, float] = {}  # legacy in-memory dedup (kept as L0 fast path)
+        self.message_store = message_store
         self._bot_open_id: str | None = None
         self._feishu_api = FeishuAPI(self.app_id, self.app_secret, self.domain)
         # Per-bot reply cache: "main" uses legacy path for backward compat
@@ -305,7 +309,17 @@ class FeishuBot(MediaMixin, SessionMixin):
             log.info("Msg recv: type=%s parent_id=%s root_id=%s",
                      msg_type, msg.parent_id or "(none)", msg.root_id or "(none)")
 
-            # Dedup
+            # Stale message guard: drop messages created >2min ago (WebSocket re-delivery)
+            if msg.create_time:
+                try:
+                    msg_age = time.time() - int(msg.create_time) / 1000
+                    if msg_age > 120:
+                        log.info("Stale message dropped: %s (age=%.0fs)", message_id, msg_age)
+                        return
+                except (ValueError, TypeError):
+                    pass
+
+            # Dedup: L0 in-memory fast path + L1/L2 persistent MessageStore
             if self._is_duplicate(message_id):
                 return
             self._record_message(message_id)
@@ -378,13 +392,29 @@ class FeishuBot(MediaMixin, SessionMixin):
                 if text.startswith("#"):
                     first_word = text.split(None, 1)[0].lower()
                     if first_word not in SKILL_ROUTES:
+                        # MessageStore: command-level dedup (no time window)
+                        if self.message_store:
+                            c_hash = make_content_hash(sender_id, text)
+                            if self.message_store.check_dup(message_id, c_hash, "command"):
+                                return
+                            self.message_store.record(message_id, c_hash, "command", sender_id)
                         log.info("Command from %s: %s", sender_id[:8], text[:60])
                         cmd_result = await self._route_command(text, chat_id, chat_type, sender_id)
                         if cmd_result is not None:
+                            if self.message_store:
+                                self.message_store.update_state(message_id, "completed")
                             await self.dispatcher.send_text(
                                 chat_id, cmd_result, reply_to=message_id
                             )
                             return
+
+                # MessageStore: chat-level dedup (5min window)
+                if self.message_store:
+                    c_hash = make_content_hash(sender_id, text)
+                    if self.message_store.check_dup(message_id, c_hash, "chat"):
+                        return
+                    key = self._debounce_key(chat_type, chat_id, sender_id)
+                    self.message_store.record(message_id, c_hash, "chat", sender_id, key)
 
                 sender_name = user.name if user else ""
                 log.info("Message from %s(%s) in %s: %s",
@@ -404,6 +434,19 @@ class FeishuBot(MediaMixin, SessionMixin):
             sender_name = user.name if user else ""
 
             if msg_type == "image":
+                # MessageStore: image dedup (30min window, hash on image_key)
+                if self.message_store:
+                    try:
+                        _ic = json.loads(msg.content) if isinstance(msg.content, str) else {}
+                        _ik = _ic.get("image_key", "") if isinstance(_ic, dict) else ""
+                    except Exception:
+                        _ik = ""
+                    if _ik:
+                        m_hash = make_media_hash(sender_id, _ik)
+                        if self.message_store.check_dup(message_id, m_hash, "image"):
+                            return
+                        self.message_store.record(message_id, m_hash, "image", sender_id, key)
+
                 batch = await self._ensure_batch(
                     key, message_id, chat_id, chat_type, sender_id, sender_name
                 )
@@ -424,6 +467,19 @@ class FeishuBot(MediaMixin, SessionMixin):
                 return
 
             if msg_type == "file":
+                # MessageStore: file dedup (30min window, hash on file_key)
+                if self.message_store:
+                    try:
+                        _fc = json.loads(msg.content) if isinstance(msg.content, str) else {}
+                        _fk = _fc.get("file_key", "") if isinstance(_fc, dict) else ""
+                    except Exception:
+                        _fk = ""
+                    if _fk:
+                        m_hash = make_media_hash(sender_id, _fk)
+                        if self.message_store.check_dup(message_id, m_hash, "file"):
+                            return
+                        self.message_store.record(message_id, m_hash, "file", sender_id, key)
+
                 batch = await self._ensure_batch(
                     key, message_id, chat_id, chat_type, sender_id, sender_name
                 )
@@ -482,6 +538,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                 chat_type=chat_type,
                 sender_id=sender_id,
                 sender_name=sender_name,
+                received_at=time.time(),
             )
         else:
             self._pending[key].latest_message_id = message_id

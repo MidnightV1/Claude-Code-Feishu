@@ -6,6 +6,20 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.10.0] — 2026-03-07
+
+### Added
+- **Message state machine (MessageStore)** — SQLite-backed persistent message tracking with three-layer dedup: L0 in-memory message_id, L1 SQLite message_id, L2 content_hash + time window per msg_type. Fixes Feishu WebSocket re-delivery bug where messages were re-processed with new message_ids.
+- **Stale message guard** — Messages older than 2 minutes (by `create_time`) are dropped at the entry point, catching cross-time WebSocket re-deliveries that exceed the content hash window.
+- **IO latency logging** — Tracks `recv → thinking card` (ms) and `recv → reply ready` (s) for performance monitoring.
+
+### Fixed
+- **WebSocket re-delivery** — Feishu WebSocket re-delivers messages with new message_ids on reconnect, bypassing the previous in-memory dedup. Now caught by persistent SQLite content_hash matching.
+- **Command dedup window** — Changed from infinite (blocking legitimate re-execution) to 60 seconds.
+- **FeishuAPI config compatibility** — `from_config()` now supports both legacy `feishu.app_id` and multi-bot `feishu.bots[0].app_id` formats.
+
+---
+
 ## [0.9.0] — 2026-03-07
 
 ### Added

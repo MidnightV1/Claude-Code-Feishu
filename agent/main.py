@@ -19,6 +19,7 @@ from agent.jobs.heartbeat import HeartbeatMonitor
 from agent.platforms.feishu.bot import FeishuBot
 from agent.infra.file_store import FileStore
 from agent.infra.user_store import UserStore
+from agent.infra.message_store import MessageStore
 from agent.orchestrator.pool import WorkerPool
 from agent.orchestrator.engine import Orchestrator
 from agent.jobs.briefing import BriefingPlugin
@@ -192,6 +193,10 @@ async def main():
     worker_pool = WorkerPool(claude, max_concurrent=orch_cfg.get("max_concurrent", 3))
     orchestrator = Orchestrator(claude, worker_pool)
 
+    # Message state machine — shared across all bots
+    message_store = MessageStore("data")
+    message_store.cleanup()
+
     # Create bot instances — one per feishu app
     bots: list[FeishuBot] = []
     for bot_cfg in bot_configs:
@@ -219,6 +224,7 @@ async def main():
             file_store=file_store,
             user_store=user_store,
             orchestrator=orchestrator,
+            message_store=message_store,
         )
 
         # Plugins: register on primary bot only

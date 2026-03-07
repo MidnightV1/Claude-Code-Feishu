@@ -88,6 +88,12 @@ class SessionMixin:
         combined = "\n\n".join(batch.parts)
         session_key = self._session_key(batch.chat_type, batch.chat_id, batch.sender_id)
 
+        # MessageStore: mark all batch messages as processing
+        _ms = getattr(self, 'message_store', None)
+        _batch_mids = list(batch.message_ids) if batch.message_ids else []
+        if _ms and _batch_mids:
+            _ms.update_state(_batch_mids, "processing")
+
         # ── Orchestrator confirmation intercept ──
         if hasattr(self, 'orchestrator') and self.orchestrator and self.orchestrator.has_pending(session_key):
             from agent.orchestrator.engine import Orchestrator
@@ -124,6 +130,9 @@ class SessionMixin:
         )
         if thinking_msg_id:
             self._thinking_cards[key] = thinking_msg_id
+        if batch.received_at:
+            io_latency = time.time() - batch.received_at
+            log.info("IO latency: %.0fms (recv → thinking card)", io_latency * 1000)
 
         try:
             llm_config, prompt = self._resolve_skill(combined, session_key)
@@ -271,10 +280,15 @@ class SessionMixin:
             if result.cancelled:
                 if thinking_msg_id:
                     asyncio.create_task(self._safe_delete_card(thinking_msg_id))
+                if _ms and _batch_mids:
+                    _ms.update_state(_batch_mids, "failed")
                 return
 
             if result.is_error:
                 log.warning("LLM error (session=%s): %s", session_key, result.text[:200])
+                # MessageStore: mark failed on LLM error
+                if _ms and _batch_mids:
+                    _ms.update_state(_batch_mids, "failed")
                 # Transient errors: keep session — next --resume may succeed
                 is_transient = (
                     result.text == ""
@@ -323,6 +337,9 @@ class SessionMixin:
                 reply_text = None
 
             # Delete thinking card, then send final reply as new message (with sound)
+            if batch.received_at:
+                total_latency = time.time() - batch.received_at
+                log.info("Total latency: %.1fs (recv → reply ready)", total_latency)
             if thinking_msg_id:
                 await self.dispatcher.delete_message(thinking_msg_id)
             if reply_text:
@@ -332,12 +349,20 @@ class SessionMixin:
                 )
                 if reply_mid:
                     self._cache_reply(reply_mid, reply_text)
+                    # MessageStore: mark completed with response_id
+                    if _ms and _batch_mids:
+                        _ms.update_state(_batch_mids, "completed", response_id=reply_mid)
+                elif _ms and _batch_mids:
+                    _ms.update_state(_batch_mids, "completed")
         except asyncio.CancelledError:
             log.info("Flush cancelled for %s during setup (user recalled)", key)
             if thinking_msg_id:
                 asyncio.create_task(self._safe_delete_card(thinking_msg_id))
         except Exception as e:
             log.error("Batch processing error: %s", e, exc_info=True)
+            # MessageStore: mark failed
+            if _ms and _batch_mids:
+                _ms.update_state(_batch_mids, "failed")
             if thinking_msg_id:
                 await self.dispatcher.delete_message(thinking_msg_id)
             err_type = type(e).__name__

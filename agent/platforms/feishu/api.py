@@ -50,9 +50,18 @@ class FeishuAPI:
                     section: str = "feishu") -> "FeishuAPI":
         cfg = _load_config(config_path)
         sec = cfg[section]
+        # Support both legacy (feishu.app_id) and multi-bot (feishu.bots[0]) formats
+        if "app_id" in sec:
+            app_id = sec["app_id"]
+            app_secret = sec["app_secret"]
+        elif "bots" in sec and sec["bots"]:
+            app_id = sec["bots"][0]["app_id"]
+            app_secret = sec["bots"][0]["app_secret"]
+        else:
+            raise KeyError("No app_id found in config (checked feishu.app_id and feishu.bots[0].app_id)")
         return cls(
-            app_id=sec["app_id"],
-            app_secret=sec["app_secret"],
+            app_id=app_id,
+            app_secret=app_secret,
             domain=sec.get("domain", "https://open.feishu.cn"),
         )
 
