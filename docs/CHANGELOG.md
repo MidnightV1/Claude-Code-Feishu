@@ -6,6 +6,26 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.8.2] — 2026-03-07
+
+### Fixed
+- **P0: Process management** — `_kill_tree` now does SIGTERM → wait 2s → SIGKILL (was instant double-signal causing zombies). Timeout path cancels stderr pipe and awaits process exit to prevent deadlocks.
+- **P0: Event loop blocking** — Token refresh uses `threading.Lock` (double-check pattern). `#usage` command uses async subprocess instead of blocking `subprocess.run`.
+- **P1: Memory leaks** — TTL sweep for 5 unbounded dicts (`_session_locks`, `_file_locks`, `_meta_locks`, etc.) that grew indefinitely per-user.
+- **P1: Gemini file cleanup** — Uploaded files via Files API now tracked and deleted after configurable TTL (`file_ttl_days`, default 30 days).
+- **P1: Subprocess leak** — Image compression subprocess now has 60s timeout + kill-on-exception guard.
+- **P2: Retry logic** — Dispatcher distinguishes non-retryable errors (TypeError, ValueError) from transient failures.
+- **P2: Recovery context** — Fixed early return bug that skipped recent history when compression failed.
+- **P2: Scheduler** — Timer re-entry guard prevents overlapping tick execution.
+- **P2: Orchestrator** — Unconfirmed plans auto-expire after 10 minutes (was unbounded).
+
+### Improved
+- Module-level constants for thinking pools, transient markers, cache limits (were recreated per-call)
+- `_PROJECT_ROOT` uses `Path` instead of 4× chained `os.path.dirname`
+- Fixed `store.py` sweep that could accidentally delete the lock being requested
+
+---
+
 ## [0.8.1] — 2026-03-07
 
 ### Added
