@@ -110,16 +110,11 @@ For the **Notifier** app (optional):
 cp config.yaml.example config.yaml
 ```
 
-Fill in the values the user provided. **Multi-bot format** (recommended — scales to any number of bots):
-
+Fill in the values the user provided:
 ```yaml
 feishu:
-  domain: "https://open.feishu.cn"
-  admin_open_ids: ["ou_xxx"]
-  bots:
-    - name: main
-      app_id: "<chat bot app_id>"
-      app_secret: "<chat bot app_secret>"
+  app_id: "<chat bot app_id>"
+  app_secret: "<chat bot app_secret>"
 
 # If using a separate notifier app:
 notify:
@@ -127,90 +122,7 @@ notify:
   app_secret: "<notifier app_secret>"
 ```
 
-> **Legacy single-bot format** still works with zero changes — no migration needed:
-> ```yaml
-> feishu:
->   app_id: "<chat bot app_id>"
->   app_secret: "<chat bot app_secret>"
-> ```
-
 Set `scheduler.enabled: false` and `heartbeat.enabled: false` for first boot (enable after chat works).
-
----
-
-## Phase 4.5 — Multi-Bot Setup (Optional)
-
-Run multiple Feishu bots from a single service. Each bot gets independent WebSocket connections, dispatchers, sessions, and can have its own model and system prompt.
-
-### Use Cases
-
-- Team-facing bot with a custom persona (separate from your personal bot)
-- Department-specific bots with different default models or system prompts
-- Separate bot identities for different contexts (e.g. personal assistant vs team assistant)
-
-### Configuration
-
-Multi-bot config — shared fields (`domain`, `admin_open_ids`) at top level, per-bot credentials below:
-
-```yaml
-feishu:
-  domain: "https://open.feishu.cn"
-  admin_open_ids: ["ou_xxx"]
-  bots:
-    - name: main
-      app_id: "cli_xxx"
-      app_secret: "secret1"
-    - name: work
-      app_id: "cli_yyy"
-      app_secret: "secret2"
-      default_model: sonnet          # optional: override default model
-      system_prompt: |               # optional: per-bot persona
-        You are a team assistant...
-```
-
-Legacy single-bot config still works with zero changes:
-
-```yaml
-feishu:
-  app_id: "cli_xxx"
-  app_secret: "secret"
-```
-
-### Per-Bot HOME Isolation
-
-By default, all bots share `~/.claude/` config (CLAUDE.md, COGNITION.md). For team-facing bots that shouldn't inherit your personal identity/cognition, use `home_dir` to isolate:
-
-```yaml
-bots:
-  - name: work
-    app_id: "cli_yyy"
-    app_secret: "secret2"
-    home_dir: ~/work-bot          # overrides HOME for this bot's CLI subprocess
-```
-
-Then create the isolated config:
-
-```
-~/work-bot/
-└── .claude/
-    ├── CLAUDE.md          # Bot-specific instructions (no personal soul)
-    ├── COGNITION.md       # Team/project knowledge (not personal profile)
-    └── settings.json      # Permissions (copy from ~/.claude/settings.json)
-```
-
-The bot's `home_dir` only affects the Claude CLI subprocess's HOME env var. The workspace (cwd) remains the project directory, so all skills and scripts work normally.
-
-### Per-Bot Options Reference
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `name` | (required) | Bot identifier, used for session/cache namespacing |
-| `app_id` | (required) | Feishu app ID |
-| `app_secret` | (required) | Feishu app secret |
-| `default_model` | (from `llm.default`) | Override LLM model for this bot |
-| `default_provider` | `claude-cli` | Override LLM provider |
-| `system_prompt` | (none) | Extra system prompt injected after base Feishu prompt |
-| `home_dir` | (none) | Override HOME env for CLI subprocess isolation |
 
 ---
 

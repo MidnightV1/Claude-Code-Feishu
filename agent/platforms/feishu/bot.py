@@ -148,6 +148,7 @@ class FeishuBot(MediaMixin, SessionMixin):
         self._ws_client = None
         self._loop = None
         self._dedup: dict[str, float] = {}  # legacy in-memory dedup (kept as L0 fast path)
+        self._rate_limits: dict[str, list[float]] = {}  # sender_id → list of timestamps
         self.message_store = message_store
         self._bot_open_id: str | None = None
         self._feishu_api = FeishuAPI(self.app_id, self.app_secret, self.domain)
@@ -330,6 +331,15 @@ class FeishuBot(MediaMixin, SessionMixin):
             else:
                 user = None
 
+            # Per-user rate limiting
+            if sender_id and self._check_rate_limit(sender_id):
+                log.warning("Rate limited: %s", sender_id[:8])
+                await self.dispatcher.send_text(
+                    chat_id, "消息太频繁，请稍后再试。",
+                    reply_to=message_id,
+                )
+                return
+
             # Group: check @bot mention
             if chat_type == "group":
                 mentioned_bot = False
@@ -381,7 +391,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                             text += f"\n[图片] {path}"
                 # Prepend quoted message content if this is a reply
                 if msg.parent_id:
-                    quoted = self._fetch_quoted_text(msg.parent_id)
+                    quoted = await asyncio.to_thread(self._fetch_quoted_text, msg.parent_id)
                     if quoted:
                         # Truncate very long quotes (e.g. quoting bot's full reply)
                         if len(quoted) > 2000:
@@ -421,7 +431,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                          sender_name or sender_id[:8], sender_id[:8], chat_type, text[:100])
                 key = self._debounce_key(chat_type, chat_id, sender_id)
                 await self._enqueue(key, text, "", message_id, chat_id, chat_type, sender_id,
-                                    sender_name)
+                                    sender_name, debounce_seconds=0)
                 return
             elif msg_type not in ("image", "file"):
                 log.warning("Unhandled msg_type=%s, content: %s",
@@ -547,12 +557,12 @@ class FeishuBot(MediaMixin, SessionMixin):
         return self._pending[key]
 
     async def _enqueue(self, key, part, footer, message_id, chat_id, chat_type, sender_id,
-                       sender_name=""):
+                       sender_name="", debounce_seconds=DEBOUNCE_SECONDS):
         """Ensure batch exists and enqueue a part."""
         await self._ensure_batch(key, message_id, chat_id, chat_type, sender_id, sender_name)
-        await self._enqueue_part(key, part, footer)
+        await self._enqueue_part(key, part, footer, debounce_seconds=debounce_seconds)
 
-    async def _enqueue_part(self, key, part, footer=""):
+    async def _enqueue_part(self, key, part, footer="", debounce_seconds=DEBOUNCE_SECONDS):
         """Add part to existing batch and reset timer."""
         batch = self._pending.get(key)
         if not batch:
@@ -561,13 +571,22 @@ class FeishuBot(MediaMixin, SessionMixin):
         batch.parts.append(part)
         if footer:
             batch.footers.append(footer)
+        # Don't flush while media is still being processed
+        if batch.pending_media > 0:
+            return
         # Reset timer
         if batch.timer and not batch.timer.done():
             batch.timer.cancel()
-        batch.timer = asyncio.create_task(self._flush_after(key))
+        if debounce_seconds > 0:
+            batch.timer = asyncio.create_task(self._flush_after(key, debounce_seconds))
+        elif len(batch.parts) == 1:
+            # First text in batch: short window to catch near-simultaneous media
+            batch.timer = asyncio.create_task(self._flush_after(key, 1.0))
+        else:
+            batch.timer = asyncio.create_task(self._flush(key))
 
-    async def _flush_after(self, key):
-        await asyncio.sleep(DEBOUNCE_SECONDS)
+    async def _flush_after(self, key, seconds=DEBOUNCE_SECONDS):
+        await asyncio.sleep(seconds)
         await self._flush(key)
 
     async def _cancel_batch(self, key):
@@ -878,6 +897,12 @@ class FeishuBot(MediaMixin, SessionMixin):
                 excess = list(d.keys())[:len(d) - 100]
                 for k in excess:
                     d.pop(k, None)
+        # _rate_limits: remove entries with no recent activity
+        now = time.time()
+        cutoff = now - 120
+        for uid in list(self._rate_limits):
+            if not self._rate_limits[uid] or max(self._rate_limits[uid]) < cutoff:
+                del self._rate_limits[uid]
 
     def _is_duplicate(self, message_id: str) -> bool:
         now = time.time()
@@ -892,3 +917,16 @@ class FeishuBot(MediaMixin, SessionMixin):
 
     def _record_message(self, message_id: str):
         self._dedup[message_id] = time.time()
+
+    def _check_rate_limit(self, sender_id: str, max_per_min: int = 10) -> bool:
+        """Check per-user rate limit. Returns True if over limit."""
+        now = time.time()
+        window = self._rate_limits.setdefault(sender_id, [])
+        # Prune old entries outside 60s window
+        cutoff = now - 60
+        self._rate_limits[sender_id] = [t for t in window if t > cutoff]
+        window = self._rate_limits[sender_id]
+        if len(window) >= max_per_min:
+            return True
+        window.append(now)
+        return False

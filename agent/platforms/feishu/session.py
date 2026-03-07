@@ -417,7 +417,7 @@ class SessionMixin:
     # ═══ Reply Cache ═══
 
     def _cache_reply(self, message_id: str, text: str):
-        """Cache bot reply text and persist to disk."""
+        """Cache bot reply text, schedule async persist."""
         self._reply_cache[message_id] = text
         # Evict oldest entries if over capacity
         if len(self._reply_cache) > _REPLY_CACHE_MAX:
@@ -425,6 +425,16 @@ class SessionMixin:
             it = iter(self._reply_cache)
             for _ in range(excess):
                 self._reply_cache.pop(next(it), None)
+        # Schedule async persist (coalesce multiple writes)
+        if not getattr(self, '_reply_cache_dirty', False):
+            self._reply_cache_dirty = True
+            asyncio.get_event_loop().call_later(30, self._flush_reply_cache)
+
+    def _flush_reply_cache(self):
+        """Persist reply cache to disk if dirty."""
+        if not getattr(self, '_reply_cache_dirty', False):
+            return
+        self._reply_cache_dirty = False
         try:
             save_json_sync(self._reply_cache_path, self._reply_cache)
         except Exception as e:

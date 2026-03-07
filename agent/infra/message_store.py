@@ -282,9 +282,9 @@ class MessageStore:
 def content_hash(sender_id: str, text: str) -> str:
     """Hash for chat/command dedup: sender + normalized text."""
     normalized = text.strip().lower()
-    return hashlib.sha256(f"{sender_id}:{normalized}".encode()).hexdigest()[:16]
+    return hashlib.sha256(f"{sender_id}:{normalized}".encode()).hexdigest()[:32]
 
 
 def media_hash(sender_id: str, media_key: str) -> str:
     """Hash for image/file dedup: sender + media key."""
-    return hashlib.sha256(f"{sender_id}:{media_key}".encode()).hexdigest()[:16]
+    return hashlib.sha256(f"{sender_id}:{media_key}".encode()).hexdigest()[:32]

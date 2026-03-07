@@ -15,6 +15,17 @@ from agent.infra.models import LLMResult
 
 log = logging.getLogger("hub.gemini_cli")
 
+# Map short model names (used in config/Gemini API) to Gemini CLI model IDs
+_MODEL_MAP = {
+    "3-Flash": "gemini-3-flash-preview",
+    "3-flash": "gemini-3-flash-preview",
+    "3.1-Pro": "gemini-3.1-pro-preview",
+    "3.1-pro": "gemini-3.1-pro-preview",
+    "flash": "gemini-3-flash-preview",
+    "flash-lite": "gemini-3-flash-preview",
+    "pro": "gemini-3.1-pro-preview",
+}
+
 
 class GeminiCli:
     def __init__(self, config: dict):
@@ -48,7 +59,8 @@ class GeminiCli:
         timeout = timeout_seconds or self.default_timeout
         args = [self.path]
         if model:
-            args.extend(["--model", model])
+            resolved = _MODEL_MAP.get(model, model)
+            args.extend(["--model", resolved])
 
         # Gemini CLI has no separate system prompt channel; prepend to user prompt
         full_prompt = prompt

@@ -122,6 +122,14 @@ async def main():
     with open(pid_path, "w") as f:
         f.write(str(os.getpid()))
 
+    # Clean up stale temp files from previous runs (media.py crash remnants)
+    import glob as _glob
+    for stale in _glob.glob(os.path.expanduser("~/tmp/feishu_*")):
+        try:
+            os.unlink(stale)
+        except OSError:
+            pass
+
     # Initialize components
     llm_cfg = cfg.get("llm", {})
 
@@ -235,6 +243,14 @@ async def main():
                 default_domain=briefing_cfg.get("default_domain"),
             )
             register_plugin(briefing.descriptor(), bot=bot, scheduler=scheduler)
+
+            # Error scan handler
+            from agent.jobs.error_scan import scan_errors
+            _error_cfg = cfg.get("error_scan", {})
+            if _error_cfg.get("enabled", False):
+                async def _error_scan_handler(**kwargs):
+                    await scan_errors(router, notifier, _error_cfg)
+                scheduler.register_handler("error_scan", _error_scan_handler)
 
         await bot.start()
         bots.append(bot)

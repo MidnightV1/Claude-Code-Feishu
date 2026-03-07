@@ -253,6 +253,9 @@ class ClaudeCli:
         if setting_sources:
             args.extend(["--setting-sources", setting_sources])
 
+        # Enable partial messages for earlier tool activity detection
+        args.append("--include-partial-messages")
+
         # Prevent "nested session" error: strip all Claude Code session markers
         env = {k: v for k, v in os.environ.items() if k not in _CC_ENV_STRIP}
         if env_override:
@@ -336,6 +339,20 @@ class ClaudeCli:
                                     await on_activity(label)
                                 except Exception:
                                     pass  # never let callback errors kill the stream
+
+                    elif evt_type == "stream_event":
+                        # Partial message events: detect tool_use start early
+                        data = obj.get("event", {})
+                        if data.get("type") == "content_block_start":
+                            cb = data.get("content_block", {})
+                            if cb.get("type") == "tool_use" and on_activity:
+                                name = cb.get("name", "")
+                                # Early label without input (input streams later)
+                                label = _make_tool_label(name, {})
+                                try:
+                                    await on_activity(label)
+                                except Exception:
+                                    pass
 
                     elif evt_type == "result":
                         text = obj.get("result", "")

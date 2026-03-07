@@ -150,6 +150,10 @@ class FeishuAPI:
              params: dict | None = None) -> dict:
         return self._request("post", path, body=body, params=params)
 
+    def put(self, path: str, body: dict | None = None,
+            params: dict | None = None) -> dict:
+        return self._request("put", path, body=body, params=params)
+
     def patch(self, path: str, body: dict | None = None,
               params: dict | None = None) -> dict:
         return self._request("patch", path, body=body, params=params)

@@ -118,7 +118,55 @@ _FIELD_TYPES = {
 }
 
 
+# ── Create helpers ───────────────────────────────────────
+
+def _create_app(api: FeishuAPI, name: str, folder_token: str = "") -> dict:
+    """Create a new Bitable app."""
+    body = {"name": name}
+    if folder_token:
+        body["folder_token"] = folder_token
+    resp = api.post("/open-apis/bitable/v1/apps", body)
+    if resp.get("code") != 0:
+        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+        sys.exit(1)
+    return resp.get("data", {}).get("app", {})
+
+
+def _create_table(api: FeishuAPI, app_token: str, name: str,
+                  fields: list[dict]) -> dict:
+    """Create a table in a Bitable app with specified fields."""
+    body = {
+        "table": {
+            "name": name,
+            "default_view_name": "默认视图",
+            "fields": fields,
+        }
+    }
+    resp = api.post(f"/open-apis/bitable/v1/apps/{app_token}/tables", body)
+    if resp.get("code") != 0:
+        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+        sys.exit(1)
+    return resp.get("data", {})
+
+
 # ── Commands ─────────────────────────────────────────────
+
+def cmd_app_create(args, api):
+    app = _create_app(api, args.name, getattr(args, "folder_token", "") or "")
+    token = app.get("app_token", "?")
+    url = app.get("url", "")
+    print(f"app_token: {token}")
+    if url:
+        print(f"url: {url}")
+
+
+def cmd_table_create(args, api):
+    app_token = _extract_app_token(args.app_token)
+    fields = json.loads(args.fields)
+    data = _create_table(api, app_token, args.name, fields)
+    table_id = data.get("table_id", "?")
+    print(f"table_id: {table_id}")
+
 
 def cmd_table_list(args, api):
     app_token = _extract_app_token(args.app_token)
@@ -242,9 +290,22 @@ def main():
     parser = argparse.ArgumentParser(description="Feishu Bitable CLI")
     sub = parser.add_subparsers(dest="group")
 
+    # app commands
+    app = sub.add_parser("app")
+    app_sub = app.add_subparsers(dest="action")
+
+    ac = app_sub.add_parser("create")
+    ac.add_argument("name", help="Bitable app name")
+    ac.add_argument("--folder-token", default="", help="Optional folder token")
+
     # table commands
     tbl = sub.add_parser("table")
     tbl_sub = tbl.add_subparsers(dest="action")
+
+    tc = tbl_sub.add_parser("create")
+    tc.add_argument("app_token")
+    tc.add_argument("name", help="Table name")
+    tc.add_argument("fields", help="JSON array of field definitions")
 
     tl = tbl_sub.add_parser("list")
     tl.add_argument("app_token", help="Bitable app token or URL")
@@ -292,6 +353,8 @@ def main():
     api = FeishuAPI.from_config()
 
     dispatch = {
+        ("app", "create"): cmd_app_create,
+        ("table", "create"): cmd_table_create,
         ("table", "list"): cmd_table_list,
         ("table", "fields"): cmd_table_fields,
         ("record", "list"): cmd_record_list,

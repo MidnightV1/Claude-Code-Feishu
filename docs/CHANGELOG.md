@@ -6,6 +6,30 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.11.0] — 2026-03-08
+
+### Added
+- **Feishu Sheet skill** — Read/write Feishu Spreadsheets (电子表格): metadata, worksheet listing, cell range I/O. Supports wiki-embedded sheets (auto-resolves `obj_token` via wiki API).
+- **SQLite session persistence** — Replace JSON read-modify-write with WAL-mode SQLite. Auto-migrates from `sessions.json` on first run.
+- **Stream event capture** — Claude CLI `--include-partial-messages` flag enables early `content_block_start` detection for tool use visibility.
+- **Daily error scanner** — Parses hub log, groups errors by type, Sonnet analysis, writes to Feishu Bitable, alerts on ERROR count. Cron at noon.
+- **Per-user rate limiting** — 10 requests/minute sliding window per user.
+- **FeishuAPI `put()` method** — For Sheets v2 write API.
+
+### Changed
+- **Gemini 3 series default** — Models updated to `gemini-3-flash-preview` and `gemini-3.1-pro-preview`. Legacy aliases (`flash`, `pro`, `flash-lite`) map to Gemini 3.
+- **Debounce merge improvement** — Text messages get 1s window (was 0s instant flush) to catch near-simultaneous media; pending media blocks flush until processing completes.
+- **Reply cache coalesced writes** — Dirty flag + `call_later(30s)` instead of write-on-every-cache.
+- **Startup temp cleanup** — Stale `~/tmp/feishu_*` files removed on boot.
+- **Content hash length** — 16 → 32 hex chars for lower collision probability.
+- **Async quote reply** — `asyncio.to_thread` wraps sync HTTP call.
+- **Bitable skill** — Added `app create` and `table create` commands.
+
+### Fixed
+- Smart debounce for text+media merge: prevents text-first flush splitting paired messages.
+
+---
+
 ## [0.10.0] — 2026-03-07
 
 ### Added

@@ -9,6 +9,7 @@ Context strategy for Claude CLI sessions:
 """
 
 import asyncio
+import os
 import time
 import logging
 from typing import Awaitable, Callable
@@ -16,7 +17,8 @@ from agent.infra.models import LLMConfig, LLMResult
 from agent.llm.claude import ClaudeCli
 from agent.llm.gemini_cli import GeminiCli
 from agent.llm.gemini_api import GeminiAPI
-from agent.infra.store import load_json, save_json, update_json_key
+from agent.infra.store import load_json_sync
+from agent.infra.session_store import SessionStore
 
 log = logging.getLogger("hub.router")
 
@@ -77,19 +79,33 @@ class LLMRouter:
         self.gemini_api = gemini_api
         self.sessions_path = sessions_path
         self._sessions: dict = {}   # session_key -> {session_id, ...}
+        # SQLite store (initialized in load_sessions)
+        db_path = sessions_path.replace(".json", ".db")
+        self._store = SessionStore(db_path)
 
     async def load_sessions(self):
-        self._sessions = await load_json(self.sessions_path, {})
+        self._sessions = self._store.load_all()
+        # One-time migration: import from sessions.json if SQLite is empty
+        if not self._sessions and os.path.exists(self.sessions_path):
+            old = load_json_sync(self.sessions_path, {})
+            if old:
+                log.info("Migrating %d sessions from JSON to SQLite", len(old))
+                self._sessions = old
+                self._store.save_all(old)
+                os.rename(self.sessions_path, self.sessions_path + ".migrated")
+                log.info("Migration complete, JSON renamed to .migrated")
 
     async def save_sessions(self):
-        """Full dict save — only used for bulk operations (e.g. initial load rewrite)."""
-        await save_json(self.sessions_path, self._sessions)
+        """Full dict save — only used for bulk operations (e.g. shutdown)."""
+        self._store.save_all(self._sessions)
 
     async def save_session(self, session_key: str):
-        """Per-key atomic save — safe under concurrent writes from different keys."""
+        """Per-key atomic save to SQLite."""
         entry = self._sessions.get(session_key)
         if entry is not None:
-            await update_json_key(self.sessions_path, session_key, entry)
+            await asyncio.to_thread(self._store.save, session_key, entry)
+        else:
+            await asyncio.to_thread(self._store.delete, session_key)
 
     def get_session_id(self, session_key: str) -> str | None:
         """Get session_id for resume. No TTL — always try resume, let CLI handle failures."""

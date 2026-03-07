@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Gemini API wrapper via google-genai SDK.
 
-Calling pattern derived from the original project codebase.
+Gemini API client for google-genai SDK.
 """
 
 import asyncio
@@ -15,18 +15,12 @@ log = logging.getLogger("hub.gemini_api")
 MODELS = {
     "3.1-Pro":        "gemini-3.1-pro-preview",
     "3-Flash":        "gemini-3-flash-preview",
-    "2.5-Flash":      "gemini-2.5-flash",
-    "2.5-Pro":        "gemini-2.5-pro",
-    "2.5-Flash-Lite": "gemini-2.5-flash-lite",
 }
 
 # Pricing: USD per million tokens
 PRICING = {
     "3.1-Pro":        {"input": 2.0,   "output": 12},
     "3-Flash":        {"input": 0.5,   "output": 3},
-    "2.5-Flash":      {"input": 0.3,   "output": 2.5},
-    "2.5-Pro":        {"input": 1.25,  "output": 10},
-    "2.5-Flash-Lite": {"input": 0.1,   "output": 0.4},
 }
 
 # Thinking level support per model
@@ -55,7 +49,7 @@ class GeminiAPI:
         self,
         prompt: str,
         system_prompt: str | None = None,
-        model: str = "2.5-Flash",
+        model: str = "3-Flash",
         thinking: str | None = None,
         temperature: float | None = None,
         timeout_seconds: int | None = None,
