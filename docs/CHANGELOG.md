@@ -6,6 +6,14 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.8.3] — 2026-03-07
+
+### Fixed
+- **doc_ctl _resolve_content** — Path-like strings without newlines were silently written as document content when temp file was deleted. Now errors on missing file paths instead of writing path string.
+- **text_to_blocks relative links** — Relative path links (e.g. `README.zh-CN.md`, `LICENSE`) caused Feishu API 400 schema mismatch. Non-http(s) URLs now render as plain text instead of link elements.
+
+---
+
 ## [0.8.2] — 2026-03-07
 
 ### Fixed

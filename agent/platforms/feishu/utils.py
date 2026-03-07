@@ -51,14 +51,19 @@ def _parse_inline(text: str) -> list[dict]:
                 }
             })
         elif m.group(3) is not None:  # link
-            elements.append({
-                "text_run": {
-                    "content": m.group(3),
-                    "text_element_style": {
-                        "link": {"url": m.group(4)},
-                    },
-                }
-            })
+            url = m.group(4)
+            if url.startswith("http://") or url.startswith("https://"):
+                elements.append({
+                    "text_run": {
+                        "content": m.group(3),
+                        "text_element_style": {
+                            "link": {"url": url},
+                        },
+                    }
+                })
+            else:
+                # Relative path — Feishu API rejects non-http URLs
+                elements.append({"text_run": {"content": m.group(3)}})
         pos = m.end()
 
     # Remaining text after last match
