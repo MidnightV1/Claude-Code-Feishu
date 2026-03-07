@@ -27,8 +27,9 @@ from agent.platforms.feishu.session import SessionMixin, SKILL_ROUTES
 
 log = logging.getLogger("hub.feishu_bot")
 
-# Project root: agent/platforms/feishu/bot.py → 3 levels up
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from pathlib import Path as _Path
+# Project root: agent/platforms/feishu/bot.py → project root
+_PROJECT_ROOT = str(_Path(__file__).resolve().parent.parent.parent.parent)
 
 DEDUP_TTL = 86400       # 24h
 DEDUP_MAX_SIZE = 1000

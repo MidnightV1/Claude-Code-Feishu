@@ -5,6 +5,7 @@ Extracted from FeishuBot to reduce monolith size.
 Used as a mixin: class FeishuBot(MediaMixin, SessionMixin, ...)
 """
 
+import random
 import time
 import asyncio
 import logging
@@ -30,6 +31,40 @@ SKILL_ROUTES = {
         "厘清本质问题，给出有洞察的结论和可执行建议。"
     )),
 }
+
+
+# ── Thinking card status word pools ──
+# Rotated randomly during idle phases of LLM processing.
+
+_THINKING_POOL = [
+    "腌制中，让想法入味…", "慢炖，用文火…", "酝酿中…", "思考中…",
+    "神游中…", "脑子在转…", "在线发呆（其实在想）…", "CPU 过热中…",
+    "正在顿悟…", "酝酿思路…", "沉淀中…", "进入意识流…",
+    "脑细胞正在开会…", "正在加载人生经验…", "让我消化一下…",
+]
+
+# After 60s: relaxed but implies working hard
+_LONG_THINKING = [
+    "慢工出细活，不要慌…", "卧槽，大活儿，还得想想…",
+    "差点顿悟了，让我冷静下…", "GPU已经起飞…",
+    "喝口水，别急，你也喝点，干杯", "Moss，这道题怎么解呀...",
+    "正在求助祖师爷...", "神经网络迸发出了灵感...",
+    "正在唤醒专家网络...", "正在烧香...", "正在掐指一算...",
+    "嘿嘿嘿...", "什么情况...", "？？？", "hummmm...",
+    "哦...", "嗯？", "尝试甩锅给CPU...", "正在蒸馏deepseek...",
+    "正在和自己对线...", "Warning: 思路溢出...", "脑子：已读不回",
+    "正在请求上级支援...", "快了快了（经典谎言）",
+    "等等，好像悟了...又没有", "别催，灵感不接受加班",
+    "正在向赛博佛祖祈祷...", "道生一，一生二，二生 bug...",
+]
+
+_ACTIVITY_MIN_INTERVAL = 5.0  # seconds between tool activity card updates
+
+# Transient error markers — keep session alive for retry
+_TRANSIENT_MARKERS = ("Timeout", "ld.so", "dl-open.c")
+
+_REPLY_CACHE_MAX = 500   # max cached bot replies for quote-reply support
+_MSG_KEY_MAP_MAX = 200   # max message→key mappings for recall support
 
 
 class SessionMixin:
@@ -144,57 +179,7 @@ class SessionMixin:
 
             # ── Progress: tool activity + todo progress on thinking card ──
             _last_activity = [time.monotonic()]  # tracks last real tool event
-            _MIN_INTERVAL = 5.0
             _todos: list[dict] = []  # latest TodoWrite snapshot
-
-            _THINKING_POOL = [
-                "腌制中，让想法入味…",
-                "慢炖，用文火…",
-                "酝酿中…",
-                "思考中…",
-                "神游中…",
-                "脑子在转…",
-                "在线发呆（其实在想）…",
-                "CPU 过热中…",
-                "正在顿悟…",
-                "酝酿思路…",
-                "沉淀中…",
-                "进入意识流…",
-                "脑细胞正在开会…",
-                "正在加载人生经验…",
-                "让我消化一下…",
-            ]
-            # After 60s: relaxed but implies working hard. Rotate on each pulse.
-            _LONG_THINKING = [
-                "慢工出细活，不要慌…",
-                "卧槽，大活儿，还得想想…",
-                "差点顿悟了，让我冷静下…",
-                "GPU已经起飞…",
-                "喝口水，别急，你也喝点，干杯",
-                "Moss，这道题怎么解呀...",
-                "正在求助祖师爷...",
-                "神经网络迸发出了灵感...",
-                "正在唤醒专家网络...",
-                "正在烧香...",
-                "正在掐指一算...",
-                "嘿嘿嘿...",
-                "什么情况...",
-                "？？？",
-                "hummmm...",
-                "哦...",
-                "嗯？",
-                "尝试甩锅给CPU...",
-                "正在蒸馏deepseek...",
-                "正在和自己对线...",
-                "Warning: 思路溢出...",
-                "脑子：已读不回",
-                "正在请求上级支援...",
-                "快了快了（经典谎言）",
-                "等等，好像悟了...又没有",
-                "别催，灵感不接受加班",
-                "正在向赛博佛祖祈祷...",
-                "道生一，一生二，二生 bug...",
-            ]
 
             _last_tool_label = [""]  # persists latest tool activity across renders
 
@@ -214,7 +199,6 @@ class SessionMixin:
                 return "\n".join(lines)
 
             def _idle_label(elapsed: float) -> str:
-                import random
                 pool = _LONG_THINKING if elapsed >= 60 else _THINKING_POOL
                 label = random.choice(pool)
                 if elapsed >= 30:
@@ -232,7 +216,7 @@ class SessionMixin:
 
             async def _on_activity(label: str):
                 now = time.monotonic()
-                if now - _last_activity[0] < _MIN_INTERVAL:
+                if now - _last_activity[0] < _ACTIVITY_MIN_INTERVAL:
                     return
                 _last_activity[0] = now
                 if thinking_msg_id:
@@ -294,7 +278,6 @@ class SessionMixin:
             if result.is_error:
                 log.warning("LLM error (session=%s): %s", session_key, result.text[:200])
                 # Transient errors: keep session — next --resume may succeed
-                _TRANSIENT_MARKERS = ("Timeout", "ld.so", "dl-open.c")
                 is_transient = (
                     result.text == ""
                     or any(m in result.text for m in _TRANSIENT_MARKERS)
@@ -375,8 +358,8 @@ class SessionMixin:
             self._thinking_cards.pop(key, None)
             self._running_tasks.pop(key, None)
             # Keep _msg_to_key entries for recall-after-completion support.
-            if len(self._msg_to_key) > 200:
-                excess = len(self._msg_to_key) - 200
+            if len(self._msg_to_key) > _MSG_KEY_MAP_MAX:
+                excess = len(self._msg_to_key) - _MSG_KEY_MAP_MAX
                 it = iter(self._msg_to_key)
                 for _ in range(excess):
                     self._msg_to_key.pop(next(it), None)
@@ -413,9 +396,8 @@ class SessionMixin:
         """Cache bot reply text and persist to disk."""
         self._reply_cache[message_id] = text
         # Evict oldest entries if over capacity
-        max_size = 500
-        if len(self._reply_cache) > max_size:
-            excess = len(self._reply_cache) - max_size
+        if len(self._reply_cache) > _REPLY_CACHE_MAX:
+            excess = len(self._reply_cache) - _REPLY_CACHE_MAX
             it = iter(self._reply_cache)
             for _ in range(excess):
                 self._reply_cache.pop(next(it), None)

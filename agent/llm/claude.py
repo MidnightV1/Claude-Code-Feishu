@@ -68,6 +68,9 @@ _TOOL_ICONS: dict[str, str] = {
 }
 _FALLBACK_ICON = "🔧"
 
+# Env vars to strip when spawning nested CLI (prevents "nested session" error)
+_CC_ENV_STRIP = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"}
+
 
 def _pick_verb(category: str) -> str:
     """Pick a random personality verb for a tool category."""
@@ -248,8 +251,7 @@ class ClaudeCli:
             args.extend(["--setting-sources", setting_sources])
 
         # Prevent "nested session" error: strip all Claude Code session markers
-        _strip = {"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"}
-        env = {k: v for k, v in os.environ.items() if k not in _strip}
+        env = {k: v for k, v in os.environ.items() if k not in _CC_ENV_STRIP}
 
         start = time.monotonic()
         try:
