@@ -13,17 +13,6 @@ A lightweight Python service that connects Claude Code CLI to Feishu (Lark) via 
 
 **Not a wrapper.** The bot runs an actual Claude Code CLI session per user, with persistent conversation context, tool use, and all Claude Code capabilities.
 
-## Why this project
-
-There are many Feishu/Lark AI bots out there — most wrap an LLM API for basic chat. This project takes a different approach:
-
-- **Claude Code CLI native** — Not an API wrapper. Each user gets a real `claude -p` subprocess with full tool access: file I/O, shell, code editing, web search, sub-agents. The bot is Claude Code, not a chatbot that calls Claude.
-- **Deep Feishu integration** — 7 purpose-built Skills (calendar, documents, tasks, wiki, daily briefings, heartbeat monitoring, document co-pilot). Not just message forwarding — Claude can create calendar events, write Feishu docs, manage tasks, and browse your wiki directly.
-- **Self-evolving daily briefings** — Automated news pipeline with keyword evolution: after each run, the LLM identifies coverage gaps and improves the search keywords. The briefing gets smarter over time without manual tuning.
-- **Multi-LLM routing with fallback chains** — Claude CLI for chat, Gemini CLI for document analysis, Gemini API for multimodal. Each capability has a degradation path (e.g. PDF: Gemini CLI → Gemini API → Claude Read).
-- **Session continuity** — `--resume` preserves full CLI context; on failure, Sonnet compresses history into structured summaries for seamless recovery.
-- **Self-hosted on minimal hardware** — Designed for NAS/low-power servers. Single Python process, no Docker/Redis/database required.
-
 ## Architecture
 
 ```
