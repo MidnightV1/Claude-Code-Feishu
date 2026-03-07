@@ -64,6 +64,11 @@ _file_locks: dict[str, asyncio.Lock] = {}
 def _get_file_lock(path: str) -> asyncio.Lock:
     if path not in _file_locks:
         _file_locks[path] = asyncio.Lock()
+    # Sweep unlocked entries when dict grows large
+    if len(_file_locks) > 50:
+        for k in list(_file_locks):
+            if not _file_locks[k].locked():
+                del _file_locks[k]
     return _file_locks[path]
 
 

@@ -6,6 +6,7 @@ Credentials resolve from env vars first, then config.yaml.
 
 import json
 import os
+import threading
 import time
 import logging
 from pathlib import Path
@@ -42,6 +43,7 @@ class FeishuAPI:
         self.domain = domain.rstrip("/")
         self._token: str = ""
         self._token_expires: float = 0
+        self._token_lock = threading.Lock()
 
     @classmethod
     def from_config(cls, config_path: str | None = None,
@@ -59,16 +61,20 @@ class FeishuAPI:
     def get_token(self) -> str:
         if self._token and time.time() < self._token_expires:
             return self._token
-        r = requests.post(
-            f"{self.domain}/open-apis/auth/v3/tenant_access_token/internal",
-            json={"app_id": self.app_id, "app_secret": self.app_secret},
-            timeout=10,
-        )
-        r.raise_for_status()
-        data = r.json()
-        self._token = data["tenant_access_token"]
-        self._token_expires = time.time() + data.get("expire", 7200) - 60
-        return self._token
+        with self._token_lock:
+            # Double-check after acquiring lock (another thread may have refreshed)
+            if self._token and time.time() < self._token_expires:
+                return self._token
+            r = requests.post(
+                f"{self.domain}/open-apis/auth/v3/tenant_access_token/internal",
+                json={"app_id": self.app_id, "app_secret": self.app_secret},
+                timeout=10,
+            )
+            r.raise_for_status()
+            data = r.json()
+            self._token = data["tenant_access_token"]
+            self._token_expires = time.time() + data.get("expire", 7200) - 60
+            return self._token
 
     def _headers(self) -> dict:
         return {

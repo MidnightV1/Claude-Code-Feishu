@@ -27,6 +27,12 @@ class FileStore:
         with self._locks_guard:
             if session_key not in self._meta_locks:
                 self._meta_locks[session_key] = threading.Lock()
+            # Sweep unlocked entries when dict grows large
+            if len(self._meta_locks) > 50:
+                for k in list(self._meta_locks):
+                    lk = self._meta_locks.get(k)
+                    if lk and not lk.locked() and k != session_key:
+                        del self._meta_locks[k]
             return self._meta_locks[session_key]
 
     def _session_dir(self, session_key: str) -> str:

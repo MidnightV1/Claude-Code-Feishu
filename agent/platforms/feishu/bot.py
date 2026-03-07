@@ -705,15 +705,18 @@ class FeishuBot(MediaMixin, SessionMixin):
     async def _cmd_usage(self) -> str:
         """Check Claude Max quota via API headers."""
         try:
-            import subprocess as _sp
-            result = _sp.run(
-                ["python3", "scripts/check_quota.py", "--feishu"],
-                capture_output=True, text=True, timeout=20,
+            proc = await asyncio.create_subprocess_exec(
+                "python3", "scripts/check_quota.py", "--feishu",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=_PROJECT_ROOT,
             )
-            if result.returncode != 0:
-                return f"Quota check failed: {result.stderr.strip()}"
-            return result.stdout.strip()
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=20)
+            if proc.returncode != 0:
+                return f"Quota check failed: {stderr.decode().strip()}"
+            return stdout.decode().strip()
+        except asyncio.TimeoutError:
+            return "Quota check timed out"
         except Exception as e:
             return f"Quota check error: {e}"
 
@@ -796,6 +799,21 @@ class FeishuBot(MediaMixin, SessionMixin):
 
     # ═══ Dedup ═══
 
+    def _sweep_dicts(self):
+        """Periodic cleanup of unbounded dicts to prevent memory growth."""
+        # _session_locks: remove locks not currently held
+        for key in list(self._session_locks):
+            lock = self._session_locks.get(key)
+            if lock and not lock.locked():
+                del self._session_locks[key]
+        # _thinking_cards / _queued_cards: should be transient, but sweep stale
+        # (these are managed by _process_batch, so just cap size)
+        for d in (self._thinking_cards, self._queued_cards, self._running_tasks):
+            if len(d) > 100:
+                excess = list(d.keys())[:len(d) - 100]
+                for k in excess:
+                    d.pop(k, None)
+
     def _is_duplicate(self, message_id: str) -> bool:
         now = time.time()
         if message_id in self._dedup:
@@ -803,6 +821,8 @@ class FeishuBot(MediaMixin, SessionMixin):
         if len(self._dedup) > DEDUP_MAX_SIZE:
             cutoff = now - DEDUP_TTL
             self._dedup = {k: v for k, v in self._dedup.items() if v > cutoff}
+            # Piggyback: sweep other dicts
+            self._sweep_dicts()
         return False
 
     def _record_message(self, message_id: str):

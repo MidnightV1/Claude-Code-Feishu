@@ -41,7 +41,9 @@ class GeminiAPI:
         self.api_key = config.get("api_key", "")
         self.default_timeout = config.get("timeout_seconds", 120)
         self.default_temperature = config.get("temperature", 1.0)
+        self.file_ttl_days = config.get("file_ttl_days", 30)
         self._client = None
+        self._uploaded_files: list[tuple[str, float]] = []  # (file_name, upload_time)
 
     def _get_client(self):
         if self._client is None:
@@ -119,6 +121,7 @@ class GeminiAPI:
             for file_path in files:
                 uploaded = client.files.upload(file=file_path)
                 parts.append(uploaded)
+                self._uploaded_files.append((uploaded.name, time.monotonic()))
 
         # Image handling (inline bytes)
         if image_src:
@@ -163,6 +166,9 @@ class GeminiAPI:
         pricing = PRICING.get(model, {"input": 0, "output": 0})
         cost = (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
 
+        # Opportunistic cleanup of expired uploaded files
+        self._cleanup_expired_files()
+
         return LLMResult(
             text=text,
             duration_ms=duration_ms,
@@ -170,3 +176,22 @@ class GeminiAPI:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
+
+    def _cleanup_expired_files(self):
+        """Delete uploaded files older than file_ttl_days."""
+        if not self._uploaded_files:
+            return
+        ttl_seconds = self.file_ttl_days * 86400
+        now = time.monotonic()
+        still_valid = []
+        client = self._get_client()
+        for name, upload_time in self._uploaded_files:
+            if now - upload_time > ttl_seconds:
+                try:
+                    client.files.delete(name=name)
+                    log.info("Deleted expired Gemini file: %s", name)
+                except Exception as e:
+                    log.debug("Failed to delete Gemini file %s: %s", name, e)
+            else:
+                still_valid.append((name, upload_time))
+        self._uploaded_files = still_valid

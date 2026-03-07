@@ -221,9 +221,9 @@ class LLMRouter:
             if summary:
                 parts.append(f"### 早期对话摘要\n{summary}")
             else:
-                # Compression failed — use raw for everything
-                parts.append(f"### 对话历史\n{self._format_raw_history(history)}")
-                return "\n\n".join(parts)
+                # Compression failed — fall back to raw for older portion
+                parts.append(f"### 早期对话\n{self._format_raw_history(older)}")
+            # Always include recent history (was missing on compression failure)
             parts.append(f"### 近期对话\n{self._format_raw_history(recent)}")
         else:
             parts.append(f"### 对话历史\n{self._format_raw_history(history)}")

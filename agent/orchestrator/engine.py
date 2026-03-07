@@ -12,6 +12,7 @@ Both paths converge at confirm() → execute() → validate().
 import json
 import logging
 import re
+import time
 import uuid
 from typing import Callable, Awaitable
 
@@ -36,11 +37,15 @@ _PLAN_TAG_RE = re.compile(
 )
 
 
+_PENDING_TTL = 600  # seconds — auto-expire unconfirmed plans after 10 min
+
+
 class Orchestrator:
     def __init__(self, claude_cli: ClaudeCli, pool: WorkerPool):
         self._claude = claude_cli
         self._pool = pool
         self._pending: dict[str, TaskPlan] = {}  # session_key → plan awaiting confirmation
+        self._pending_ts: dict[str, float] = {}  # session_key → set_pending timestamp
 
     # ═══ Plan detection from Opus response ═══
 
@@ -151,8 +156,25 @@ class Orchestrator:
         plan.status = "awaiting_confirm"
         plan.session_key = session_key
         self._pending[session_key] = plan
+        self._pending_ts[session_key] = time.time()
+        # Sweep expired plans
+        self._sweep_expired()
+
+    def _sweep_expired(self):
+        now = time.time()
+        for key in list(self._pending_ts):
+            if now - self._pending_ts[key] > _PENDING_TTL:
+                self._pending.pop(key, None)
+                self._pending_ts.pop(key, None)
+                log.info("Expired unconfirmed plan for %s", key)
 
     def has_pending(self, session_key: str) -> bool:
+        # Check TTL inline
+        ts = self._pending_ts.get(session_key)
+        if ts and time.time() - ts > _PENDING_TTL:
+            self._pending.pop(session_key, None)
+            self._pending_ts.pop(session_key, None)
+            return False
         return session_key in self._pending
 
     def get_pending(self, session_key: str) -> TaskPlan | None:
@@ -160,12 +182,14 @@ class Orchestrator:
 
     def cancel(self, session_key: str):
         plan = self._pending.pop(session_key, None)
+        self._pending_ts.pop(session_key, None)
         if plan:
             plan.status = "cancelled"
             log.info("Plan %s cancelled", plan.plan_id)
 
     def confirm(self, session_key: str) -> TaskPlan | None:
         plan = self._pending.pop(session_key, None)
+        self._pending_ts.pop(session_key, None)
         if plan:
             plan.status = "running"
             log.info("Plan %s confirmed, dispatching", plan.plan_id)

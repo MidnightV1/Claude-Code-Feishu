@@ -158,9 +158,10 @@ class CronScheduler:
 
     def _on_timer_fire(self):
         if self._running:
-            # Re-check later (watchdog)
-            loop = asyncio.get_running_loop()
-            self._timer = loop.call_later(MAX_TIMER_DELAY, self._on_timer_fire)
+            # Already executing — _arm_timer() in finally block will re-arm
+            return
+        # Guard against task still pending (not yet started)
+        if self._task and not self._task.done():
             return
         self._task = asyncio.create_task(self._on_timer())
 

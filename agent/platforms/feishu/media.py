@@ -66,7 +66,15 @@ class MediaMixin:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await proc.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+            except (asyncio.TimeoutError, Exception):
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+                raise
             if proc.returncode != 0:
                 log.error("Image compress subprocess failed: %s",
                           stderr.decode(errors="replace")[:300])

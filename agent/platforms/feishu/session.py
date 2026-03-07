@@ -294,10 +294,10 @@ class SessionMixin:
             if result.is_error:
                 log.warning("LLM error (session=%s): %s", session_key, result.text[:200])
                 # Transient errors: keep session — next --resume may succeed
+                _TRANSIENT_MARKERS = ("Timeout", "ld.so", "dl-open.c")
                 is_transient = (
-                    "Timeout" in result.text
-                    or "ld.so" in result.text
-                    or result.text == ""
+                    result.text == ""
+                    or any(m in result.text for m in _TRANSIENT_MARKERS)
                 )
                 if not is_transient:
                     self.router.clear_session(session_key)
@@ -306,7 +306,7 @@ class SessionMixin:
                 err_hint = ""
                 if "Timeout" in result.text:
                     err_hint = "（响应超时）"
-                elif "ld.so" in result.text:
+                elif any(m in result.text for m in ("ld.so", "dl-open.c")):
                     err_hint = "（环境异常）"
 
                 if is_transient:

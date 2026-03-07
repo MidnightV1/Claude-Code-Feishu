@@ -99,6 +99,8 @@ class Dispatcher:
         Returns:
             The result of fn() on success, or None after all retries exhausted.
         """
+        # Non-retryable exceptions: programming errors, not transient failures
+        _NO_RETRY = (TypeError, ValueError, AttributeError, KeyError, RuntimeError)
         for attempt in range(MAX_RETRIES):
             try:
                 result = await fn()
@@ -108,6 +110,9 @@ class Dispatcher:
                     log_failure(result)
                 else:
                     log.warning("%s failed (attempt %d/%d)", operation, attempt + 1, MAX_RETRIES)
+            except _NO_RETRY as e:
+                log.error("%s non-retryable error: %s", operation, e)
+                return None
             except Exception as e:
                 log.error("%s error (attempt %d/%d): %s", operation, attempt + 1, MAX_RETRIES, e)
             if attempt < MAX_RETRIES - 1:

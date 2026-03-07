@@ -153,15 +153,29 @@ class ClaudeCli:
         )
 
     @staticmethod
-    def _kill_tree(proc):
-        """Kill process and all children (process group). Prevents orphan subprocesses."""
+    async def _kill_tree(proc):
+        """Kill process and all children (process group). Prevents orphan subprocesses.
+
+        SIGTERM first, wait up to 2s for graceful exit, then SIGKILL if still alive.
+        """
         try:
             os.killpg(proc.pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
+            return
+        # Wait briefly for graceful exit
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+            return  # exited cleanly
+        except (asyncio.TimeoutError, ProcessLookupError):
             pass
+        # Force kill
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1.0)
+        except (asyncio.TimeoutError, ProcessLookupError):
             pass
 
     async def run(
@@ -332,7 +346,8 @@ class ClaudeCli:
         except asyncio.TimeoutError:
             duration = int((time.monotonic() - start) * 1000)
             elapsed = int(duration / 1000)
-            self._kill_tree(proc)
+            await self._kill_tree(proc)
+            stderr_task.cancel()
             if elapsed >= self.max_timeout - 5:
                 reason = f"hard cap {self.max_timeout}s"
             else:
@@ -344,7 +359,8 @@ class ClaudeCli:
             )
         except asyncio.CancelledError:
             duration = int((time.monotonic() - start) * 1000)
-            self._kill_tree(proc)
+            await self._kill_tree(proc)
+            stderr_task.cancel()
             log.info("Claude CLI cancelled after %dms", duration)
             return LLMResult(
                 text="[Cancelled]",
