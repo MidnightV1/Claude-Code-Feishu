@@ -86,11 +86,7 @@ class SessionMixin:
         self._running_tasks[key] = asyncio.current_task()
 
         combined = "\n\n".join(batch.parts)
-        session_key = (
-            f"user:{batch.sender_id}"
-            if batch.chat_type == "p2p"
-            else f"chat:{batch.chat_id}"
-        )
+        session_key = self._session_key(batch.chat_type, batch.chat_id, batch.sender_id)
 
         # ── Orchestrator confirmation intercept ──
         if hasattr(self, 'orchestrator') and self.orchestrator and self.orchestrator.has_pending(session_key):
@@ -136,6 +132,8 @@ class SessionMixin:
             if llm_config.provider == "claude-cli":
                 from agent.orchestrator.prompts import ORCHESTRATION_PROMPT
                 parts = [FEISHU_SYSTEM_PROMPT]
+                if getattr(self, '_extra_system_prompt', ''):
+                    parts.append(self._extra_system_prompt)
                 if llm_config.system_prompt:
                     parts.append(llm_config.system_prompt)
                 # Orchestration capability (only for Opus main sessions)
@@ -387,6 +385,7 @@ class SessionMixin:
         return LLMConfig(
             provider=self.default_llm.provider,
             model=self.default_llm.model,
+            env=self.default_llm.env,
             # timeout_seconds=None → idle-based timeout for chat
         ), prompt
 

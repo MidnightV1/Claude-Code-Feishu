@@ -18,6 +18,7 @@ class LLMConfig:
     temperature: float = 1.0           # gemini default
     thinking: Optional[str] = None     # gemini thinking level: minimal/low/medium/high
     effort: Optional[str] = None        # claude-cli effort: low/medium/high (None = CLI decides)
+    env: dict = field(default_factory=dict)  # extra env vars for subprocess (e.g. HOME override)
 
 
 @dataclass

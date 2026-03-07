@@ -192,6 +192,7 @@ class ClaudeCli:
         on_activity: Callable[[str], Awaitable[None]] | None = None,
         on_todo: Callable[[list[dict]], Awaitable[None]] | None = None,
         setting_sources: str | None = None,
+        env_override: dict | None = None,
     ) -> LLMResult:
         """Execute Claude CLI with streaming progress.
 
@@ -201,12 +202,13 @@ class ClaudeCli:
                          when CC uses tools (e.g. "📖 读取 feishu_bot.py").
             on_todo: async callback receiving the full todo list whenever CC
                      calls TodoWrite (list of {content, status, activeForm}).
+            env_override: Extra env vars merged into subprocess env (e.g. HOME for isolation).
         """
         return await self._execute(
             prompt, session_id=session_id, model=model,
             system_prompt=system_prompt, timeout_seconds=timeout_seconds,
             effort=effort, on_activity=on_activity, on_todo=on_todo,
-            setting_sources=setting_sources,
+            setting_sources=setting_sources, env_override=env_override,
         )
 
     async def _execute(
@@ -220,6 +222,7 @@ class ClaudeCli:
         on_activity: Callable[[str], Awaitable[None]] | None = None,
         on_todo: Callable[[list[dict]], Awaitable[None]] | None = None,
         setting_sources: str | None = None,
+        env_override: dict | None = None,
     ) -> LLMResult:
         # Timeout strategy:
         # - Explicit timeout_seconds (heartbeat, compression) → absolute timeout (old behavior)
@@ -252,6 +255,8 @@ class ClaudeCli:
 
         # Prevent "nested session" error: strip all Claude Code session markers
         env = {k: v for k, v in os.environ.items() if k not in _CC_ENV_STRIP}
+        if env_override:
+            env.update(env_override)
 
         start = time.monotonic()
         try:

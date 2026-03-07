@@ -313,6 +313,8 @@ class LLMRouter:
         """
         session_id = self.get_session_id(session_key) if session_key else None
 
+        env_override = llm_config.env or None
+
         # ── Step 1: Try resume ──
         if session_id:
             result = await self.claude.run(
@@ -324,6 +326,7 @@ class LLMRouter:
                 effort=llm_config.effort,
                 on_activity=on_activity,
                 on_todo=on_todo,
+                env_override=env_override,
             )
             if result.cancelled:
                 return result
@@ -360,6 +363,7 @@ class LLMRouter:
                 effort=llm_config.effort,
                 on_activity=on_activity,
                 on_todo=on_todo,
+                env_override=env_override,
             )
             if result.cancelled:
                 return result

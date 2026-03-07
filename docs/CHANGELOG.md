@@ -6,6 +6,20 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.9.0] — 2026-03-07
+
+### Added
+- **Multi-bot instance support** — Run multiple Feishu bots from a single service. Each bot has independent WebSocket connection, dispatcher, session namespace, reply cache, and optional `system_prompt` / `default_model` override. Legacy single-bot config remains compatible (zero-migration).
+- **Per-bot HOME isolation** — New `home_dir` config field per bot. Overrides `HOME` env var for the bot's Claude CLI subprocess, isolating global CLAUDE.md and COGNITION.md. Enables team-facing bots to use separate identity/cognition from the admin's personal config.
+- **LLMConfig.env field** — Generic env override mechanism for Claude CLI subprocess. Currently used for HOME isolation; extensible for future per-bot environment needs.
+
+### Changed
+- `validate_config()` refactored to support both legacy and multi-bot config validation.
+- Primary bot's dispatcher is reused (not duplicated) when it's also the first bot in the list.
+- Admin IDs aggregated from all bot configs for role seeding.
+
+---
+
 ## [0.8.3] — 2026-03-07
 
 ### Fixed

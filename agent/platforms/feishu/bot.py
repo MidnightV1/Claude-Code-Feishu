@@ -116,6 +116,10 @@ class FeishuBot(MediaMixin, SessionMixin):
         user_store: UserStore | None = None,
         orchestrator: Orchestrator | None = None,
     ):
+        # Bot identity: "main" uses un-prefixed keys for backward compat
+        self.name = config.get("name", "main")
+        self._key_prefix = "" if self.name == "main" else f"{self.name}:"
+
         self.app_id = config.get("app_id", "")
         self.orchestrator = orchestrator
         self.app_secret = config.get("app_secret", "")
@@ -143,12 +147,14 @@ class FeishuBot(MediaMixin, SessionMixin):
         self._dedup: dict[str, float] = {}
         self._bot_open_id: str | None = None
         self._feishu_api = FeishuAPI(self.app_id, self.app_secret, self.domain)
-        self._reply_cache_path = os.path.join(
-            _PROJECT_ROOT, "data", "reply_cache.json"
-        )
+        # Per-bot reply cache: "main" uses legacy path for backward compat
+        cache_name = "reply_cache.json" if self.name == "main" else f"reply_cache_{self.name}.json"
+        self._reply_cache_path = os.path.join(_PROJECT_ROOT, "data", cache_name)
         self._reply_cache: dict[str, str] = load_json_sync(
             self._reply_cache_path, default={}
         )  # bot message_id → reply text (persistent)
+        # Per-bot system prompt override (optional, from config)
+        self._extra_system_prompt = config.get("system_prompt", "")
 
     def register_command(self, prefix: str, handler, help_lines: str | None = None):
         """Register a plugin command handler. handler: async (cmd, args) -> str"""
@@ -184,7 +190,7 @@ class FeishuBot(MediaMixin, SessionMixin):
             self._ws_client.start()
 
         self._loop.run_in_executor(None, _start_ws)
-        log.info("Feishu bot WebSocket connecting (app_id=%s)", self.app_id[:8])
+        log.info("Feishu bot '%s' WebSocket connecting (app_id=%s)", self.name, self.app_id[:8])
 
         # Health monitor: check WebSocket connectivity, exit process if dead
         asyncio.ensure_future(self._ws_health_monitor())
@@ -352,10 +358,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                     return
                 # Process post embedded images
                 if post_image_keys:
-                    session_key = (
-                        f"user:{sender_id}" if chat_type == "p2p"
-                        else f"chat:{chat_id}"
-                    )
+                    session_key = self._session_key(chat_type, chat_id, sender_id)
                     for ik in post_image_keys:
                         path = await self._process_image(
                             message_id, "", session_key, image_key=ik
@@ -395,9 +398,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                             msg_type, msg.content[:500] if msg.content else "(none)")
                 return
 
-            session_key = (
-                f"user:{sender_id}" if chat_type == "p2p" else f"chat:{chat_id}"
-            )
+            session_key = self._session_key(chat_type, chat_id, sender_id)
             key = self._debounce_key(chat_type, chat_id, sender_id)
 
             sender_name = user.name if user else ""
@@ -457,12 +458,18 @@ class FeishuBot(MediaMixin, SessionMixin):
             # Other parts exist; restart timer to flush them
             batch.timer = asyncio.create_task(self._flush_after(key))
 
-    # ═══ Debounce ═══
+    # ═══ Key Construction ═══
+
+    def _session_key(self, chat_type: str, chat_id: str, sender_id: str) -> str:
+        """Build namespaced session key. 'main' bot uses un-prefixed for backward compat."""
+        if chat_type == "p2p":
+            return f"{self._key_prefix}user:{sender_id}"
+        return f"{self._key_prefix}chat:{chat_id}"
 
     def _debounce_key(self, chat_type, chat_id, sender_id):
         if chat_type == "p2p":
-            return f"p2p:{sender_id}"
-        return f"group:{chat_id}:{sender_id}"
+            return f"{self._key_prefix}p2p:{sender_id}"
+        return f"{self._key_prefix}group:{chat_id}:{sender_id}"
 
     async def _ensure_batch(self, key, message_id, chat_id, chat_type, sender_id,
                             sender_name=""):
@@ -588,7 +595,7 @@ class FeishuBot(MediaMixin, SessionMixin):
 
         parts = text.split(None, 1)
         cmd = parts[0].lower()
-        session_key = f"user:{sender_id}" if chat_type == "p2p" else f"chat:{chat_id}"
+        session_key = self._session_key(chat_type, chat_id, sender_id)
 
         if cmd == "#help":
             return self._cmd_help()
