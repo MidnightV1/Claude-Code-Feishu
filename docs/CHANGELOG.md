@@ -44,12 +44,20 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.9.1] — 2026-03-08
+
+### Fixed
+- **Per-bot home_dir auth fix** — `home_dir` was overriding `HOME` env var, breaking Claude CLI OAuth (tokens live in macOS Keychain tied to the original HOME). Now reads `CLAUDE.md`/`COGNITION.md` from `home_dir/.claude/` and injects into `system_prompt` instead. Preserves persona isolation without breaking authentication.
+- **Python 3.13 event loop compatibility** — `asyncio.set_event_loop()` now called in WebSocket executor thread. Fixes `RuntimeError: no current event loop` on Python 3.13+ where implicit event loop creation was removed.
+- **Debounce tuning** — First-text debounce window reduced from 1.0s to 0.5s for faster response.
+
+---
+
 ## [0.9.0] — 2026-03-07
 
 ### Added
 - **Multi-bot instance support** — Run multiple Feishu bots from a single service. Each bot has independent WebSocket connection, dispatcher, session namespace, reply cache, and optional `system_prompt` / `default_model` override. Legacy single-bot config remains compatible (zero-migration).
-- **Per-bot HOME isolation** — New `home_dir` config field per bot. Overrides `HOME` env var for the bot's Claude CLI subprocess, isolating global CLAUDE.md and COGNITION.md. Enables team-facing bots to use separate identity/cognition from the admin's personal config.
-- **LLMConfig.env field** — Generic env override mechanism for Claude CLI subprocess. Currently used for HOME isolation; extensible for future per-bot environment needs.
+- **Per-bot persona isolation** — New `home_dir` config field per bot. Reads CLAUDE.md and COGNITION.md from `home_dir/.claude/` and injects into the bot's system prompt, enabling team-facing bots to use separate identity/cognition from the admin's personal config.
 
 ### Changed
 - `validate_config()` refactored to support both legacy and multi-bot config validation.

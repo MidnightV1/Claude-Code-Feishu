@@ -190,7 +190,9 @@ class FeishuBot(MediaMixin, SessionMixin):
 
         def _start_ws():
             import lark_oapi.ws.client as ws_mod
-            ws_mod.loop = asyncio.new_event_loop()
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            ws_mod.loop = loop
             self._ws_client.start()
 
         self._loop.run_in_executor(None, _start_ws)
@@ -583,7 +585,7 @@ class FeishuBot(MediaMixin, SessionMixin):
             batch.timer = asyncio.create_task(self._flush_after(key, debounce_seconds))
         elif len(batch.parts) == 1:
             # First text in batch: short window to catch near-simultaneous media
-            batch.timer = asyncio.create_task(self._flush_after(key, 1.0))
+            batch.timer = asyncio.create_task(self._flush_after(key, 0.5))
         else:
             batch.timer = asyncio.create_task(self._flush(key))
 

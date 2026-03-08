@@ -208,16 +208,29 @@ async def main():
     # Create bot instances — one per feishu app
     bots: list[FeishuBot] = []
     for bot_cfg in bot_configs:
-        # Per-bot default model + env override
-        bot_env = {}
+        # Per-bot home_dir: inject CLAUDE.md/COGNITION.md into system_prompt
+        # instead of overriding HOME (which breaks Claude CLI auth).
         if bot_cfg.get("home_dir"):
-            bot_env["HOME"] = os.path.expanduser(bot_cfg["home_dir"])
+            home = os.path.expanduser(bot_cfg["home_dir"])
+            soul_parts = []
+            for fname in ("CLAUDE.md", "COGNITION.md"):
+                fpath = os.path.join(home, ".claude", fname)
+                if os.path.isfile(fpath):
+                    try:
+                        with open(fpath, "r", encoding="utf-8") as f:
+                            soul_parts.append(f.read().strip())
+                    except OSError:
+                        pass
+            if soul_parts:
+                existing = bot_cfg.get("system_prompt", "")
+                bot_cfg["system_prompt"] = "\n\n".join(soul_parts) + ("\n\n" + existing if existing else "")
+                log.info("Bot '%s': injected soul files from %s", bot_cfg.get("name"), home)
+
         bot_llm = default_llm
-        if bot_cfg.get("default_model") or bot_env:
+        if bot_cfg.get("default_model"):
             bot_llm = LLMConfig(
                 provider=bot_cfg.get("default_provider", default_llm.provider),
                 model=bot_cfg.get("default_model", default_llm.model),
-                env=bot_env,
             )
         # Per-bot dispatcher: reuse primary for first bot, create new for others
         if bot_cfg["name"] == primary_cfg["name"]:
