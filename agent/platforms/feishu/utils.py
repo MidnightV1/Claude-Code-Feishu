@@ -192,9 +192,13 @@ def parse_dt(s: str) -> int:
     now = datetime.now(TZ)
 
     # relative: +2h, +30m
-    if s.startswith("+"):
+    if s.startswith("+") and len(s) >= 3:
         unit = s[-1]
-        val = int(s[1:-1])
+        try:
+            val = int(s[1:-1])
+        except ValueError:
+            print(f"ERROR: Invalid relative time: {s}", file=sys.stderr)
+            sys.exit(1)
         if unit == "h":
             dt = now + timedelta(hours=val)
         elif unit == "m":

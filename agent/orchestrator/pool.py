@@ -71,4 +71,11 @@ class WorkerPool:
             )
             for s in subtasks
         ]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Mark any subtask that raised an unexpected exception as failed
+        for subtask, result in zip(subtasks, results):
+            if isinstance(result, BaseException) and subtask.status == "running":
+                subtask.status = "failed"
+                subtask.error = f"{type(result).__name__}: {result}"
+                subtask.finished_at = time.time()
+                log.error("Worker subtask %s raised: %s", subtask.id, subtask.error)

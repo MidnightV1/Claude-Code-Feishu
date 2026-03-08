@@ -36,7 +36,7 @@ class FileStore:
             return self._meta_locks[session_key]
 
     def _session_dir(self, session_key: str) -> str:
-        safe_key = session_key.replace(":", "__").replace("/", "_")
+        safe_key = session_key.replace("..", "_").replace(":", "__").replace("/", "_").replace("\\", "_")
         d = os.path.join(self.base_dir, safe_key)
         os.makedirs(d, exist_ok=True)
         return d

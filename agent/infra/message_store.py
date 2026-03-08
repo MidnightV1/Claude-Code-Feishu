@@ -97,23 +97,15 @@ class MessageStore:
                           message_id, row[0])
                 return True
 
-            # Layer 2: content_hash + window
+            # Layer 2: content_hash + time window
             window = DEDUP_WINDOWS.get(msg_type, 300)
-            if window is None:
-                # command: no window, always match
-                existing = self._conn.execute(
-                    "SELECT message_id FROM messages WHERE content_hash=? "
-                    "LIMIT 1",
-                    (content_hash,),
-                ).fetchone()
-            else:
-                cutoff = time.time() - window
-                existing = self._conn.execute(
-                    "SELECT message_id FROM messages "
-                    "WHERE content_hash=? AND created_at>? "
-                    "LIMIT 1",
-                    (content_hash, cutoff),
-                ).fetchone()
+            cutoff = time.time() - window
+            existing = self._conn.execute(
+                "SELECT message_id FROM messages "
+                "WHERE content_hash=? AND created_at>? "
+                "LIMIT 1",
+                (content_hash, cutoff),
+            ).fetchone()
 
             if existing:
                 log.info("Content dedup: %s matches existing %s (type=%s)",
@@ -181,23 +173,25 @@ class MessageStore:
 
     def get_state(self, message_id: str) -> str | None:
         """Get current state of a message."""
-        row = self._conn.execute(
-            "SELECT state FROM messages WHERE message_id=?",
-            (message_id,),
-        ).fetchone()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT state FROM messages WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
         return row[0] if row else None
 
     def get_completed_chat_history(self, sender_id: str,
                                    limit: int = 30) -> list[dict]:
         """Get completed chat messages for recovery context."""
-        rows = self._conn.execute(
+        with self._lock:
+            rows = self._conn.execute(
             "SELECT message_id, content_hash, response_id, created_at "
             "FROM messages "
             "WHERE sender_id=? AND msg_type='chat' AND state='completed' "
             "  AND response_id IS NOT NULL "
             "ORDER BY created_at DESC LIMIT ?",
-            (sender_id, limit),
-        ).fetchall()
+                (sender_id, limit),
+            ).fetchall()
         return [
             {"message_id": r[0], "content_hash": r[1],
              "response_id": r[2], "created_at": r[3]}
@@ -271,9 +265,10 @@ class MessageStore:
 
     def stats(self) -> dict:
         """Return message counts by state."""
-        rows = self._conn.execute(
-            "SELECT state, COUNT(*) FROM messages GROUP BY state"
-        ).fetchall()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT state, COUNT(*) FROM messages GROUP BY state"
+            ).fetchall()
         return dict(rows)
 
 

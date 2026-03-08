@@ -188,7 +188,7 @@ class ContactStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self._data, ensure_ascii=False, indent=2))
-        tmp.rename(self.path)
+        tmp.replace(self.path)
 
     def lookup(self, name: str) -> str | None:
         """Find open_id by name (exact or substring match)."""

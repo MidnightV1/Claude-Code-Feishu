@@ -80,7 +80,8 @@ class LLMRouter:
         self.sessions_path = sessions_path
         self._sessions: dict = {}   # session_key -> {session_id, ...}
         # SQLite store (initialized in load_sessions)
-        db_path = sessions_path.replace(".json", ".db")
+        from pathlib import Path as _P
+        db_path = str(_P(sessions_path).with_suffix(".db"))
         self._store = SessionStore(db_path)
 
     async def load_sessions(self):
@@ -393,8 +394,9 @@ class LLMRouter:
                 await asyncio.sleep(delay)
 
         self._save_result(session_key, result, prompt)
-        try:
-            await self.save_session(session_key)
-        except Exception:
-            log.warning("Failed to persist session", exc_info=True)
+        if session_key:
+            try:
+                await self.save_session(session_key)
+            except Exception:
+                log.warning("Failed to persist session", exc_info=True)
         return result

@@ -162,27 +162,32 @@ async def scan_errors(router, dispatcher, config: dict):
         log.info("No records to write for %s", yesterday)
         return
 
-    # Write to bitable
-    import subprocess
+    # Write to bitable (async to avoid blocking event loop)
+    import asyncio
     import sys
-    script = os.path.join(
+    script = os.path.normpath(os.path.join(
         os.path.dirname(__file__), "..", "..", ".claude", "skills",
         "feishu-bitable", "scripts", "bitable_ctl.py"
-    )
+    ))
+    cwd = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
     written = 0
     for rec in records:
         try:
-            proc = subprocess.run(
-                [sys.executable, script, "record", "add", app_token, table_id,
-                 "--fields", json.dumps(rec, ensure_ascii=False)],
-                capture_output=True, text=True, timeout=30,
-                cwd=os.path.join(os.path.dirname(__file__), "..", ".."),
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, script, "record", "add", app_token, table_id,
+                "--fields", json.dumps(rec, ensure_ascii=False),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
             )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
             if proc.returncode == 0:
                 written += 1
             else:
-                log.warning("Bitable write failed: %s", proc.stderr[:200])
+                log.warning("Bitable write failed: %s", stderr.decode()[:200])
+        except asyncio.TimeoutError:
+            log.warning("Bitable write timed out for record")
         except Exception as e:
             log.warning("Bitable write error: %s", e)
 

@@ -383,9 +383,8 @@ class SessionMixin:
             # Keep _msg_to_key entries for recall-after-completion support.
             if len(self._msg_to_key) > _MSG_KEY_MAP_MAX:
                 excess = len(self._msg_to_key) - _MSG_KEY_MAP_MAX
-                it = iter(self._msg_to_key)
-                for _ in range(excess):
-                    self._msg_to_key.pop(next(it), None)
+                for k in list(self._msg_to_key)[:excess]:
+                    self._msg_to_key.pop(k, None)
 
     # ═══ Skill & Command Router ═══
 
@@ -422,13 +421,12 @@ class SessionMixin:
         # Evict oldest entries if over capacity
         if len(self._reply_cache) > _REPLY_CACHE_MAX:
             excess = len(self._reply_cache) - _REPLY_CACHE_MAX
-            it = iter(self._reply_cache)
-            for _ in range(excess):
-                self._reply_cache.pop(next(it), None)
+            for k in list(self._reply_cache)[:excess]:
+                self._reply_cache.pop(k, None)
         # Schedule async persist (coalesce multiple writes)
         if not getattr(self, '_reply_cache_dirty', False):
             self._reply_cache_dirty = True
-            asyncio.get_event_loop().call_later(30, self._flush_reply_cache)
+            asyncio.get_running_loop().call_later(30, self._flush_reply_cache)
 
     def _flush_reply_cache(self):
         """Persist reply cache to disk if dirty."""

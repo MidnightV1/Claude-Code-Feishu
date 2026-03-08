@@ -115,7 +115,7 @@ class GeminiAPI:
             for file_path in files:
                 uploaded = client.files.upload(file=file_path)
                 parts.append(uploaded)
-                self._uploaded_files.append((uploaded.name, time.monotonic()))
+                self._uploaded_files.append((uploaded.name, time.time()))
 
         # Image handling (inline bytes)
         if image_src:
@@ -176,7 +176,7 @@ class GeminiAPI:
         if not self._uploaded_files:
             return
         ttl_seconds = self.file_ttl_days * 86400
-        now = time.monotonic()
+        now = time.time()
         still_valid = []
         client = self._get_client()
         for name, upload_time in self._uploaded_files:

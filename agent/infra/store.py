@@ -27,8 +27,11 @@ def load_json_sync(path: str, default=None):
         log.warning("Corrupt JSON at %s: %s, trying backup", path, e)
         bak = path + ".bak"
         if os.path.exists(bak):
-            with open(bak, "r", encoding="utf-8") as f:
-                return json.load(f)
+            try:
+                with open(bak, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError) as e2:
+                log.warning("Backup also corrupt at %s: %s", bak, e2)
         return default if default is not None else {}
 
 

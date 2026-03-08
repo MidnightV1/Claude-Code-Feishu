@@ -132,10 +132,13 @@ class Orchestrator:
 
         subtasks = []
         for i, s in enumerate(data.get("subtasks", []), 1):
+            prompt = s.get("prompt", "")
+            if not prompt:
+                continue
             subtasks.append(SubTask(
                 id=str(i),
                 title=s.get("title", f"子任务 {i}"),
-                prompt=s.get("prompt", ""),
+                prompt=prompt,
             ))
 
         if len(subtasks) < 2:

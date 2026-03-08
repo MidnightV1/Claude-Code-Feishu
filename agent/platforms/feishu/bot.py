@@ -128,9 +128,8 @@ class FeishuBot(MediaMixin, SessionMixin):
         self.app_secret = config.get("app_secret", "")
         self.domain = config.get("domain", "https://open.feishu.cn")
         self.user_store = user_store
-        # Legacy fallback: load admin allowlist from config
-        global ADMIN_OPEN_IDS
-        ADMIN_OPEN_IDS = set(config.get("admin_open_ids", []))
+        # Per-instance admin allowlist (legacy fallback from config)
+        self._admin_open_ids: set[str] = set(config.get("admin_open_ids", []))
         self.router = router
         self.scheduler = scheduler
         self.heartbeat = heartbeat
@@ -198,7 +197,7 @@ class FeishuBot(MediaMixin, SessionMixin):
         log.info("Feishu bot '%s' WebSocket connecting (app_id=%s)", self.name, self.app_id[:8])
 
         # Health monitor: check WebSocket connectivity, exit process if dead
-        asyncio.ensure_future(self._ws_health_monitor())
+        self._health_task = asyncio.ensure_future(self._ws_health_monitor())
 
     async def _ws_health_monitor(self):
         """Periodically check WebSocket health. Exit process if connection is dead.
@@ -243,6 +242,9 @@ class FeishuBot(MediaMixin, SessionMixin):
 
     async def stop(self):
         log.info("Feishu bot stopping")
+        if hasattr(self, '_health_task') and self._health_task:
+            self._health_task.cancel()
+            self._health_task = None
         self._ws_client = None
 
     # ═══ Event Handlers ═══
@@ -684,7 +686,7 @@ class FeishuBot(MediaMixin, SessionMixin):
         elif cmd == "#restart":
             is_admin = (
                 (self.user_store and self.user_store.get(sender_id) and self.user_store.get(sender_id).is_admin())
-                or sender_id in ADMIN_OPEN_IDS
+                or sender_id in self._admin_open_ids
             )
             if not is_admin:
                 return "权限不足，仅管理员可执行 #restart"
