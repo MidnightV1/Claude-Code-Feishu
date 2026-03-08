@@ -10,6 +10,7 @@ import time
 import asyncio
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 
 from agent.infra.models import LLMConfig
@@ -31,6 +32,31 @@ log = logging.getLogger("hub.feishu_bot")
 from pathlib import Path as _Path
 # Project root: agent/platforms/feishu/bot.py → project root
 _PROJECT_ROOT = str(_Path(__file__).resolve().parent.parent.parent.parent)
+
+class _ThreadLocalLoop:
+    """Thread-local proxy for asyncio event loop.
+
+    Lark SDK stores its event loop as a module-global variable (lark_oapi.ws.client.loop).
+    With multiple bots, each running in its own executor thread with its own loop,
+    one bot's thread overwrites the global, breaking the other bot's reconnection.
+
+    This proxy replaces the global with a thread-local dispatch: SDK code that does
+    `loop.run_until_complete(...)` or `loop.create_task(...)` transparently gets
+    the current thread's loop, so each bot uses its own loop even after reconnection.
+    """
+
+    def __init__(self):
+        self._local = threading.local()
+
+    def _set(self, loop):
+        self._local.loop = loop
+
+    def __getattr__(self, name):
+        try:
+            return getattr(self._local.loop, name)
+        except AttributeError:
+            raise RuntimeError("No event loop set for this thread") from None
+
 
 DEDUP_TTL = 86400       # 24h
 DEDUP_MAX_SIZE = 1000
@@ -190,9 +216,24 @@ class FeishuBot(MediaMixin, SessionMixin):
 
         def _start_ws():
             import lark_oapi.ws.client as ws_mod
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            ws_mod.loop = loop
+            # ── Lark SDK event loop isolation ──
+            # The SDK uses module-global `loop` for all async ops (create_task,
+            # run_until_complete). Two problems:
+            # 1. Lock created in __init__ is bound to the main loop; Python 3.13
+            #    strictly checks loop affinity → RuntimeError on acquire.
+            # 2. Multi-bot: bot2 overwrites ws_mod.loop, so bot1's reconnection
+            #    dispatches tasks to the wrong loop → "attached to a different loop".
+            #
+            # Fix: Replace ws_mod.loop with a thread-local proxy. Each bot thread
+            # sets its own loop; SDK code reading `loop` gets the current thread's
+            # loop automatically, even after reconnection.
+            if not isinstance(getattr(ws_mod, 'loop', None), _ThreadLocalLoop):
+                ws_mod.loop = _ThreadLocalLoop()
+            ws_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(ws_loop)
+            ws_mod.loop._set(ws_loop)
+            # Re-create Lock bound to this thread's loop
+            self._ws_client._lock = asyncio.Lock()
             self._ws_client.start()
 
         self._loop.run_in_executor(None, _start_ws)

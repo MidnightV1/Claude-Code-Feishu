@@ -53,6 +53,14 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.9.1] — 2026-03-09
+
+### Fixed
+- **Lark SDK event loop isolation** — Replaced module-global loop variable with a thread-local proxy (_ThreadLocalLoop). Fixes two issues: (1) Python 3.13 strict loop-affinity check on asyncio.Lock created in the main thread but used in executor threads, and (2) multi-bot race where bot2 overwrites the global loop, breaking bot1's WebSocket reconnection. Each bot thread now transparently gets its own event loop.
+- **Per-bot HOME override breaking Claude CLI auth** — home_dir config previously set HOME env var for Claude CLI subprocess, which caused "Not logged in" errors because OAuth credentials are tied to the original HOME. Now reads CLAUDE.md and COGNITION.md from home_dir/.claude/ and injects them into the bot's system prompt instead of overriding HOME.
+
+---
+
 ## [0.9.0] — 2026-03-07
 
 ### Added
