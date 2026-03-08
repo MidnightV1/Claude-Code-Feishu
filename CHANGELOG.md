@@ -6,6 +6,13 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.12.0] — 2026-03-09
+
+### Fixed
+- **Lark SDK event loop isolation** — Replaced module-global loop variable with a thread-local proxy (`_ThreadLocalLoop`). Fixes two issues: (1) Python 3.13 strict loop-affinity check on `asyncio.Lock` created in the main thread but used in executor threads, and (2) multi-bot race where bot2 overwrites the global loop, breaking bot1's WebSocket reconnection. Each bot thread now transparently gets its own event loop.
+
+---
+
 ## [0.11.0] — 2026-03-08
 
 ### Added
@@ -50,14 +57,6 @@ Format: feature-oriented grouping per release, not per-commit.
 - **Per-bot home_dir auth fix** — `home_dir` was overriding `HOME` env var, breaking Claude CLI OAuth (tokens live in macOS Keychain tied to the original HOME). Now reads `CLAUDE.md`/`COGNITION.md` from `home_dir/.claude/` and injects into `system_prompt` instead. Preserves persona isolation without breaking authentication.
 - **Python 3.13 event loop compatibility** — `asyncio.set_event_loop()` now called in WebSocket executor thread. Fixes `RuntimeError: no current event loop` on Python 3.13+ where implicit event loop creation was removed.
 - **Debounce tuning** — First-text debounce window reduced from 1.0s to 0.5s for faster response.
-
----
-
-## [0.9.1] — 2026-03-09
-
-### Fixed
-- **Lark SDK event loop isolation** — Replaced module-global loop variable with a thread-local proxy (_ThreadLocalLoop). Fixes two issues: (1) Python 3.13 strict loop-affinity check on asyncio.Lock created in the main thread but used in executor threads, and (2) multi-bot race where bot2 overwrites the global loop, breaking bot1's WebSocket reconnection. Each bot thread now transparently gets its own event loop.
-- **Per-bot HOME override breaking Claude CLI auth** — home_dir config previously set HOME env var for Claude CLI subprocess, which caused "Not logged in" errors because OAuth credentials are tied to the original HOME. Now reads CLAUDE.md and COGNITION.md from home_dir/.claude/ and injects them into the bot's system prompt instead of overriding HOME.
 
 ---
 
