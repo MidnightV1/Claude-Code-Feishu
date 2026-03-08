@@ -6,6 +6,35 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.12.0] — 2026-03-09
+
+Full sync from internal master branch. Major stability and feature improvements.
+
+### Added
+- **Feishu Sheet skill** — Read/write Feishu Spreadsheets: metadata, worksheet listing, cell range I/O. Supports wiki-embedded sheets.
+- **SQLite session persistence** — Replace JSON read-modify-write with WAL-mode SQLite. Auto-migrates from `sessions.json` on first run.
+- **Message state machine (MessageStore)** — SQLite-backed persistent message tracking with three-layer dedup: L0 in-memory message_id, L1 SQLite message_id, L2 content_hash + time window. Fixes WebSocket re-delivery bug.
+- **Daily error scanner** — Parses hub log, groups errors by type, Sonnet analysis, writes to Feishu Bitable, alerts on ERROR count.
+- **Stream event capture** — `--include-partial-messages` flag enables early `content_block_start` detection for tool use visibility.
+- **Per-user rate limiting** — 10 requests/minute sliding window per user.
+- **IO latency logging** — Tracks `recv → thinking card` (ms) and `recv → reply ready` (s).
+
+### Changed
+- **Gemini 3 series default** — Models updated to `gemini-3-flash-preview` and `gemini-3.1-pro-preview`.
+- **Debounce tuned** — First-text window reduced to 0.5s for faster response.
+- **Idle timeout** — 300s → 600s to cover long Bash tool executions.
+
+### Fixed
+- **WebSocket stability** — Process-isolated WebSocket with zombie connection detection, SDK reconnect patches, websockets ping conflict fix.
+- **Python 3.13 event loop** — `asyncio.set_event_loop()` in executor thread + Lock re-creation for strict loop affinity.
+- **Per-bot home_dir auth** — No longer overrides `HOME` (broke OAuth). Now injects `CLAUDE.md`/`COGNITION.md` via `system_prompt`.
+- **WebSocket re-delivery** — Persistent SQLite content_hash catches messages re-delivered with new IDs on reconnect.
+- **Stale message guard** — Messages older than 2 minutes dropped at entry point.
+- **Command dedup window** — Changed from infinite to 60 seconds.
+- **Comprehensive code quality audit** — 15+ fixes across 13 files (process management, memory leaks, retry logic, etc).
+
+---
+
 ## [0.9.0] — 2026-03-07
 
 ### Added
@@ -56,6 +85,53 @@ Format: feature-oriented grouping per release, not per-commit.
 ### Fixed
 - **doc_ctl batch insert** — `_insert_blocks` now splits into batches of 30 to avoid Feishu API 400 errors on large documents
 - **doc_ctl file path support** — `update` and `replace` commands now accept file paths as content argument (auto-detected, reads file content)
+
+---
+
+## [0.8.0] — 2026-03-07
+
+### Added
+- **Opus orchestrator + Sonnet worker pool** — Parallel task execution via `<task_plan>` tag. Opus designs, Sonnet workers execute independently.
+- **User identity layer** — UserStore + sender context injection. Auto-backfills user name from Feishu API.
+- **feishu-doc update/replace** — Document content update and full replacement commands.
+
+---
+
+## [0.7.0] — 2026-03-07
+
+### Added
+- **Package restructure** — Reorganized into `agent/` package with platform extensibility (`agent/platforms/feishu/`, `agent/llm/`, `agent/jobs/`, `agent/infra/`).
+
+### Fixed
+- Bot path resolution, API path, media script path, briefing plugin path after restructure.
+- `check_quota` reads credentials from macOS Keychain (Claude Code 2.x).
+- Recall cancel prevents router from spawning new subprocess after cancel.
+
+---
+
+## [0.6.0] — 2026-03-06
+
+### Added
+- **text_to_blocks** — Full markdown support for Feishu docx API.
+- **WebSocket reconnection** — Auto-rebuild client on disconnect; health monitor detects SDK silent failures.
+
+### Fixed
+- Path resolution + recall cancel + keychain credentials.
+
+---
+
+## [0.5.0] — 2026-03-06
+
+### Added
+- **Brave Search skills** — Official Brave Web Search + News Search skills for English source discovery.
+- **Per-key atomic persistence** — Eliminate concurrent write races in JSON store.
+- **Gemini-doc skill** — Gemini CLI document co-pilot with PDF fallback chain.
+- **Native Claude vision** — Images passed via Read tool instead of Gemini.
+- **Message queue serialization** — Heartbeat context injection.
+
+### Changed
+- Context optimization — compression prompt dedup, doc responsibility split.
+- Image compression isolated to subprocess to prevent ld.so crash.
 
 ---
 
