@@ -6,10 +6,19 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
-## [0.12.0] — 2026-03-09
+## [0.12.1] — 2026-03-09
 
 ### Fixed
 - **Lark SDK event loop isolation** — Replaced module-global loop variable with a thread-local proxy (`_ThreadLocalLoop`). Fixes two issues: (1) Python 3.13 strict loop-affinity check on `asyncio.Lock` created in the main thread but used in executor threads, and (2) multi-bot race where bot2 overwrites the global loop, breaking bot1's WebSocket reconnection. Each bot thread now transparently gets its own event loop.
+
+---
+
+## [0.12.0] — 2026-03-08
+
+### Fixed
+- **Per-bot home_dir auth fix** — `home_dir` was overriding `HOME` env var, breaking Claude CLI OAuth (tokens live in macOS Keychain tied to the original HOME). Now reads `CLAUDE.md`/`COGNITION.md` from `home_dir/.claude/` and injects into `system_prompt` instead. Preserves persona isolation without breaking authentication.
+- **Python 3.13 event loop compatibility** — `asyncio.set_event_loop()` now called in WebSocket executor thread. Fixes `RuntimeError: no current event loop` on Python 3.13+ where implicit event loop creation was removed.
+- **Debounce tuning** — First-text debounce window reduced from 1.0s to 0.5s for faster response.
 
 ---
 
@@ -48,15 +57,6 @@ Format: feature-oriented grouping per release, not per-commit.
 - **WebSocket re-delivery** — Feishu WebSocket re-delivers messages with new message_ids on reconnect, bypassing the previous in-memory dedup. Now caught by persistent SQLite content_hash matching.
 - **Command dedup window** — Changed from infinite (blocking legitimate re-execution) to 60 seconds.
 - **FeishuAPI config compatibility** — `from_config()` now supports both legacy `feishu.app_id` and multi-bot `feishu.bots[0].app_id` formats.
-
----
-
-## [0.9.1] — 2026-03-08
-
-### Fixed
-- **Per-bot home_dir auth fix** — `home_dir` was overriding `HOME` env var, breaking Claude CLI OAuth (tokens live in macOS Keychain tied to the original HOME). Now reads `CLAUDE.md`/`COGNITION.md` from `home_dir/.claude/` and injects into `system_prompt` instead. Preserves persona isolation without breaking authentication.
-- **Python 3.13 event loop compatibility** — `asyncio.set_event_loop()` now called in WebSocket executor thread. Fixes `RuntimeError: no current event loop` on Python 3.13+ where implicit event loop creation was removed.
-- **Debounce tuning** — First-text debounce window reduced from 1.0s to 0.5s for faster response.
 
 ---
 
