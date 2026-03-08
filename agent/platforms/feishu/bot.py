@@ -10,7 +10,6 @@ import time
 import asyncio
 import logging
 import os
-import threading
 from dataclasses import dataclass, field
 
 from agent.infra.models import LLMConfig
@@ -33,34 +32,9 @@ from pathlib import Path as _Path
 # Project root: agent/platforms/feishu/bot.py → project root
 _PROJECT_ROOT = str(_Path(__file__).resolve().parent.parent.parent.parent)
 
-class _ThreadLocalLoop:
-    """Thread-local proxy for asyncio event loop.
-
-    Lark SDK stores its event loop as a module-global variable (lark_oapi.ws.client.loop).
-    With multiple bots, each running in its own executor thread with its own loop,
-    one bot's thread overwrites the global, breaking the other bot's reconnection.
-
-    This proxy replaces the global with a thread-local dispatch: SDK code that does
-    `loop.run_until_complete(...)` or `loop.create_task(...)` transparently gets
-    the current thread's loop, so each bot uses its own loop even after reconnection.
-    """
-
-    def __init__(self):
-        self._local = threading.local()
-
-    def _set(self, loop):
-        self._local.loop = loop
-
-    def __getattr__(self, name):
-        try:
-            return getattr(self._local.loop, name)
-        except AttributeError:
-            raise RuntimeError("No event loop set for this thread") from None
-
-
 DEDUP_TTL = 86400       # 24h
 DEDUP_MAX_SIZE = 1000
-DEBOUNCE_SECONDS = 3    # debounce window for multi-part messages
+DEBOUNCE_SECONDS = 0.5    # debounce window for multi-part messages
 
 # Admin allowlist: only these open_ids can execute destructive commands (#restart)
 # Loaded from config.yaml feishu.admin_open_ids at startup; empty = no admin commands
@@ -211,30 +185,36 @@ class FeishuBot(MediaMixin, SessionMixin):
         self._ws_client = lark.ws.Client(
             self.app_id, self.app_secret,
             event_handler=handler,
-            log_level=lark.LogLevel.WARNING,
+            log_level=lark.LogLevel.INFO,
         )
 
         def _start_ws():
             import lark_oapi.ws.client as ws_mod
-            # ── Lark SDK event loop isolation ──
-            # The SDK uses module-global `loop` for all async ops (create_task,
-            # run_until_complete). Two problems:
-            # 1. Lock created in __init__ is bound to the main loop; Python 3.13
-            #    strictly checks loop affinity → RuntimeError on acquire.
-            # 2. Multi-bot: bot2 overwrites ws_mod.loop, so bot1's reconnection
-            #    dispatches tasks to the wrong loop → "attached to a different loop".
-            #
-            # Fix: Replace ws_mod.loop with a thread-local proxy. Each bot thread
-            # sets its own loop; SDK code reading `loop` gets the current thread's
-            # loop automatically, even after reconnection.
-            if not isinstance(getattr(ws_mod, 'loop', None), _ThreadLocalLoop):
-                ws_mod.loop = _ThreadLocalLoop()
-            ws_loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(ws_loop)
-            ws_mod.loop._set(ws_loop)
-            # Re-create Lock bound to this thread's loop
-            self._ws_client._lock = asyncio.Lock()
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            ws_mod.loop = loop
+            # Patch SDK _configure: server pushes ping_interval=120s via
+            # connect response and PONG frames, causing idle disconnects.
+            # Cap at 30s to keep the connection alive.
+            _client = self._ws_client
+            _orig_configure = _client._configure
+            def _patched_configure(conf):
+                _orig_configure(conf)
+                if _client._ping_interval > 30:
+                    _client._ping_interval = 30
+            _client._configure = _patched_configure
+            import websockets
+            # Disable websockets built-in ping — it conflicts with SDK ping
+            # and causes false ping_timeout disconnects when event loop is busy
+            # patch websockets.connect to disable built-in ping
+            _orig_connect = websockets.connect
+            def _patched_ws_connect(uri, **kwargs):
+                kwargs.setdefault("ping_interval", None)  # disable built-in ping
+                kwargs.setdefault("ping_timeout", None)
+                return _orig_connect(uri, **kwargs)
+            websockets.connect = _patched_ws_connect
             self._ws_client.start()
+            websockets.connect = _orig_connect  # restore
 
         self._loop.run_in_executor(None, _start_ws)
         log.info("Feishu bot '%s' WebSocket connecting (app_id=%s)", self.name, self.app_id[:8])
@@ -626,7 +606,7 @@ class FeishuBot(MediaMixin, SessionMixin):
             batch.timer = asyncio.create_task(self._flush_after(key, debounce_seconds))
         elif len(batch.parts) == 1:
             # First text in batch: short window to catch near-simultaneous media
-            batch.timer = asyncio.create_task(self._flush_after(key, 0.5))
+            batch.timer = asyncio.create_task(self._flush_after(key, 1.0))
         else:
             batch.timer = asyncio.create_task(self._flush(key))
 

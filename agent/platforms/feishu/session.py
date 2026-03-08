@@ -243,8 +243,8 @@ class SessionMixin:
                                 thinking_msg_id,
                                 _render_card(idle) if _todos else idle,
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            log.warning("_pulse: update_card failed: %s", exc)
                     await asyncio.sleep(8)
 
             on_act = _on_activity if thinking_msg_id else None
@@ -375,7 +375,7 @@ class SessionMixin:
                     batch.chat_id, err_msg,
                     reply_to=batch.first_message_id,
                 )
-            except Exception:
+            except Exception as exc:
                 pass
         finally:
             self._thinking_cards.pop(key, None)

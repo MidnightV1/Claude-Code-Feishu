@@ -21,7 +21,7 @@ log = logging.getLogger("hub.message_store")
 # Dedup windows per message type (seconds)
 DEDUP_WINDOWS = {
     "command": 60,     # 1 minute — block re-delivery but allow legitimate re-execution
-    "chat": 300,       # 5 minutes
+    "chat": 60,        # 1 minute
     "image": 1800,     # 30 minutes
     "file": 1800,      # 30 minutes
 }

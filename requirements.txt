@@ -12,3 +12,6 @@ feedparser>=6.0
 
 # Optional: image compression (isolated to subprocess)
 Pillow>=9.0
+
+# lark-oapi SDK uses legacy websockets API, incompatible with 14+
+websockets>=12,<14

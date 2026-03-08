@@ -370,6 +370,11 @@ class ClaudeCli:
         except asyncio.TimeoutError:
             duration = int((time.monotonic() - start) * 1000)
             elapsed = int(duration / 1000)
+            # Capture stderr before killing for diagnostics
+            try:
+                stderr_data = stderr_task.result() if stderr_task.done() else None
+            except Exception:
+                stderr_data = None
             await self._kill_tree(proc)
             stderr_task.cancel()
             if elapsed >= self.max_timeout - 5:
@@ -377,6 +382,9 @@ class ClaudeCli:
             else:
                 reason = f"idle {idle_timeout}s"
             log.warning("Claude CLI timed out (%s, elapsed %ds)", reason, elapsed)
+            if stderr_data:
+                log.warning("Claude CLI stderr on timeout: %s",
+                           stderr_data.decode('utf-8', errors='replace').strip()[:500])
             return LLMResult(
                 text=f"[Timeout: {reason}, elapsed {elapsed}s]",
                 duration_ms=duration, is_error=True,
