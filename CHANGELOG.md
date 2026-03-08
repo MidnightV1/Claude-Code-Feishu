@@ -6,6 +6,105 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.11.0] — 2026-03-08
+
+### Added
+- **Feishu Sheet skill** — Read/write Feishu Spreadsheets (电子表格): metadata, worksheet listing, cell range I/O. Supports wiki-embedded sheets (auto-resolves `obj_token` via wiki API).
+- **SQLite session persistence** — Replace JSON read-modify-write with WAL-mode SQLite. Auto-migrates from `sessions.json` on first run.
+- **Stream event capture** — Claude CLI `--include-partial-messages` flag enables early `content_block_start` detection for tool use visibility.
+- **Daily error scanner** — Parses hub log, groups errors by type, Sonnet analysis, writes to Feishu Bitable, alerts on ERROR count. Cron at noon.
+- **Per-user rate limiting** — 10 requests/minute sliding window per user.
+- **FeishuAPI `put()` method** — For Sheets v2 write API.
+
+### Changed
+- **Gemini 3 series default** — Models updated to `gemini-3-flash-preview` and `gemini-3.1-pro-preview`. Legacy aliases (`flash`, `pro`, `flash-lite`) map to Gemini 3.
+- **Debounce merge improvement** — Text messages get 1s window (was 0s instant flush) to catch near-simultaneous media; pending media blocks flush until processing completes.
+- **Reply cache coalesced writes** — Dirty flag + `call_later(30s)` instead of write-on-every-cache.
+- **Startup temp cleanup** — Stale `~/tmp/feishu_*` files removed on boot.
+- **Content hash length** — 16 → 32 hex chars for lower collision probability.
+- **Async quote reply** — `asyncio.to_thread` wraps sync HTTP call.
+- **Bitable skill** — Added `app create` and `table create` commands.
+
+### Fixed
+- Smart debounce for text+media merge: prevents text-first flush splitting paired messages.
+
+---
+
+## [0.10.0] — 2026-03-07
+
+### Added
+- **Message state machine (MessageStore)** — SQLite-backed persistent message tracking with three-layer dedup: L0 in-memory message_id, L1 SQLite message_id, L2 content_hash + time window per msg_type. Fixes Feishu WebSocket re-delivery bug where messages were re-processed with new message_ids.
+- **Stale message guard** — Messages older than 2 minutes (by `create_time`) are dropped at the entry point, catching cross-time WebSocket re-deliveries that exceed the content hash window.
+- **IO latency logging** — Tracks `recv → thinking card` (ms) and `recv → reply ready` (s) for performance monitoring.
+
+### Fixed
+- **WebSocket re-delivery** — Feishu WebSocket re-delivers messages with new message_ids on reconnect, bypassing the previous in-memory dedup. Now caught by persistent SQLite content_hash matching.
+- **Command dedup window** — Changed from infinite (blocking legitimate re-execution) to 60 seconds.
+- **FeishuAPI config compatibility** — `from_config()` now supports both legacy `feishu.app_id` and multi-bot `feishu.bots[0].app_id` formats.
+
+---
+
+## [0.9.1] — 2026-03-08
+
+### Fixed
+- **Per-bot home_dir auth fix** — `home_dir` was overriding `HOME` env var, breaking Claude CLI OAuth (tokens live in macOS Keychain tied to the original HOME). Now reads `CLAUDE.md`/`COGNITION.md` from `home_dir/.claude/` and injects into `system_prompt` instead. Preserves persona isolation without breaking authentication.
+- **Python 3.13 event loop compatibility** — `asyncio.set_event_loop()` now called in WebSocket executor thread. Fixes `RuntimeError: no current event loop` on Python 3.13+ where implicit event loop creation was removed.
+- **Debounce tuning** — First-text debounce window reduced from 1.0s to 0.5s for faster response.
+
+---
+
+## [0.9.0] — 2026-03-07
+
+### Added
+- **Multi-bot instance support** — Run multiple Feishu bots from a single service. Each bot has independent WebSocket connection, dispatcher, session namespace, reply cache, and optional `system_prompt` / `default_model` override. Legacy single-bot config remains compatible (zero-migration).
+- **Per-bot persona isolation** — New `home_dir` config field per bot. Reads CLAUDE.md and COGNITION.md from `home_dir/.claude/` and injects into the bot's system prompt, enabling team-facing bots to use separate identity/cognition from the admin's personal config.
+
+### Changed
+- `validate_config()` refactored to support both legacy and multi-bot config validation.
+- Primary bot's dispatcher is reused (not duplicated) when it's also the first bot in the list.
+- Admin IDs aggregated from all bot configs for role seeding.
+
+---
+
+## [0.8.3] — 2026-03-07
+
+### Fixed
+- **doc_ctl _resolve_content** — Path-like strings without newlines were silently written as document content when temp file was deleted. Now errors on missing file paths instead of writing path string.
+- **text_to_blocks relative links** — Relative path links (e.g. `README.zh-CN.md`, `LICENSE`) caused Feishu API 400 schema mismatch. Non-http(s) URLs now render as plain text instead of link elements.
+
+---
+
+## [0.8.2] — 2026-03-07
+
+### Fixed
+- **P0: Process management** — `_kill_tree` now does SIGTERM → wait 2s → SIGKILL (was instant double-signal causing zombies). Timeout path cancels stderr pipe and awaits process exit to prevent deadlocks.
+- **P0: Event loop blocking** — Token refresh uses `threading.Lock` (double-check pattern). `#usage` command uses async subprocess instead of blocking `subprocess.run`.
+- **P1: Memory leaks** — TTL sweep for 5 unbounded dicts (`_session_locks`, `_file_locks`, `_meta_locks`, etc.) that grew indefinitely per-user.
+- **P1: Gemini file cleanup** — Uploaded files via Files API now tracked and deleted after configurable TTL (`file_ttl_days`, default 30 days).
+- **P1: Subprocess leak** — Image compression subprocess now has 60s timeout + kill-on-exception guard.
+- **P2: Retry logic** — Dispatcher distinguishes non-retryable errors (TypeError, ValueError) from transient failures.
+- **P2: Recovery context** — Fixed early return bug that skipped recent history when compression failed.
+- **P2: Scheduler** — Timer re-entry guard prevents overlapping tick execution.
+- **P2: Orchestrator** — Unconfirmed plans auto-expire after 10 minutes (was unbounded).
+
+### Improved
+- Module-level constants for thinking pools, transient markers, cache limits (were recreated per-call)
+- `_PROJECT_ROOT` uses `Path` instead of 4× chained `os.path.dirname`
+- Fixed `store.py` sweep that could accidentally delete the lock being requested
+
+---
+
+## [0.8.1] — 2026-03-07
+
+### Added
+- **Personality-driven status words** — Thinking card now shows fun Chinese verbs instead of mechanical labels. 49 tool-specific words across 10 categories + 43 idle thinking words (regular + long thinking pools). Inspired by Claude Code CLI's 239 hidden spinner states.
+
+### Fixed
+- **doc_ctl batch insert** — `_insert_blocks` now splits into batches of 30 to avoid Feishu API 400 errors on large documents
+- **doc_ctl file path support** — `update` and `replace` commands now accept file paths as content argument (auto-detected, reads file content)
+
+---
+
 ## [0.6.1] — 2026-03-06
 
 ### Fixed
