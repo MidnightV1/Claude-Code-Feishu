@@ -3,43 +3,9 @@ name: feishu-doc
 description: Structured communication via Feishu documents (飞书文档/结构化沟通). Use when the user wants to create a document (写个文档/建个文档), write up discussion results, read a Feishu doc link, save content to a Feishu document, review/reply to document comments (评论), or analyze document annotations. Also auto-trigger when output contains 2+ structured points/sections (优先用文档而非聊天刷屏), or when a proposal needs discussion/confirmation (方案讨论用文档).
 ---
 
-<!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
-## First-Time Setup
-
-> **Agent**: On first load, walk the user through these items. Once all confirmed, delete from `ONBOARDING:START` to `ONBOARDING:END`.
-
-### Prerequisites
-
-- [ ] **Feishu app permissions**: `docx:document` (read/write docs), `drive:drive` (list/manage files), `drive:drive:permission` (transfer ownership)
-- [ ] **`feishu.docs.enabled: true`** in `config.yaml`
-- [ ] **Shared folders** (for list/search): User shares one or more folders with the bot app, then adds them to `config.yaml`:
-  ```yaml
-  feishu:
-    docs:
-      shared_folders:
-        - name: Work Documents
-          token: fldcnXXXXXXXX
-  ```
-- [ ] **Default folder** (optional, for creating docs): `feishu.docs.default_folder` in `config.yaml`
-- [ ] **Auto-share** (optional): `feishu.docs.share_to` list of open_ids to auto-share created docs
-
-### How to get folder tokens
-
-User opens a folder in Feishu Drive → the URL contains the folder token:
-`https://xxx.feishu.cn/drive/folder/fldcnXXXXXXXX` → token is `fldcnXXXXXXXX`
-
-### Verify
-
-```bash
-python3 .claude/skills/feishu-doc/scripts/doc_ctl.py list
-```
-
-Ask the user: "Do you have document folders to share with the bot? I need the folder tokens to browse and search your documents."
-<!-- ONBOARDING:END -->
-
 # Feishu Documents
 
-Structured communication tool — not just document creation. Persistent, referenceable, commentable.
+不只是写文档——是结构化沟通工具。持久、可引用、可评论。
 
 **自动触发规则**：
 1. 输出包含 2+ 要点/结构化内容 → 优先用文档（避免聊天刷屏）

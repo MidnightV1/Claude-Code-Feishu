@@ -179,9 +179,14 @@ class SessionMixin:
                 # Inject pending heartbeat notifications into user prompt
                 notifications = self.heartbeat.drain_notifications(session_key)
                 if notifications:
-                    prompt = ("# 系统通知（上次对话后发生的事件）\n"
-                              + "\n".join(notifications)
-                              + "\n\n" + prompt)
+                    notice_block = (
+                        "====== 后台通知（已通过飞书独立送达用户）======\n"
+                        "以下事件发生在上次对话之后。优先回复用户当前消息；\n"
+                        "仅当通知内容与用户话题相关或需要用户关注时，在回复末尾简要提及。\n"
+                        + "\n".join(notifications)
+                        + "\n============\n\n"
+                    )
+                    prompt = notice_block + prompt
                 llm_config = replace(llm_config, system_prompt="\n\n".join(parts))
 
             # ── Progress: tool activity + todo progress on thinking card ──

@@ -1,6 +1,6 @@
 ---
 name: web-search
-description: USE FOR web search. Returns ranked results with snippets, URLs, thumbnails. Supports freshness filters, SafeSearch, Goggles for custom ranking, pagination. Primary search endpoint.
+description: USE FOR web search when English authoritative sources or structured result metadata (thumbnails, age, extra snippets) are needed. Returns ranked results with snippets, URLs, thumbnails. Supports freshness filters, SafeSearch, Goggles for custom ranking, pagination. Secondary to gemini for general search — prefer gemini unless user specifically requests Brave or needs English-focused results.
 ---
 
 # Web Search

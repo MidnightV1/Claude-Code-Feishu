@@ -1,6 +1,6 @@
 ---
 name: news-search
-description: USE FOR news search. Returns news articles with title, URL, description, age, thumbnail. Supports freshness and date range filtering, SafeSearch filter and Goggles for custom ranking.
+description: USE FOR news search when English news sources or structured article metadata (age, thumbnail) are needed. Returns news articles with title, URL, description, age, thumbnail. Supports freshness and date range filtering, SafeSearch filter and Goggles for custom ranking. For Chinese news or general news search, prefer gemini. Use Brave news for English-language authoritative news sources.
 ---
 
 # News Search

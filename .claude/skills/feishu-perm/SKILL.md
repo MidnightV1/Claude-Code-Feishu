@@ -1,6 +1,6 @@
 ---
 name: feishu-perm
-description: Manage Feishu document permissions (权限管理) — add/remove collaborators, set public sharing, check access levels. Use when the user mentions sharing (分享/共享), permissions (权限), collaborators (协作者), access control, or wants to manage who can view/edit a document.
+description: Manage Feishu document permissions (权限管理) — add/remove collaborators, set public sharing, check access levels. Use when the user mentions sharing (分享/共享), permissions (权限), collaborators (协作者), access control (访问控制), visibility (公开/私有), link sharing (链接分享), or wants to manage who can view/edit a document. Also trigger when user says "把文档分享给XX"、"谁能看这个文档"、"设成公开". DO NOT TRIGGER for creating or editing document content — use feishu-doc for that.
 ---
 
 # Feishu Permission Manager

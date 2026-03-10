@@ -1,46 +1,11 @@
 ---
 name: feishu-wiki
-description: Manage Feishu wiki spaces and pages (知识库) — list spaces, browse node trees, create/move/read/write wiki pages. Use when the user mentions wiki, knowledge base (知识库/知识空间), documentation organization (文档整理), or wants to manage wiki content in Feishu.
+description: Manage Feishu wiki spaces and pages (知识库) — list spaces, browse node trees, create/move/read/write wiki pages. Use when the user mentions wiki, knowledge base (知识库/知识空间), documentation organization (文档整理), or wants to manage wiki content in Feishu. DO NOT TRIGGER for one-off documents like proposals, meeting notes, or reports — use feishu-doc for those. Wiki is for persistent, reusable knowledge (规范/指南/FAQ).
 ---
-
-<!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
-## First-Time Setup
-
-> **Agent**: On first load, walk the user through these items. Once all confirmed, delete from `ONBOARDING:START` to `ONBOARDING:END`.
-
-### Prerequisites
-
-- [ ] **Feishu app permissions**: `wiki:wiki`, `wiki:wiki:readonly`, `wiki:node:*`, `wiki:space:*`, `wiki:member:*`, `wiki:setting:*` (see `docs/feishu_scopes.md`)
-- [ ] **Add bot to wiki space**: The bot must be added as a member (or admin) of the target wiki space. Go to Wiki Space Settings > Members > Add the bot app.
-- [ ] **Verify access**:
-  ```bash
-  python3 .claude/skills/feishu-wiki/scripts/wiki_ctl.py space list
-  ```
-  Should return at least one wiki space.
-
-### Why must the bot be a space member?
-
-The Wiki v2 API uses `tenant_access_token`, but access is scoped to spaces where the bot app is explicitly added as a member. Without membership, all queries return empty results.
-
-### Limitations
-
-- **Search**: Wiki search API requires `user_access_token` (not available to bot). Use `node list` to browse, or search via Feishu client.
-- **Delete**: Wiki v2 API does not provide a direct node delete endpoint.
-- **Read/Write content**: Only `docx` type nodes support content read/write (via the Documents API).
-
-### Verify
-
-```bash
-python3 .claude/skills/feishu-wiki/scripts/wiki_ctl.py space list
-python3 .claude/skills/feishu-wiki/scripts/wiki_ctl.py node list <space_id>
-```
-
-Ask the user: "I need to set up wiki access. Can you add `wiki:wiki:readonly` and `wiki:wiki` permissions to the Feishu app, and add the bot as a member of the target wiki space?"
-<!-- ONBOARDING:END -->
 
 # Feishu Wiki
 
-Knowledge base — persistent reference material (规范、指南、FAQ) that needs ongoing maintenance and repeated lookup. Unlike feishu-doc (communication artifacts with temporal relevance), wiki is for durable knowledge.
+知识沉淀——规范、指南、FAQ 等需要持续维护、反复查阅的内容。与 feishu-doc 的区别：doc 是沟通产物（方案、评审、纪要），有时效性；wiki 是持久知识库。
 
 ## Limitations
 

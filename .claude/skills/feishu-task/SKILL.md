@@ -3,55 +3,9 @@ name: feishu-task
 description: Track commitments and follow-ups as Feishu tasks (任务/待办/承诺追踪). Use when the user mentions tasks (任务), to-do items (待办/todo), deadlines (截止日期/ddl), task assignments (指派), or makes implicit commitments like "记得提醒我..."、"别忘了..."、"下周之前要...". Also triggered by discussion action items, bot-discovered follow-ups (code TODOs, failed jobs), and async handoffs ("帮我查一下X，周五前给我"). Task answers "什么事要记得做完，截止时间是什么" — stateful items that need completion tracking.
 ---
 
-<!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
-## First-Time Setup
-
-> **Agent**: On first load, walk the user through these items. Once all confirmed, delete from `ONBOARDING:START` to `ONBOARDING:END`.
-
-### Prerequisites
-
-- [ ] **Feishu app permissions**: `task:task:read`, `task:task:write`, `task:tasklist:read`, `task:tasklist:write`
-
-### Setup Steps
-
-1. **Create a shared tasklist** (bot manages all tasks through this list):
-   ```bash
-   python3 .claude/skills/feishu-task/scripts/task_ctl.py tasklist create "Hub Tasks"
-   ```
-2. **Copy returned GUID** to `config.yaml`:
-   ```yaml
-   feishu:
-     tasks:
-       tasklist_guid: "<guid from above>"
-   ```
-3. **Add the user as tasklist member** (so they can see tasks/sections in Feishu client):
-   ```bash
-   python3 .claude/skills/feishu-task/scripts/task_ctl.py tasklist add-member "用户名" --role editor
-   ```
-4. **Enable heartbeat integration** (optional):
-   ```yaml
-   heartbeat:
-     tasks:
-       enabled: true
-       alert_window_hours: 2
-   ```
-
-### Why a shared tasklist?
-
-The global task list API requires user OAuth token (not available to the bot). By using a dedicated tasklist, the bot can list, monitor, and manage tasks with its app-level token. Adding the user as editor ensures they can view and manage tasks directly in the Feishu client, including sections (groups) and task details.
-
-### Verify
-
-```bash
-python3 .claude/skills/feishu-task/scripts/task_ctl.py tasklist list
-```
-
-Ask the user: "I need to set up task management. Can you add `task:task:read/write` and `task:tasklist:read/write` permissions to the Feishu app?"
-<!-- ONBOARDING:END -->
-
 # Feishu Tasks
 
-Track commitments and follow-ups with assignees and deadlines. Integrates with heartbeat for automatic deadline alerts.
+把对话中的承诺固化为可追踪状态。聊天里说的"下周搞一下"很容易被淹没，但变成一条有 deadline 的任务就不会。加上心跳监控，形成闭环。
 
 **触发场景**（不只是用户显式说"建个任务"）：
 1. **隐式承诺** — 用户说"记得提醒我..."、"别忘了..."、"下周之前要..."
