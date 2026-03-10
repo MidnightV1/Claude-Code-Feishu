@@ -1,6 +1,6 @@
 ---
 name: feishu-cal
-description: Manage Feishu calendar events (日历/日程) — create, list, update, delete events, invite attendees, manage contacts. Use when the user mentions meetings (会议/开会), schedule (日程/排期), calendar (日历), events, appointments, blocking time (约时间), or inviting people.
+description: Manage Feishu calendar events (日历/日程) — create, list, update, delete events, invite attendees, manage contacts. Use when the user mentions meetings (会议/开会), schedule (日程/排期), calendar (日历), events, appointments, blocking time (约时间), or inviting people. Calendar answers "什么时候在哪做什么" — time-anchored events you need to "be present" for.
 ---
 
 <!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
@@ -36,7 +36,9 @@ Ask the user: "Do you have a shared calendar set up for the bot? I need the cale
 
 # Feishu Calendar
 
-Manage the user's Feishu calendar via a shared calendar.
+Manage the user's Feishu calendar via a shared calendar. Bot creates events on a shared calendar; attendees see them on their own calendar.
+
+**与 feishu-task 的边界**：日历管理时间锚点（有开始/结束、需要"在场"的事件），任务管理承诺追踪（有状态流转、需要"做完"的事项）。重叠时：如"周三 14:00 面试候选人"建日历事件，准备工作（"面试前看简历"）额外建任务。
 
 ## Tool
 

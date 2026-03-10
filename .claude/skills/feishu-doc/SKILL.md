@@ -1,6 +1,6 @@
 ---
 name: feishu-doc
-description: Create, read, edit, comment on, and analyze Feishu documents (飞书文档). Use when the user wants to create a document (写个文档/建个文档), write up discussion results, read a Feishu doc link, save content to a Feishu document, review/reply to document comments (评论), or analyze document annotations.
+description: Structured communication via Feishu documents (飞书文档/结构化沟通). Use when the user wants to create a document (写个文档/建个文档), write up discussion results, read a Feishu doc link, save content to a Feishu document, review/reply to document comments (评论), or analyze document annotations. Also auto-trigger when output contains 2+ structured points/sections (优先用文档而非聊天刷屏), or when a proposal needs discussion/confirmation (方案讨论用文档).
 ---
 
 <!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
@@ -39,7 +39,13 @@ Ask the user: "Do you have document folders to share with the bot? I need the fo
 
 # Feishu Documents
 
-Create, manage, and collaborate on Feishu documents (new docx format).
+Structured communication tool — not just document creation. Persistent, referenceable, commentable.
+
+**自动触发规则**：
+1. 输出包含 2+ 要点/结构化内容 → 优先用文档（避免聊天刷屏）
+2. 方案需要讨论确认 → 优先用文档（用户可在文档内评论批注）
+
+**与 feishu-wiki 的边界**：doc 是沟通产物（方案、评审、会议纪要）——有时效性，写完讨论完可能不再更新。wiki 是知识沉淀（规范、指南、FAQ）——持续维护，供反复查阅。
 
 ## Tool
 

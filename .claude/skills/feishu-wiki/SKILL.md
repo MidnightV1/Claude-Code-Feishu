@@ -40,7 +40,7 @@ Ask the user: "I need to set up wiki access. Can you add `wiki:wiki:readonly` an
 
 # Feishu Wiki
 
-Browse, create, and manage wiki spaces and pages. Read and write content to wiki docx nodes.
+Knowledge base — persistent reference material (规范、指南、FAQ) that needs ongoing maintenance and repeated lookup. Unlike feishu-doc (communication artifacts with temporal relevance), wiki is for durable knowledge.
 
 ## Limitations
 

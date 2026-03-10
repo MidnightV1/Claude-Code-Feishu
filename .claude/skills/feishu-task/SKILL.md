@@ -1,6 +1,6 @@
 ---
 name: feishu-task
-description: Manage Feishu tasks (任务/待办) — create, list, update, complete, delete tasks with assignees and due dates. Integrates with heartbeat for deadline monitoring. Use when the user mentions tasks (任务), to-do items (待办/todo), deadlines (截止日期/ddl), or task assignments (指派).
+description: Track commitments and follow-ups as Feishu tasks (任务/待办/承诺追踪). Use when the user mentions tasks (任务), to-do items (待办/todo), deadlines (截止日期/ddl), task assignments (指派), or makes implicit commitments like "记得提醒我..."、"别忘了..."、"下周之前要...". Also triggered by discussion action items, bot-discovered follow-ups (code TODOs, failed jobs), and async handoffs ("帮我查一下X，周五前给我"). Task answers "什么事要记得做完，截止时间是什么" — stateful items that need completion tracking.
 ---
 
 <!-- ONBOARDING:START — Delete this section after first-run setup is complete -->
@@ -51,7 +51,15 @@ Ask the user: "I need to set up task management. Can you add `task:task:read/wri
 
 # Feishu Tasks
 
-Create, manage, and track tasks with assignees and deadlines. Integrates with heartbeat for automatic deadline alerts.
+Track commitments and follow-ups with assignees and deadlines. Integrates with heartbeat for automatic deadline alerts.
+
+**触发场景**（不只是用户显式说"建个任务"）：
+1. **隐式承诺** — 用户说"记得提醒我..."、"别忘了..."、"下周之前要..."
+2. **讨论后的 action items** — 文档/方案讨论结束后，结论中的待办事项
+3. **Bot 发现的待跟进项** — 审查代码发现 TODO、定时任务失败需要处理
+4. **异步交接** — "帮我查一下X，周五前给我" → 给自己建任务，到期交付
+
+**与日历的边界**：日历回答"什么时候和谁在哪"，任务回答"什么事要做完"。重叠时：如"周三 14:00 面试候选人"建日历，准备工作（"面试前看简历"）建任务。
 
 ## Tool
 
