@@ -1,144 +1,182 @@
-# Claude Code Feishu
+# claude-code-lark
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://python.org)
 
-[English](README.en.md) | 中文
+English | [中文](README.zh-CN.md)
 
-Claude Code Feishu，让 AI 真正与你协同起来。
+Give Claude Code a Feishu/Lark messaging interface — with calendar, documents, tasks, wiki, daily briefings, and autonomous health monitoring.
 
-## 从工具到同事
+## What is this
 
-Claude Code 在终端里是强大的编程工具。但编程只是工作的一部分——你还需要排日程、写方案、跟任务、做调研、盯进度。
+A lightweight Python service that connects Claude Code CLI to Feishu (Lark) via WebSocket. Users chat with Claude in Feishu DMs or group chats, and Claude has full tool access (file I/O, shell, web search) through the CLI subprocess.
 
-这些事情发生在飞书里，不在 IDE 里。
+**Not a wrapper.** The bot runs an actual Claude Code CLI session per user, with persistent conversation context, tool use, and all Claude Code capabilities.
 
-这个项目把 Claude Code 带进飞书，但不只是「消息转发」。它让 Claude 拥有飞书的全部协作能力：日历、文档、任务、知识库、多维表格、云盘。加上 Claude Code 原生的文件读写、代码编辑、命令执行、子 Agent 协作——你得到的是一个能力边界远超 CLI 的 AI 协作者。
+## Why this project
 
-## 三个场景
+There are many Feishu/Lark AI bots out there — most wrap an LLM API for basic chat. This project takes a different approach:
 
-**场景一：早上打开飞书**
+- **Claude Code CLI native** — Not an API wrapper. Each user gets a real `claude -p` subprocess with full tool access: file I/O, shell, code editing, web search, sub-agents. The bot is Claude Code, not a chatbot that calls Claude.
+- **Deep Feishu integration** — 7 purpose-built Skills (calendar, documents, tasks, wiki, daily briefings, heartbeat monitoring, document co-pilot). Not just message forwarding — Claude can create calendar events, write Feishu docs, manage tasks, and browse your wiki directly.
+- **Self-evolving daily briefings** — Automated news pipeline with keyword evolution: after each run, the LLM identifies coverage gaps and improves the search keywords. The briefing gets smarter over time without manual tuning.
+- **Multi-LLM routing with fallback chains** — Claude CLI for chat, Gemini CLI for document analysis, Gemini API for multimodal. Each capability has a degradation path (e.g. PDF: Gemini CLI → Gemini API → Claude Read).
+- **Session continuity** — `--resume` preserves full CLI context; on failure, Sonnet compresses history into structured summaries for seamless recovery.
+- **Self-hosted on minimal hardware** — Designed for any always-on machine (home server, mini PC, cloud VM). Single Python process, no Docker/Redis/database required.
 
-你还没发消息，AI 已经在工作了。每日简报自动送达——关键词会自动进化，覆盖面越来越精准。过期任务的提醒出现在私聊里。这不是被动响应，是主动协作。
-
-**场景二：一句话拆成三个人的活**
-
-你说「帮我修日报的链接 bug，顺便把 feishu-doc skill 加个 replace 功能」。Opus 调研完两个问题，设计方案，拆成独立子任务交给 Sonnet 并行执行。你继续和 Opus 聊别的事，执行完了它自动验收汇报。
-
-**场景三：方案讨论全程在飞书**
-
-不需要在 CLI 和飞书之间来回跳。Claude 直接创建飞书文档写方案，你在文档里加评论，Claude 读取评论逐条回应，修改后更新同一份文档。任务、日程、知识库都是同一个对话的延伸。
-
-## CLI vs 飞书：不只是界面不同
-
-| 维度 | CLI / IDE | 飞书协作 |
-|------|-----------|----------|
-| 交互方式 | 你主动发指令 | 它也会主动找你（日报、DDL 提醒、异常告警） |
-| 能力边界 | 代码 + 文件 + Shell | + 日历 + 文档 + 任务 + 知识库 + 多维表格 |
-| 协作模式 | 1:1 同步等待 | 异步——你可以离开，它继续干，干完飞书通知你 |
-| 身份感知 | 匿名 session | 识别每个用户，维护独立上下文和认知档案 |
-| 任务编排 | 你拆任务分配 | Opus 调研设计 → Sonnet 并行执行 → Opus 验收 |
-| 多人协作 | 单人使用 | 多用户各自会话，互不干扰 |
-| 上下文恢复 | 关掉就没了 | resume 恢复完整上下文，失败时压缩降级 |
-| 多 Bot 支持 | 单实例 | 多 Bot 实例，独立人设 / 模型 / 会话，支持工作目录隔离 |
-
-## 架构
-
-单 Python 进程，无需 Docker / Redis / 数据库。
+## Architecture
 
 ```
-飞书 WebSocket → FeishuBot → LLMRouter ─┬→ claude -p    (对话/工具)
-                     │            │      ├→ gemini cli   (搜索/文档)
-                     │            │      └→ gemini api   (大文档/fallback)
-                     ├→ Orchestrator（Opus 编排 + Sonnet 工作池）
-                     ├→ CronScheduler（定时任务）
-                     ├→ HeartbeatMonitor（心跳监控）
-                     └→ Dispatcher → 飞书卡片 JSON 2.0
+Feishu WebSocket ──> FeishuBot ──> LLMRouter ─┬─> claude -p       (claude-cli)
+                        │              │       ├─> gemini cli       (gemini-cli)
+                        │              │       └─> google-genai     (gemini-api)
+                        ├──> CronScheduler (per-job model routing)
+                        └──> HeartbeatMonitor (two-layer triage → action)
+                                  │
+                           Dispatcher ──> Feishu Card JSON 2.0
 ```
 
-核心设计：
+Key components:
 
-- **会话隔离**：每个用户独立 CLI session，per-user 原子持久化
-- **上下文韧性**：优先 `--resume` 恢复完整上下文；失败时 Sonnet 压缩历史为结构化摘要注入新 session，无感降级
-- **多模型协作**：Claude CLI 对话 + Gemini CLI 搜索与文档分析，各取所长
-- **Token 节省**：用 Gemini CLI（订阅制零成本）处理大文件读取、文档分析等高 token 消耗任务，将 Claude 上下文留给需要深度推理的工作
-- **任务编排**：Opus 调研拆分 → 用户确认 → Sonnet 并行执行 → Opus 验收
+| Component | Role |
+|-----------|------|
+| `feishu_bot.py` | WebSocket event handler, debounce batching, multimodal input |
+| `llm_router.py` | Session management, resume-or-fallback, history compression |
+| `dispatcher.py` | Feishu card rendering, chunking, retry, real-time updates |
+| `claude_cli.py` | Claude CLI wrapper with streaming TodoWrite progress |
+| `scheduler.py` | In-process cron scheduler (croniter + asyncio) |
+| `heartbeat.py` | System health monitoring via LLM judgment |
 
-## 能力一览
+## Features
 
-**对话与理解**
+- **Chat** — Full Claude Code conversations via Feishu DM or group @mention
+- **Multimodal** — Image understanding (native Claude vision), PDF/file analysis (Gemini CLI → API → Claude fallback)
+- **Calendar** — Create, list, update, delete Feishu calendar events; contact management
+- **Documents** — Create, read, search, comment on Feishu documents; ownership transfer
+- **Tasks** — Feishu task CRUD with assignees, due dates, and heartbeat deadline monitoring
+- **Wiki** — Browse wiki spaces, create/move/read/write wiki pages
+- **Daily Briefings** — Automated multi-domain news digest (see below)
+- **Document Co-pilot** — Deep document analysis via Gemini CLI without polluting chat context
+- **Progress Tracking** — Real-time TodoWrite progress on thinking cards for complex tasks
+- **Cron Jobs** — Scheduled tasks with hot-reload (no restart needed)
+- **Heartbeat** — Periodic health checks with two-layer LLM triage and DM alerts
+- **Session Continuity** — `--resume` first, fallback to compressed history injection
 
-- 飞书私聊的完整 Claude Code 对话
-- 图片理解（Claude 原生视觉）
-- PDF / 文件分析（多模型降级链）
-- 实时进度卡片（TodoWrite 流式更新）
+## Daily Briefings
 
-**飞书深度集成**
+An automated news digest pipeline that runs on a cron schedule:
 
-| Skill | 能力 |
-|-------|------|
-| `feishu-cal` | 日历事件增删改查、参会人管理、联系人 |
-| `feishu-doc` | 文档创建 / 阅读 / 更新 / 按章节替换 / 评论分析 |
-| `feishu-task` | 任务管理 + 心跳截止日期监控 |
-| `feishu-wiki` | 知识库空间浏览、页面增删改查 |
-| `feishu-bitable` | 多维表格记录查询 / 筛选 / 增删改 |
-| `feishu-drive` | 云盘文件与文件夹管理 |
-| `feishu-perm` | 文档权限管理、协作者增删 |
-| `hub-ops` | 定时任务 CRUD、服务状态、热加载 |
-| `briefing` | 每日简报 pipeline、自定义数据源、多域管理、关键词自进化 |
-| `gemini` | 搜索 / 网页 / 文件分析 / 摘要（订阅制零成本） |
+```
+Brave Search → Collect articles → Gemini generates draft → Claude reviews → Deliver via email/Feishu
+```
 
-每个 Skill 独立启用，按需配置。
+- **Multi-domain**: Configure separate briefing domains (e.g. "tech", "finance"), each with its own keywords, prompts, and delivery targets
+- **Keyword evolution**: After each cycle, the LLM analyzes coverage gaps and suggests new search keywords — the keyword list improves over time
+- **Review layer**: Optional Claude review pass catches hallucinations and improves quality before delivery
+- **Flexible delivery**: Email (SMTP), Feishu IM card, Feishu document, or any combination
 
-**自主行为**
+Each domain is a folder under `~/briefing/domains/<name>/` with `sources.yaml` (keywords), `domain.yaml` (models + delivery config), and prompt templates. See `.claude/skills/briefing/SKILL.md` for full setup.
 
-- **每日简报**：多源采集 → LLM 生成 → 审稿 → 投递，关键词自动进化
-- **心跳监控**：两层 Sonnet 研判（triage → action），异常自动 DM 通知
-- **任务到期提醒**：心跳读取任务快照，逾期 / 即将到期主动提醒
+## Prerequisites
 
-**任务编排**
+- Python 3.10+ with pip
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
+- A Feishu (Lark) custom app with Bot capability and WebSocket enabled
+- Google AI Studio API key (for Gemini — multimodal, heartbeat, briefings)
+- (Optional) Gemini CLI for document analysis co-pilot
 
-Opus 负责思考，Sonnet 负责动手：
-
-1. 用户提出复杂任务
-2. Opus 调研分析，设计方案，拆解为独立子任务
-3. 用户在飞书确认计划
-4. Sonnet 工作进程并行执行（Opus 释放，可继续对话）
-5. Opus 验收结果，处理冲突，汇报
-
-## 快速开始
-
-**前置要求**
-
-- Python 3.10+
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) 已安装并认证
-- 飞书自建应用（启用 Bot 能力 + WebSocket 连接模式）
-- （推荐）Claude Code 使用订阅模式；安装 [Gemini CLI](https://github.com/google-gemini/gemini-cli) 并订阅 Gemini 基础会员，最大化节省 token 成本
+## Quick Start
 
 ```bash
-git clone https://github.com/MidnightV1/Claude-Code-Feishu.git
-cd Claude-Code-Feishu
+# Clone
+git clone <repo-url> && cd claude-code-lark
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Configure
 cp config.yaml.example config.yaml
-# 编辑 config.yaml 填入飞书凭据
+# Edit config.yaml — fill in Feishu app credentials, Gemini API key, etc.
+
+# Start
 ./hub.sh start
+
+# Check status
+./hub.sh status
+
+# View logs
+tail -f data/hub.log
 ```
 
-详细部署指南见 [SETUP.md](docs/SETUP.md)（[中文](docs/SETUP.zh-CN.md)）。
+For detailed setup with an AI agent guiding you through each step, see [SETUP.md](SETUP.md).
 
----
+## Feishu App Setup
 
-*以下内容面向 AI Agent（Claude Code 或其他 agent）——如果你是首次部署此服务的 agent，继续阅读。*
+We recommend creating **two** Feishu apps — one for interactive chat, one for notifications/alerts:
 
-## 给 AI Agent 的说明
+| App | Purpose | Why separate |
+|-----|---------|-------------|
+| **Chat Bot** | User conversations, tool use | Interactive sessions, per-user context |
+| **Notifier** | Heartbeat alerts, briefing delivery, scheduled messages | Background tasks, no user session needed |
 
-如果你是 Claude Code 或其他 agent 首次阅读这个项目：
+This separation keeps notification delivery independent of chat sessions. A single app works too — just skip the `notify` section in config.
 
-- `SETUP.md` 是逐步部署指南，直接跟着做
-- `.claude/skills/` 下每个 `SKILL.md` 都有 Onboarding 段落，首次加载时引导用户完成配置
-- `config.yaml.example` 有所有配置项的注释说明
-- 用户说「定时任务」→ `hub-ops`，说「日报」→ `briefing`，说「文档」→ `feishu-doc`
+### For each app:
 
-## 许可证
+1. Go to [Feishu Open Platform](https://open.feishu.cn/app) → Create Custom App
+2. Enable **Bot** capability
+3. Enable **WebSocket** mode (not HTTP callback) — *chat app only*
+4. Subscribe to events (chat app only):
+   - `im.message.receive_v1` — receive messages
+   - `im.message.recalled_v1` — handle message recall
+5. Grant permissions — import [`docs/feishu_scopes.json`](docs/feishu_scopes.json) for a complete set, or grant individually per skill
+6. Publish a version to activate the bot
+7. Copy App ID and App Secret to `config.yaml`
+
+## Skills
+
+Skills are modular capabilities in `.claude/skills/`. Each has a `SKILL.md` with usage docs and a setup guide.
+
+| Skill | Purpose | Key Config |
+|-------|---------|------------|
+| `hub-ops` | Cron jobs, service status, hot-reload | (built-in) |
+| `briefing` | Daily news briefing pipeline | Gemini API key, domain configs |
+| `feishu-cal` | Calendar event CRUD, contacts | `feishu.calendar.calendar_id` |
+| `feishu-doc` | Document CRUD, search, comments | `feishu.docs.shared_folders` |
+| `feishu-task` | Task management, deadline monitoring | `feishu.tasks.tasklist_guid` |
+| `feishu-wiki` | Wiki space and page management | (add bot to wiki space) |
+| `gemini-doc` | Document analysis co-pilot | Gemini CLI installed |
+
+Each skill is opt-in — activate only what you need.
+
+## Configuration
+
+See `config.yaml.example` for all options. Key sections:
+
+| Section | Purpose |
+|---------|---------|
+| `feishu` | App credentials, calendar, docs, tasks, contacts |
+| `llm` | Default provider/model, CLI paths, timeouts |
+| `gemini-api` | Google AI Studio API key |
+| `briefing` | Briefing pipeline model config |
+| `scheduler` | Enable/disable cron, store path |
+| `heartbeat` | Interval, active hours, LLM model |
+| `notify` | Optional second Feishu app for alerts |
+
+## Service Management
+
+```bash
+./hub.sh start       # Start in background
+./hub.sh stop        # Stop gracefully
+./hub.sh restart     # Stop + start
+./hub.sh status      # Check if running
+./hub.sh watchdog    # Start if not running (for cron)
+```
+
+## For AI Agents
+
+If you're a Claude Code instance setting up this service for the first time, read [`SETUP.md`](SETUP.md) — it's a step-by-step bootstrap guide designed for you to walk the user through the entire setup interactively.
+
+## License
 
 [MIT](LICENSE)
