@@ -65,6 +65,7 @@ _TRANSIENT_MARKERS = ("Timeout", "ld.so", "dl-open.c")
 
 _REPLY_CACHE_MAX = 500   # max cached bot replies for quote-reply support
 _MSG_KEY_MAP_MAX = 200   # max message→key mappings for recall support
+_LONG_CONTENT_THRESHOLD = 3500  # chars — auto-redirect to Feishu doc above this
 
 
 class SessionMixin:
@@ -148,12 +149,13 @@ class SessionMixin:
                 # Orchestration capability (only for Opus main sessions)
                 if hasattr(self, 'orchestrator') and self.orchestrator:
                     parts.append(ORCHESTRATION_PROMPT)
-                # Sender identity context
-                if batch.sender_name:
-                    sender_ctx = f"当前消息发送者：{batch.sender_name}"
-                    if batch.chat_type == "group":
-                        sender_ctx += f"（群聊 {batch.chat_id[:8]}）"
-                    parts.append(sender_ctx)
+                # Sender + timestamp injected into user prompt (dynamic per-message)
+                from datetime import datetime as _dt
+                _now = _dt.now().strftime("%Y-%m-%d %H:%M")
+                sender_tag = batch.sender_name or ""
+                if batch.chat_type == "group" and sender_tag:
+                    sender_tag += f"@{batch.chat_id[:8]}"
+                prompt = f"[{_now}] {sender_tag}: {prompt}" if sender_tag else f"[{_now}] {prompt}"
                 # File context: filtered by recent conversation history
                 session_entry = self.router._sessions.get(session_key, {})
                 history = session_entry.get("history", [])
@@ -164,18 +166,6 @@ class SessionMixin:
                 )
                 if file_context:
                     parts.append(file_context)
-                # Time gap detection: warn if significant delay since last interaction
-                last_updated = session_entry.get("updated_at", 0)
-                if last_updated:
-                    gap_minutes = (time.time() - last_updated) / 60
-                    if gap_minutes > 10:
-                        gap_str = (f"{int(gap_minutes // 60)}小时{int(gap_minutes % 60)}分钟"
-                                   if gap_minutes >= 60
-                                   else f"{int(gap_minutes)}分钟")
-                        parts.append(
-                            f"⚠️ 距上次交互已过 {gap_str}，期间可能发生了会话中断或重建。"
-                            f"如果用户消息看起来缺少上下文，主动询问而非猜测。"
-                        )
                 # Inject pending heartbeat notifications into user prompt
                 notifications = self.heartbeat.drain_notifications(session_key)
                 if notifications:
@@ -348,10 +338,16 @@ class SessionMixin:
             if thinking_msg_id:
                 await self.dispatcher.delete_message(thinking_msg_id)
             if reply_text:
-                reply_mid = await self.dispatcher.send_text(
-                    batch.chat_id, reply_text,
-                    reply_to=batch.first_message_id,
-                )
+                if len(reply_text) > _LONG_CONTENT_THRESHOLD:
+                    reply_mid = await self._send_long_as_doc(
+                        batch.chat_id, reply_text,
+                        reply_to=batch.first_message_id,
+                    )
+                else:
+                    reply_mid = await self.dispatcher.send_text(
+                        batch.chat_id, reply_text,
+                        reply_to=batch.first_message_id,
+                    )
                 if reply_mid:
                     self._cache_reply(reply_mid, reply_text)
                     # MessageStore: mark completed with response_id
@@ -442,6 +438,69 @@ class SessionMixin:
             save_json_sync(self._reply_cache_path, self._reply_cache)
         except Exception as e:
             log.warning("Failed to persist reply cache: %s", e)
+
+    # ═══ Long Content → Feishu Doc ═══
+
+    async def _send_long_as_doc(self, chat_id: str, text: str, reply_to: str | None = None) -> str | None:
+        """Create a Feishu doc for long content, send card with summary + link.
+
+        Returns the message_id of the sent card, or None on failure.
+        """
+        from agent.platforms.feishu.utils import append_markdown_to_doc
+
+        api = self._feishu_api
+        # Extract title from first heading or first line
+        title = "回复详情"
+        for line in text.split("\n"):
+            line = line.strip()
+            if line.startswith("#"):
+                title = line.lstrip("#").strip()[:50]
+                break
+            elif line:
+                title = line[:50]
+                break
+
+        # Create doc
+        try:
+            resp = api.post("/open-apis/docx/v1/documents", {"title": title})
+            if resp.get("code") != 0:
+                log.warning("Long content doc creation failed: %s", resp.get("msg"))
+                return await self.dispatcher.send_text(chat_id, text, reply_to)
+
+            doc_id = resp["data"]["document"]["document_id"]
+
+            # Write content
+            append_markdown_to_doc(api, doc_id, text)
+
+            # Share to user
+            cfg = getattr(self, '_config', {}) or {}
+            share_to = cfg.get("heartbeat", {}).get("notify_open_id", "")
+            if share_to:
+                api.post(
+                    f"/open-apis/drive/v1/permissions/{doc_id}/members",
+                    body={"member_type": "openid", "member_id": share_to, "perm": "full_access"},
+                    params={"type": "docx", "need_notification": "false"},
+                )
+
+            doc_url = f"https://feishu.cn/docx/{doc_id}"
+
+            # Build summary card: first ~500 chars + link
+            summary_lines = []
+            char_count = 0
+            for line in text.split("\n"):
+                if char_count > 500:
+                    summary_lines.append("...")
+                    break
+                summary_lines.append(line)
+                char_count += len(line)
+            summary = "\n".join(summary_lines)
+            card_text = f"{summary}\n\n---\n\n**[查看完整内容]({doc_url})**"
+
+            return await self.dispatcher.send_text(chat_id, card_text, reply_to)
+        except Exception as e:
+            log.error("Long content → doc failed: %s", e, exc_info=True)
+            # Fallback to chunked send
+            return await self.dispatcher.send_text(chat_id, text, reply_to)
 
     def _fetch_quoted_text(self, parent_id: str) -> str:
         """Fetch the content of a quoted/replied-to message.

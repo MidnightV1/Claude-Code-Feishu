@@ -33,7 +33,7 @@ from agent.llm.gemini_cli import GeminiCli  # noqa: E402
 from agent.llm.claude import ClaudeCli  # noqa: E402
 from agent.platforms.feishu.dispatcher import Dispatcher  # noqa: E402
 from agent.platforms.feishu.api import FeishuAPI  # noqa: E402
-from agent.platforms.feishu.utils import text_to_blocks  # noqa: E402
+from agent.platforms.feishu.utils import append_markdown_to_doc  # noqa: E402
 
 log = logging.getLogger("briefing.run")
 
@@ -535,15 +535,9 @@ class BriefingRunner:
 
         doc_id = resp["data"]["document"]["document_id"]
         content = output_file.read_text(encoding="utf-8")
-        blocks = text_to_blocks(content)
-        if blocks:
-            resp2 = api.post(
-                f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-                {"children": blocks, "index": 0},
-                params={"document_revision_id": "-1"},
-            )
-            if resp2.get("code") != 0:
-                log.warning("[%s] Doc content write partial: %s", self.domain_name, resp2.get("msg"))
+        count = append_markdown_to_doc(api, doc_id, content)
+        if not count:
+            log.warning("[%s] Doc content write returned 0 blocks", self.domain_name)
 
         share_to = doc_cfg.get("share_to")
         if share_to:

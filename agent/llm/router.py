@@ -161,19 +161,23 @@ class LLMRouter:
             user_msg = user_msg[:HISTORY_TRUNCATE] + "..."
         if len(assistant_msg) > HISTORY_TRUNCATE:
             assistant_msg = assistant_msg[:HISTORY_TRUNCATE] + "..."
-        history.append({"role": "user", "text": user_msg})
-        history.append({"role": "assistant", "text": assistant_msg})
+        from datetime import datetime as _dt
+        _ts = _dt.now().strftime("%Y-%m-%d %H:%M")
+        history.append({"role": "user", "text": user_msg, "ts": _ts})
+        history.append({"role": "assistant", "text": assistant_msg, "ts": _ts})
         # Keep last N rounds (2 messages per round)
         max_msgs = HISTORY_ROUNDS * 2
         if len(history) > max_msgs:
             entry["history"] = history[-max_msgs:]
 
     def _format_raw_history(self, history: list[dict]) -> str:
-        """Format history messages as raw text lines."""
+        """Format history messages as raw text lines, with timestamps when available."""
         lines = []
         for msg in history:
             role = "用户" if msg["role"] == "user" else "助手"
-            lines.append(f"{role}: {msg['text']}")
+            ts = msg.get("ts", "")
+            prefix = f"[{ts}] {role}" if ts else role
+            lines.append(f"{prefix}: {msg['text']}")
         return "\n".join(lines)
 
     # ═══ Context Recovery ═══

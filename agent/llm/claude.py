@@ -148,9 +148,9 @@ class ClaudeCli:
         self.path = os.path.expanduser(config.get("path", "claude"))
         self.default_timeout = config.get("timeout_seconds", 600)
         # Idle timeout: kill only when no stream output for this long
-        self.idle_timeout = config.get("idle_timeout_seconds", 600)
+        self.idle_timeout = config.get("idle_timeout_seconds", 900)
         # Hard cap: absolute maximum regardless of activity
-        self.max_timeout = config.get("max_timeout_seconds", 1800)
+        self.max_timeout = config.get("max_timeout_seconds", 3600)
         self.workspace_dir = os.path.expanduser(
             config.get("workspace_dir", ".")
         )

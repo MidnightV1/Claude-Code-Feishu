@@ -81,6 +81,7 @@ def _transfer_owner(api: FeishuAPI, doc_id: str, open_id: str,
 
 
 from agent.platforms.feishu.utils import text_to_blocks as _text_to_blocks  # noqa: E402
+from agent.platforms.feishu.utils import append_markdown_to_doc as _append_md  # noqa: E402
 
 
 # ── Commands ─────────────────────────────────────────────
@@ -106,17 +107,9 @@ def cmd_create(args, api, cfg):
 
     # Write initial content
     if args.content:
-        blocks = _text_to_blocks(args.content)
-        if blocks:
-            resp2 = api.post(
-                f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-                {"children": blocks, "index": 0},
-                params={"document_revision_id": "-1"},
-            )
-            if resp2.get("code") == 0:
-                print(f"  Content written ({len(blocks)} blocks)")
-            else:
-                print(f"  Content error: {resp2.get('msg')}", file=sys.stderr)
+        count = _append_md(api, doc_id, args.content)
+        if count:
+            print(f"  Content written ({count} blocks)")
 
     # Transfer ownership (must happen before removing bot's own access)
     owner_id = getattr(args, "owner", None)
@@ -158,20 +151,11 @@ def cmd_read(args, api, cfg):
 
 def cmd_append(args, api, cfg):
     doc_id = _extract_doc_id(args.doc_id)
-    blocks = _text_to_blocks(args.content)
-    if not blocks:
+    count = _append_md(api, doc_id, args.content)
+    if count == 0:
         print("Nothing to append.")
         return
-
-    resp = api.post(
-        f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-        {"children": blocks, "index": -1},
-        params={"document_revision_id": "-1"},
-    )
-    if resp.get("code") != 0:
-        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
-        sys.exit(1)
-    print(f"Appended {len(blocks)} blocks to {doc_id}")
+    print(f"Appended {count} blocks to {doc_id}")
 
 
 def _list_blocks(api, doc_id: str) -> list[dict]:

@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
 """Shared utility functions for Feishu integration."""
 
+import logging
 import re
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
+
+log = logging.getLogger("hub.feishu.utils")
 
 TZ = timezone(timedelta(hours=8))  # Asia/Shanghai
 
@@ -79,6 +83,40 @@ def _parse_inline(text: str) -> list[dict]:
     return elements
 
 
+def _parse_markdown_table(lines: list[str]) -> list[list[str]] | None:
+    """Parse consecutive markdown table lines into a 2D list of cell texts.
+
+    Returns rows (list of lists), or None if parsing fails.
+    First row is treated as header.
+    """
+    data_rows = []
+    for line in lines:
+        if re.match(r'^\|[-\s|:]+\|$', line):
+            continue
+        cells = [c.strip() for c in line.strip('|').split('|')]
+        if cells:
+            data_rows.append(cells)
+
+    if not data_rows:
+        return None
+
+    # Normalize: pad short rows
+    col_count = max(len(r) for r in data_rows)
+    for row in data_rows:
+        while len(row) < col_count:
+            row.append("")
+
+    return data_rows
+
+
+def _is_table_line(line: str) -> bool:
+    """Check if a line is part of a markdown table."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    return (stripped.startswith('|') and stripped.endswith('|'))
+
+
 def text_to_blocks(text: str) -> list[dict]:
     """Convert markdown-like text to Feishu docx block children.
 
@@ -89,21 +127,47 @@ def text_to_blocks(text: str) -> list[dict]:
     - 1. item → text block with number prefix (block_type 17 unsupported by create API)
     - > quote → text block with quote prefix (callout is container, loses inline content)
     - **bold**, `code`, [text](url) → inline formatting
-    - | table | rows → plain text (table rendering not supported by block API)
+    - | table | rows → native table blocks (via descendant API in append_markdown_to_doc)
     - Plain text → text block (block_type 2)
+
+    Note: Tables are returned as special {"_table": payload} entries.
+    Use append_markdown_to_doc() for proper table rendering, or filter them out
+    for the simple children API.
     """
     text = text.replace("\\n", "\n")
     text = _sanitize_doc_text(text)
     blocks = []
+    lines = text.split("\n")
+    i = 0
 
-    for line in text.split("\n"):
-        line = line.rstrip()
+    while i < len(lines):
+        line = lines[i].rstrip()
+
         if not line:
+            i += 1
+            continue
+
+        # Collect consecutive table lines
+        if _is_table_line(line):
+            table_lines = []
+            while i < len(lines) and _is_table_line(lines[i].rstrip()):
+                table_lines.append(lines[i].rstrip())
+                i += 1
+            table_data = _parse_markdown_table(table_lines)
+            if table_data:
+                blocks.append({"_table": table_data})
+            else:
+                for tl in table_lines:
+                    blocks.append({
+                        "block_type": 2,
+                        "text": {"elements": [{"text_run": {"content": tl}}]},
+                    })
             continue
 
         # --- divider
         if re.match(r'^-{3,}$', line.strip()):
             blocks.append({"block_type": 22, "divider": {}})
+            i += 1
             continue
 
         # Headings: # H1 .. ###### H6
@@ -117,10 +181,10 @@ def text_to_blocks(text: str) -> list[dict]:
                     "elements": _parse_inline(heading_text),
                 },
             })
+            i += 1
             continue
 
         # Unordered list: - item or * item
-        # Note: block_type 16 cannot be created via docx API, render as text with bullet prefix
         ul_match = re.match(r'^[-*]\s+(.+)$', line)
         if ul_match:
             elements = [{"text_run": {"content": "• "}}]
@@ -129,10 +193,10 @@ def text_to_blocks(text: str) -> list[dict]:
                 "block_type": 2,
                 "text": {"elements": elements},
             })
+            i += 1
             continue
 
         # Ordered list: 1. item
-        # Note: block_type 17 cannot be created via docx API, render as text with number prefix
         ol_match = re.match(r'^(\d+)\.\s+(.+)$', line)
         if ol_match:
             elements = [{"text_run": {"content": f"{ol_match.group(1)}. "}}]
@@ -141,11 +205,10 @@ def text_to_blocks(text: str) -> list[dict]:
                 "block_type": 2,
                 "text": {"elements": elements},
             })
+            i += 1
             continue
 
-        # Blockquote: > text → callout container (API creates empty child)
-        # Note: callout is a container block; elements are ignored by API.
-        # Render as text with quote prefix for reliable content display.
+        # Blockquote: > text
         quote_match = re.match(r'^>\s*(.*)$', line)
         if quote_match:
             content = quote_match.group(1) or ""
@@ -154,21 +217,7 @@ def text_to_blocks(text: str) -> list[dict]:
                 "block_type": 2,
                 "text": {"elements": elements},
             })
-            continue
-
-        # Table separator line (|---|---|): skip
-        if re.match(r'^\|[-\s|:]+\|$', line):
-            continue
-
-        # Table row (| cell | cell |): render as plain text
-        # (Feishu docx table blocks require complex multi-block structure)
-        if line.startswith('|') and line.endswith('|'):
-            blocks.append({
-                "block_type": 2,
-                "text": {
-                    "elements": [{"text_run": {"content": line}}],
-                },
-            })
+            i += 1
             continue
 
         # Regular text with inline formatting
@@ -178,8 +227,149 @@ def text_to_blocks(text: str) -> list[dict]:
                 "elements": _parse_inline(line),
             },
         })
+        i += 1
 
     return blocks
+
+
+def _create_table_in_doc(api, doc_id: str, rows: list[list[str]]) -> bool:
+    """Create a native table in a Feishu document.
+
+    Two-step process:
+    1. Create empty table → get cell block_ids
+    2. Fill each cell with content via PATCH
+
+    Args:
+        api: FeishuAPI instance
+        doc_id: Document ID
+        rows: 2D list of cell texts (first row = header)
+
+    Returns True on success, False on failure.
+    """
+    row_count = len(rows)
+    col_count = len(rows[0]) if rows else 0
+    if row_count == 0 or col_count == 0:
+        return False
+
+    # Step 1: Create empty table
+    resp = api.post(
+        f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+        {
+            "children": [{
+                "block_type": 31,
+                "table": {
+                    "property": {
+                        "row_size": row_count,
+                        "column_size": col_count,
+                        "header_row": True,
+                    }
+                }
+            }],
+            "index": -1,
+        },
+        params={"document_revision_id": "-1"},
+    )
+    if resp.get("code") != 0:
+        log.warning("Create table failed: %s", resp.get("msg"))
+        return False
+
+    # Extract cell block_ids (ordered left→right, top→bottom)
+    table_block = resp["data"]["children"][0]
+    cell_ids = table_block.get("table", {}).get("cells", [])
+    if len(cell_ids) != row_count * col_count:
+        log.warning("Table cell count mismatch: expected %d, got %d",
+                     row_count * col_count, len(cell_ids))
+        return True  # table created but can't fill
+
+    # Step 2: Fill cells
+    idx = 0
+    for ri, row in enumerate(rows):
+        for ci, cell_text in enumerate(row):
+            cell_id = cell_ids[idx]
+            idx += 1
+
+            # Get the auto-generated text block inside the cell
+            try:
+                child_resp = api.get(
+                    f"/open-apis/docx/v1/documents/{doc_id}/blocks/{cell_id}/children",
+                    params={"document_revision_id": "-1"},
+                )
+                items = child_resp.get("data", {}).get("items", [])
+                if not items:
+                    continue
+                text_block_id = items[0]["block_id"]
+
+                # Build elements (header row = bold)
+                if ri == 0:
+                    elements = [{"text_run": {
+                        "content": cell_text,
+                        "text_element_style": {"bold": True},
+                    }}]
+                else:
+                    elements = _parse_inline(cell_text) if cell_text else [
+                        {"text_run": {"content": ""}}
+                    ]
+
+                api.patch(
+                    f"/open-apis/docx/v1/documents/{doc_id}/blocks/{text_block_id}",
+                    {"update_text_elements": {"elements": elements}},
+                    params={"document_revision_id": "-1"},
+                )
+            except Exception as e:
+                log.debug("Fill cell [%d,%d] failed: %s", ri, ci, e)
+
+    return True
+
+
+def append_markdown_to_doc(api, doc_id: str, markdown: str) -> int:
+    """Append markdown content to a Feishu document, with native table support.
+
+    Regular blocks use the children API (flat).
+    Tables use a two-step create-then-fill flow.
+
+    Returns the total number of top-level blocks appended.
+    """
+    all_blocks = text_to_blocks(markdown)
+    if not all_blocks:
+        return 0
+
+    total = 0
+    regular_batch: list[dict] = []
+
+    def _flush_regular():
+        nonlocal total
+        if not regular_batch:
+            return
+        resp = api.post(
+            f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+            {"children": regular_batch, "index": -1},
+            params={"document_revision_id": "-1"},
+        )
+        if resp.get("code") != 0:
+            log.warning("Append blocks failed: %s", resp.get("msg"))
+        else:
+            total += len(regular_batch)
+        regular_batch.clear()
+
+    for block in all_blocks:
+        if "_table" in block:
+            _flush_regular()
+            rows = block["_table"]
+            if _create_table_in_doc(api, doc_id, rows):
+                total += 1
+            else:
+                # Fallback: plain text rows
+                for row in rows:
+                    line = "| " + " | ".join(row) + " |"
+                    regular_batch.append({
+                        "block_type": 2,
+                        "text": {"elements": [{"text_run": {"content": line}}]},
+                    })
+        else:
+            regular_batch.append(block)
+
+    _flush_regular()
+    return total
 
 
 def parse_dt(s: str) -> int:

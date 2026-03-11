@@ -458,6 +458,24 @@ class FeishuBot(MediaMixin, SessionMixin):
                 await self._enqueue(key, text, "", message_id, chat_id, chat_type, sender_id,
                                     sender_name, debounce_seconds=0)
                 return
+            elif msg_type == "location":
+                try:
+                    loc = json.loads(msg.content) if isinstance(msg.content, str) else (msg.content or {})
+                except (json.JSONDecodeError, TypeError):
+                    loc = {}
+                loc_name = loc.get("name", "")
+                lat = loc.get("latitude", "")
+                lng = loc.get("longitude", "")
+                if not (lat and lng):
+                    log.warning("Location message missing coords: %s", msg.content[:200] if msg.content else "")
+                    return
+                text = f"[用户分享了位置] 名称: {loc_name}, 经度: {lng}, 纬度: {lat}"
+                sender_name = user.name if user else ""
+                log.info("Location from %s: %s (%s, %s)", sender_id[:8], loc_name, lat, lng)
+                key = self._debounce_key(chat_type, chat_id, sender_id)
+                await self._enqueue(key, text, "", message_id, chat_id, chat_type, sender_id,
+                                    sender_name, debounce_seconds=0)
+                return
             elif msg_type not in ("image", "file"):
                 log.warning("Unhandled msg_type=%s, content: %s",
                             msg_type, msg.content[:500] if msg.content else "(none)")
