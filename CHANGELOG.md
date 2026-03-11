@@ -6,6 +6,25 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.13.0] — 2026-03-11
+
+### Added
+- **Weather skill** — Standalone weather queries with multi-day forecasts and location persistence. Free API, zero cost.
+- **Native table rendering in Feishu docs** — Markdown tables now render as native Feishu table blocks (two-step API: create empty → fill cells), replacing the old plain-text fallback.
+- **Long content auto-redirect** — Replies exceeding 3,500 chars automatically create a Feishu document with summary card + link, preventing chunked message loss in cards.
+- **Bot time awareness** — Message timestamp and sender identity injected into user prompt, giving the bot natural awareness of "when" and "who".
+- **Opensource demasking check** — `scripts/opensource_check.py` scans tracked files for 7 categories of sensitive patterns (project name, personal paths, IPs, open_ids, hardware refs).
+
+### Changed
+- **CLI timeout increase** — Idle timeout 600s → 900s, hard cap 1800s → 3600s, accommodating longer multi-agent orchestration tasks.
+- **Orchestrator prompt strengthening** — Workers now self-validate (import test before reporting), return structured result summaries, and receive interface contracts for cross-task consistency.
+- **Unified doc append** — `append_markdown_to_doc()` is now the single entry point for writing content to Feishu docs (handles both regular blocks and native tables). `doc_ctl.py` and `briefing_run.py` updated accordingly.
+
+### Fixed
+- **Skill-creator** — Description optimization and eval loop refinements.
+
+---
+
 ## [0.12.0] — 2026-03-09
 
 Full sync from internal master branch. Major stability and feature improvements.
