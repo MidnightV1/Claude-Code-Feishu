@@ -13,7 +13,6 @@ Format: feature-oriented grouping per release, not per-commit.
 - **Native table rendering in Feishu docs** — Markdown tables now render as native Feishu table blocks (two-step API: create empty → fill cells), replacing the old plain-text fallback.
 - **Long content auto-redirect** — Replies exceeding 3,500 chars automatically create a Feishu document with summary card + link, preventing chunked message loss in cards.
 - **Bot time awareness** — Message timestamp and sender identity injected into user prompt, giving the bot natural awareness of "when" and "who".
-- **Opensource demasking check** — `scripts/opensource_check.py` scans tracked files for 7 categories of sensitive patterns (project name, personal paths, IPs, open_ids, hardware refs).
 
 ### Changed
 - **CLI timeout increase** — Idle timeout 600s → 900s, hard cap 1800s → 3600s, accommodating longer multi-agent orchestration tasks.
