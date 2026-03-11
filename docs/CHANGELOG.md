@@ -154,7 +154,7 @@ Format: feature-oriented grouping per release, not per-commit.
 - **Context**: hybrid injection (summary for older rounds + raw for recent), Sonnet compression with Gemini API fallback
 - **Quote reply**: reply cache, degraded format fallback, interactive card content parsing
 - **Native Claude vision**: images via Read tool (replaced Gemini image pipeline)
-- **Image compression**: isolated PIL subprocess to prevent ld.so crash on QNAP
+- **Image compression**: isolated PIL subprocess to prevent ld.so crash on certain platforms
 - **Open-source readiness**: security hardening, DRY refactor across 13 files
 
 ---
