@@ -169,6 +169,101 @@ class FeishuAPI:
         r.raise_for_status()
         return r
 
+    def upload(self, path: str, file_path: str, form_data: dict,
+               *, field_name: str = "image", timeout: int = 30) -> dict:
+        """Upload a file via multipart/form-data.
+
+        field_name: "image" for im/v1/images, "file" for im/v1/files.
+        """
+        headers = self._headers()
+        headers.pop("Content-Type", None)  # let requests set multipart boundary
+        with open(file_path, "rb") as f:
+            files = {field_name: f}
+            r = requests.post(
+                f"{self.domain}{path}",
+                headers=headers, data=form_data, files=files, timeout=timeout,
+            )
+        self._raise_for_status(r)
+        data = r.json()
+        if self._check_token_expired(data):
+            headers = self._headers()
+            headers.pop("Content-Type", None)
+            with open(file_path, "rb") as f:
+                files = {field_name: f}
+                r = requests.post(
+                    f"{self.domain}{path}",
+                    headers=headers, data=form_data, files=files, timeout=timeout,
+                )
+            self._raise_for_status(r)
+            data = r.json()
+        return data
+
+
+    # ── IM media convenience methods ────────────────────────
+
+    # File type mapping for im/v1/files
+    _IM_FILE_TYPE_MAP = {
+        ".pdf": "pdf", ".doc": "doc", ".docx": "doc",
+        ".xls": "xls", ".xlsx": "xls", ".csv": "xls",
+        ".ppt": "ppt", ".pptx": "ppt",
+    }
+
+    def send_image(self, image_path: str, receive_id: str,
+                   receive_id_type: str = "open_id") -> str:
+        """Upload an image and send it as a message. Returns message_id."""
+        import json as _json
+        resp = self.upload(
+            "/open-apis/im/v1/images", image_path,
+            form_data={"image_type": "message"},
+        )
+        if resp.get("code") != 0:
+            raise RuntimeError(f"Image upload failed: {resp.get('msg')}")
+        image_key = resp["data"]["image_key"]
+
+        send_resp = self.post(
+            "/open-apis/im/v1/messages",
+            body={
+                "receive_id": receive_id,
+                "msg_type": "image",
+                "content": _json.dumps({"image_key": image_key}),
+            },
+            params={"receive_id_type": receive_id_type},
+        )
+        if send_resp.get("code") != 0:
+            raise RuntimeError(f"Image send failed: {send_resp.get('msg')}")
+        return send_resp.get("data", {}).get("message_id", "")
+
+    def send_file(self, file_path: str, receive_id: str,
+                  receive_id_type: str = "open_id") -> str:
+        """Upload a file and send it as a message. Returns message_id."""
+        import json as _json
+        from pathlib import Path as _Path
+        p = _Path(file_path)
+        suffix = p.suffix.lower()
+        file_type = self._IM_FILE_TYPE_MAP.get(suffix, "stream")
+
+        resp = self.upload(
+            "/open-apis/im/v1/files", file_path,
+            form_data={"file_type": file_type, "file_name": p.name},
+            field_name="file",
+        )
+        if resp.get("code") != 0:
+            raise RuntimeError(f"File upload failed: {resp.get('msg')}")
+        file_key = resp["data"]["file_key"]
+
+        send_resp = self.post(
+            "/open-apis/im/v1/messages",
+            body={
+                "receive_id": receive_id,
+                "msg_type": "file",
+                "content": _json.dumps({"file_key": file_key}),
+            },
+            params={"receive_id_type": receive_id_type},
+        )
+        if send_resp.get("code") != 0:
+            raise RuntimeError(f"File send failed: {send_resp.get('msg')}")
+        return send_resp.get("data", {}).get("message_id", "")
+
 
 class ContactStore:
     """Local name → open_id mapping, persisted to JSON."""

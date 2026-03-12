@@ -1,11 +1,11 @@
 ---
 name: feishu-drive
-description: Manage Feishu Drive / cloud storage (云盘/云空间) — list files/folders, create folders, move/delete files, search, get file info. Use when the user mentions cloud drive (云盘/云空间), file management (文件管理), folders (文件夹), file organization (整理文件), finding files (找文件/找个文档), or wants to browse/organize files in Feishu Drive. DO NOT TRIGGER for reading/writing document content — use feishu-doc for that. Drive manages the file tree; doc manages content inside a document.
+description: Manage Feishu Drive / cloud storage (云盘/云空间) — list files/folders, create folders, move/delete files, search, get file info, send images/files to chats. Use when the user mentions cloud drive (云盘/云空间), file management (文件管理), folders (文件夹), file organization (整理文件), finding files (找文件/找个文档), sending files/images (发文件/发图片/传文件), or wants to browse/organize files in Feishu Drive. DO NOT TRIGGER for reading/writing document content — use feishu-doc for that. Drive manages the file tree; doc manages content inside a document.
 ---
 
 # Feishu Drive
 
-Browse, organize, and manage files and folders in Feishu Drive.
+Browse, organize, and manage files and folders in Feishu Drive. Send images and files to chats.
 
 ## Tool
 
@@ -33,6 +33,12 @@ drive_ctl.py delete <file_token> --type <file_type>
 
 # Search files by name
 drive_ctl.py search "query" [--type docx|sheet|...] [--limit 20]
+
+# Send an image to a chat/user
+drive_ctl.py send-image /path/to/image.png <receive_id> [--id-type open_id|chat_id|user_id]
+
+# Send a file to a chat/user (PDF, JSON, etc.)
+drive_ctl.py send-file /path/to/file.pdf <receive_id> [--id-type open_id|chat_id|user_id]
 ```
 
 ## File Types

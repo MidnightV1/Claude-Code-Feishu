@@ -237,14 +237,23 @@ def _resolve_content(text: str) -> str:
     return text
 
 
+def _count_direct_children(api, doc_id: str) -> int:
+    """Count direct children of the document page block."""
+    resp = api.get(
+        f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+        params={"document_revision_id": "-1"},
+    )
+    if resp.get("code") != 0:
+        return 0
+    return len(resp.get("data", {}).get("items", []))
+
+
 def cmd_update(args, api, cfg):
     """Replace entire document content."""
     doc_id = _extract_doc_id(args.doc_id)
-    blocks = _list_blocks(api, doc_id)
 
-    # The first block is the document page block (block_type=1), skip it.
-    # Its children are the content blocks.
-    child_count = len(blocks) - 1  # exclude page block
+    # Count direct children (not nested blocks like table cells)
+    child_count = _count_direct_children(api, doc_id)
     if child_count > 0:
         _delete_blocks(api, doc_id, 0, child_count)
         print(f"Deleted {child_count} existing blocks")

@@ -178,6 +178,26 @@ def cmd_search(args, api):
         print(f"{ftype:<10} {title:<40} {token}")
 
 
+# ── IM send commands ─────────────────────────────────────
+
+def cmd_send_image(args, api):
+    path = Path(args.image).resolve()
+    if not path.exists():
+        print(f"ERROR: File not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    msg_id = api.send_image(str(path), args.receive_id, args.id_type)
+    print(f"Sent image: {msg_id}")
+
+
+def cmd_send_file(args, api):
+    path = Path(args.file).resolve()
+    if not path.exists():
+        print(f"ERROR: File not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    msg_id = api.send_file(str(path), args.receive_id, args.id_type)
+    print(f"Sent file: {msg_id}")
+
+
 # ── CLI ──────────────────────────────────────────────────
 
 def main():
@@ -210,6 +230,18 @@ def main():
     sr.add_argument("--type", help="Filter by type")
     sr.add_argument("--limit", type=int, default=20)
 
+    _id_args = {"default": "open_id", "choices": ["chat_id", "open_id", "user_id"]}
+
+    si = sub.add_parser("send-image", help="Upload and send an image to a chat")
+    si.add_argument("image", help="Path to image file")
+    si.add_argument("receive_id", help="Chat/user ID to send to")
+    si.add_argument("--id-type", dest="id_type", **_id_args)
+
+    sf = sub.add_parser("send-file", help="Upload and send a file to a chat")
+    sf.add_argument("file", help="Path to file")
+    sf.add_argument("receive_id", help="Chat/user ID to send to")
+    sf.add_argument("--id-type", dest="id_type", **_id_args)
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -224,6 +256,8 @@ def main():
         "move": cmd_move,
         "delete": cmd_delete,
         "search": cmd_search,
+        "send-image": cmd_send_image,
+        "send-file": cmd_send_file,
     }
 
     dispatch[args.command](args, api)

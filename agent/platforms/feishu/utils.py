@@ -117,12 +117,30 @@ def _is_table_line(line: str) -> bool:
     return (stripped.startswith('|') and stripped.endswith('|'))
 
 
+_CODE_LANG_MAP = {
+    "": 1, "text": 1, "plaintext": 1,
+    "bash": 7, "sh": 7, "shell": 61, "zsh": 7,
+    "c": 10, "cpp": 9, "c++": 9, "csharp": 8, "c#": 8,
+    "css": 12, "dart": 15, "dockerfile": 18,
+    "go": 23, "groovy": 24, "html": 25, "http": 27,
+    "java": 30, "javascript": 31, "js": 31,
+    "json": 29, "kotlin": 33, "latex": 34, "lua": 37,
+    "makefile": 39, "markdown": 40, "md": 40,
+    "nginx": 41, "objc": 42, "objective-c": 42,
+    "php": 44, "perl": 45, "powershell": 47,
+    "python": 50, "py": 50, "r": 51, "ruby": 53, "rust": 54,
+    "scss": 56, "sql": 57, "scala": 58, "swift": 62,
+    "typescript": 64, "ts": 64, "xml": 67, "yaml": 68, "yml": 68,
+}
+
+
 def text_to_blocks(text: str) -> list[dict]:
     """Convert markdown-like text to Feishu docx block children.
 
     Supported syntax:
     - # H1 .. ###### H6 → heading blocks
     - --- → divider
+    - ```lang ... ``` → code blocks (block_type 14)
     - - item → text block with bullet prefix (block_type 16 unsupported by create API)
     - 1. item → text block with number prefix (block_type 17 unsupported by create API)
     - > quote → text block with quote prefix (callout is container, loses inline content)
@@ -145,6 +163,31 @@ def text_to_blocks(text: str) -> list[dict]:
 
         if not line:
             i += 1
+            continue
+
+        # Fenced code block: ```lang ... ```
+        fence_match = re.match(r'^```(\w*)', line)
+        if fence_match:
+            lang = fence_match.group(1)
+            i += 1
+            code_lines = []
+            while i < len(lines) and not re.match(r'^```\s*$', lines[i].rstrip()):
+                code_lines.append(lines[i].rstrip('\r'))
+                i += 1
+            if i < len(lines):  # skip closing ```
+                i += 1
+            code_content = "\n".join(code_lines)
+            if not code_content:
+                code_content = " "  # Feishu rejects empty code blocks
+            blocks.append({
+                "block_type": 14,
+                "code": {
+                    "style": {
+                        "language": _CODE_LANG_MAP.get(lang.lower(), 1),
+                    },
+                    "elements": [{"text_run": {"content": code_content}}],
+                },
+            })
             continue
 
         # Collect consecutive table lines

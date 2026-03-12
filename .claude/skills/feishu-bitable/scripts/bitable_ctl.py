@@ -263,7 +263,7 @@ def cmd_record_update(args, api):
     table_id = _extract_table_id(args.table_id)
     fields = json.loads(args.fields)
 
-    resp = api.patch(
+    resp = api.put(
         f"/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/{args.record_id}",
         {"fields": fields})
     if resp.get("code") != 0:
