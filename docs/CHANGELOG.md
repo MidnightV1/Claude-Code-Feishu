@@ -6,6 +6,19 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.14.0] — 2026-03-12
+
+### Added
+- **Code block rendering in Feishu docs** — Fenced code blocks (` ```lang `) now render as native Feishu code blocks with language-specific syntax highlighting (50+ language mappings).
+- **IM media API** — `FeishuAPI.upload()`, `send_image()`, `send_file()` methods for uploading and sending images/files via Feishu IM, with token retry.
+- **Drive send commands** — `drive_ctl.py send-image` and `send-file` commands to upload and send media directly to chats.
+
+### Fixed
+- **Bitable record update** — `PUT` → `PATCH` for record update API (was returning 400 on partial field updates).
+- **Document update block counting** — `cmd_update` now uses `_list_blocks()` instead of a separate `_count_direct_children()` call, fixing incorrect block deletion count that could leave stale content.
+
+---
+
 ## [0.13.0] — 2026-03-11
 
 ### Added

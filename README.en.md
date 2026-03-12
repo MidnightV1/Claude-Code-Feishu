@@ -78,11 +78,11 @@ Core design:
 | Skill | Capability |
 |-------|-----------|
 | `feishu-cal` | Calendar event CRUD, attendee management, contacts |
-| `feishu-doc` | Document create / read / update / section replace / comment analysis |
+| `feishu-doc` | Document create / read / update / section replace / comment analysis / code block highlighting |
 | `feishu-task` | Task management + heartbeat deadline monitoring |
 | `feishu-wiki` | Wiki space browsing, page CRUD |
 | `feishu-bitable` | Bitable record query / filter / CRUD |
-| `feishu-drive` | Drive file and folder management |
+| `feishu-drive` | Drive file and folder management, image/file sending to chats |
 | `feishu-perm` | Document permission management, collaborator CRUD |
 | `hub-ops` | Cron job CRUD, service status, hot-reload |
 | `briefing` | Daily briefing pipeline, custom data sources, multi-domain, keyword self-evolution |
