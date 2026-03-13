@@ -6,6 +6,27 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.16.1] — 2026-03-13
+
+### Added
+- GitHub issue scanner — daily automated scan for new issues with Feishu notifications
+- Error scan module for runtime error tracking
+- ArXiv tracker skill — keyword pre-filter + LLM evaluation pipeline with trend radar
+- Hub-ops skill updates — improved cron management and service operations
+
+### Fixed
+- opensource-sync CHANGELOG path handling between dev/master and opensource branches
+- Complete CHANGELOG backfill for missing versions (0.5.0–0.15.0)
+- WebSocket stability improvements — ping interval cap, health monitor, reconnection
+- Various code quality fixes across 13+ files
+
+### Changed
+- Session management improvements — SQLite dedup, state tracking, context compression
+- Feishu dispatcher resilience — retry logic, card chunking, error recovery
+- README and setup documentation updates
+
+---
+
 ## [0.16.0] — 2026-03-13
 
 feat: address GitHub issues #2-#5 (orphan cleanup, #haiku command, quoted attachments, merged-forward expansion) + daily GitHub issue scanner cron
