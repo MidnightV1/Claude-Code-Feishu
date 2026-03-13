@@ -23,6 +23,7 @@ from agent.infra.message_store import MessageStore
 from agent.orchestrator.pool import WorkerPool
 from agent.orchestrator.engine import Orchestrator
 from agent.jobs.briefing import BriefingPlugin
+from agent.jobs.arxiv import ArxivPlugin
 
 
 def setup_logging(config: dict):
@@ -243,6 +244,9 @@ async def main():
                 default_domain=briefing_cfg.get("default_domain"),
             )
             register_plugin(briefing.descriptor(), bot=bot, scheduler=scheduler)
+
+            arxiv_plugin = ArxivPlugin()
+            register_plugin(arxiv_plugin.descriptor(), bot=bot, scheduler=scheduler)
 
             # Error scan handler
             from agent.jobs.error_scan import scan_errors

@@ -506,24 +506,26 @@ class SessionMixin:
             # Fallback to chunked send
             return await self.dispatcher.send_text(chat_id, text, reply_to)
 
-    def _fetch_quoted_text(self, parent_id: str) -> str:
-        """Fetch the content of a quoted/replied-to message.
+    def _fetch_quoted_message(self, parent_id: str) -> tuple[str, str, str]:
+        """Fetch quoted message content and type.
 
-        Checks persistent reply cache first (bot card replies return degraded
-        content from API), then falls back to API fetch.
+        Returns (text, msg_type, raw_body) tuple.
+        - text: parsed text content (same as old _fetch_quoted_text)
+        - msg_type: message type (text/post/image/file etc.)
+        - raw_body: raw body content string for further processing
         """
         # Check persistent cache — bot card replies can't be fetched via API
         if parent_id in self._reply_cache:
-            return self._reply_cache[parent_id]
+            return self._reply_cache[parent_id], "", ""
         try:
             resp = self._feishu_api.get(f"/open-apis/im/v1/messages/{parent_id}")
             if resp.get("code") != 0:
                 log.warning("Failed to fetch parent message %s: %s",
                             parent_id, resp.get("msg"))
-                return ""
+                return "", "", ""
             items = resp.get("data", {}).get("items", [])
             if not items:
-                return ""
+                return "", "", ""
             item = items[0]
             msg_type = item.get("msg_type", "")
             body = item.get("body", {}).get("content", "")
@@ -531,8 +533,54 @@ class SessionMixin:
             # Discard Feishu's degraded placeholder for card messages
             if self._DEGRADED_PLACEHOLDER in text:
                 log.info("Discarded degraded content for parent %s", parent_id)
-                return ""
-            return text
+                return "", msg_type, body
+            return text, msg_type, body
         except Exception as e:
             log.warning("Error fetching parent message %s: %s", parent_id, e)
+            return "", "", ""
+
+    def _fetch_quoted_text(self, parent_id: str) -> str:
+        """Fetch quoted text (backward compat wrapper)."""
+        text, _, _ = self._fetch_quoted_message(parent_id)
+        return text
+
+    def _expand_merged_forward(self, message_id: str, max_messages: int = 50) -> str:
+        """Expand a merged-forwarded message by fetching sub-messages.
+
+        Feishu merged-forward sends a placeholder text. The actual sub-messages
+        can be fetched via the message list API with upper_message_id filter.
+        """
+        try:
+            resp = self._feishu_api.get(
+                "/open-apis/im/v1/messages",
+                params={
+                    "container_id_type": "thread",
+                    "container_id": message_id,
+                    "page_size": str(max_messages),
+                },
+            )
+            if resp.get("code") != 0:
+                log.warning("Failed to expand merged-forward %s: %s",
+                            message_id, resp.get("msg"))
+                return ""
+            items = resp.get("data", {}).get("items", [])
+            if not items:
+                log.info("No sub-messages found for merged-forward %s", message_id)
+                return ""
+
+            parts = ["[合并转发消息内容]"]
+            for item in items[:max_messages]:
+                msg_type = item.get("msg_type", "")
+                sender_id_short = item.get("sender", {}).get("id", "")[:8]
+                body = item.get("body", {}).get("content", "")
+                content_text = self._parse_content(body, msg_type)
+                if content_text:
+                    parts.append(f"- {sender_id_short}: {content_text}")
+                elif msg_type == "image":
+                    parts.append(f"- {sender_id_short}: [图片]")
+                elif msg_type == "file":
+                    parts.append(f"- {sender_id_short}: [文件]")
+            return "\n".join(parts) if len(parts) > 1 else ""
+        except Exception as e:
+            log.warning("Error expanding merged-forward %s: %s", message_id, e)
             return ""

@@ -1,0 +1,143 @@
+# ArXiv 论文追踪 — 领域配置
+# 修改此文件调整追踪领域和关键词，无需改代码
+
+settings:
+  # LLM 评估阈值（overall >= threshold 才入选）
+  score_threshold: 3.5
+  # 每批送 LLM 评估的论文数
+  batch_size: 8
+  # 评估模型
+  model: "3.1-Pro"
+  # 飞书文档归档文件夹 token（论文日报）
+  feishu_folder: "QCnFfPWEIlKDrfd6pVgcXQIdnUf"
+  # 分享给用户
+  share_to: "ou_9d4c4d2799507f845ffccd476c58920d"
+  # 评分权重（v2: 新增 collaboration 维度）
+  weights:
+    novelty: 0.25
+    rigor: 0.15
+    relevance: 0.35
+    collaboration: 0.25
+
+# 标签体系（LLM 评估时从中选取）
+tags:
+  - name: "能力评测"
+    description: "benchmark 设计、评测方法、模型对比"
+  - name: "Agent"
+    description: "智能体架构、多智能体、工具调用"
+  - name: "数据合成"
+    description: "训练数据生成、数据质量、蒸馏"
+  - name: "前沿发布"
+    description: "头部实验室模型发布/技术报告"
+  - name: "多模态"
+    description: "视觉-语言、音频、跨模态"
+  - name: "沙盒评测"
+    description: "博弈环境、交互式评测、模拟器"
+  - name: "RL/对齐"
+    description: "强化学习、RLHF、偏好对齐"
+  - name: "安全"
+    description: "安全评测、对齐、红队"
+  - name: "产业应用"
+    description: "金融/医疗/法律等垂直领域实际场景"
+  - name: "社区相关"
+    description: "与知乎社区属性/专家组织有关联"
+  - name: "重点关注客户"
+    description: "中国模型厂商相关论文"
+
+# 中国模型厂商（重点客户，LLM 自动识别并打 tag）
+cn_model_orgs:
+  - "Qwen"
+  - "Alibaba"
+  - "Meituan"
+  - "ByteDance"
+  - "Seed"
+  - "StepFun"
+  - "Tencent"
+  - "Hunyuan"
+  - "DeepSeek"
+  - "Moonshot"
+  - "Kimi"
+  - "Zhipu"
+  - "GLM"
+  - "MiniMax"
+  - "Kuaishou"
+  - "Kling"
+
+topics:
+  - name: "大模型前沿发布"
+    name_en: "Frontier Model Releases"
+    priority: 1
+    categories: [cs.CL, cs.AI, cs.LG]
+    keywords:
+      - "Anthropic"
+      - "Claude"
+      - "OpenAI"
+      - "GPT-4"
+      - "GPT-5"
+      - "o1"
+      - "o3"
+      - "Gemini"
+      - "ByteDance"
+      - "Seed"
+      - "Qwen"
+      - "DeepSeek"
+      - "model card"
+      - "technical report"
+      - "system card"
+      - "frontier model"
+      - "foundation model"
+    author_orgs:
+      - "Anthropic"
+      - "OpenAI"
+      - "Google DeepMind"
+      - "ByteDance"
+      - "Alibaba"
+      - "DeepSeek"
+    description: "Anthropic/OpenAI/Gemini/字节Seed/千问/DeepSeek 等头部实验室的新模型发布、技术报告、model card 和研究论文。此话题优先级最高。"
+
+  - name: "模型能力评测"
+    name_en: "Model Capability Evaluation"
+    priority: 2
+    categories: [cs.CL, cs.AI, cs.LG]
+    keywords:
+      - "LLM benchmark"
+      - "evaluation framework"
+      - "model assessment"
+      - "capability evaluation"
+      - "leaderboard"
+      - "LLM evaluation"
+      - "performance comparison"
+      - "model comparison"
+      - "benchmark suite"
+      - "evaluation benchmark"
+    description: "LLM 和基础模型的能力评测方法、新 benchmark 设计、评测框架"
+
+  - name: "Agent 能力评测"
+    name_en: "Agent Capability Evaluation"
+    priority: 2
+    categories: [cs.AI, cs.CL, cs.SE]
+    keywords:
+      - "agent evaluation"
+      - "agent benchmark"
+      - "tool use evaluation"
+      - "agentic"
+      - "autonomous agent"
+      - "multi-agent"
+      - "agent framework"
+      - "code agent"
+    description: "AI Agent 的评测方法、benchmark 设计、能力边界探索"
+
+  - name: "训练数据合成"
+    name_en: "Training Data Synthesis"
+    priority: 3
+    categories: [cs.CL, cs.LG]
+    keywords:
+      - "synthetic data"
+      - "data augmentation"
+      - "data generation"
+      - "self-instruct"
+      - "distillation"
+      - "data curation"
+      - "instruction tuning data"
+      - "data mixture"
+    description: "训练数据的自动生成和合成方法、数据质量评估"

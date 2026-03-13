@@ -36,6 +36,22 @@ do_start() {
     fi
 }
 
+_kill_orphans() {
+    # Kill orphan python processes from agent.main
+    local pids
+    pids=$(pgrep -f "python.*agent\.main" 2>/dev/null)
+    if [ -n "$pids" ]; then
+        echo "Cleaning orphan processes: $pids"
+        kill $pids 2>/dev/null
+        sleep 1
+        # Force kill if still alive
+        pids=$(pgrep -f "python.*agent\.main" 2>/dev/null)
+        if [ -n "$pids" ]; then
+            kill -9 $pids 2>/dev/null
+        fi
+    fi
+}
+
 do_stop() {
     # Stop watchdog first to prevent auto-restart
     if screen -ls 2>/dev/null | grep -q "$WATCHDOG_SCREEN"; then
@@ -43,6 +59,8 @@ do_stop() {
         echo "Watchdog stopped"
     fi
     if ! is_running; then
+        # Clean up orphan processes even if screen is gone
+        _kill_orphans
         echo "Not running"
         return 0
     fi
@@ -52,6 +70,8 @@ do_stop() {
         screen -S "$SCREEN_NAME" -X kill
         sleep 1
     fi
+    # Clean up any remaining orphan processes
+    _kill_orphans
     echo "Stopped"
 }
 

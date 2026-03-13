@@ -403,6 +403,15 @@ class FeishuBot(MediaMixin, SessionMixin):
                         text = ""
                 else:
                     text = self._parse_content(msg.content, msg_type)
+                # Detect and expand merged-forwarded messages — Issue #5
+                if text.strip() == "Merged and Forwarded Message":
+                    expanded = await asyncio.to_thread(
+                        self._expand_merged_forward, message_id
+                    )
+                    if expanded:
+                        text = expanded
+                    else:
+                        text = "[合并转发消息，无法展开内容]"
                 # Strip @mentions
                 if chat_type == "group" and msg.mentions:
                     for m in msg.mentions:
@@ -422,12 +431,30 @@ class FeishuBot(MediaMixin, SessionMixin):
                             text += f"\n[图片] {path}"
                 # Prepend quoted message content if this is a reply
                 if msg.parent_id:
-                    quoted = await asyncio.to_thread(self._fetch_quoted_text, msg.parent_id)
-                    if quoted:
-                        # Truncate very long quotes (e.g. quoting bot's full reply)
-                        if len(quoted) > 2000:
-                            quoted = quoted[:2000] + "\n...(截断)"
-                        text = f"[用户引用的消息: {quoted}]\n\n{text}"
+                    quoted_text, quoted_type, quoted_body = await asyncio.to_thread(
+                        self._fetch_quoted_message, msg.parent_id
+                    )
+                    # Handle quoted attachments (image/file) — Issue #4
+                    if quoted_type == "image" and quoted_body:
+                        session_key_q = self._session_key(chat_type, chat_id, sender_id)
+                        path = await self._process_image(
+                            msg.parent_id, quoted_body, session_key_q
+                        )
+                        if path:
+                            text += f"\n[引用图片] {path}"
+                            log.info("Processed quoted image from %s", msg.parent_id)
+                    elif quoted_type == "file" and quoted_body:
+                        session_key_q = self._session_key(chat_type, chat_id, sender_id)
+                        result = await self._process_file(
+                            msg.parent_id, quoted_body, session_key_q
+                        )
+                        if result:
+                            text += f"\n[引用文件] {result}"
+                            log.info("Processed quoted file from %s", msg.parent_id)
+                    if quoted_text:
+                        if len(quoted_text) > 2000:
+                            quoted_text = quoted_text[:2000] + "\n...(截断)"
+                        text = f"[用户引用的消息: {quoted_text}]\n\n{text}"
 
                 # Commands bypass debounce
                 if text.startswith("#"):
@@ -753,6 +780,8 @@ class FeishuBot(MediaMixin, SessionMixin):
             return self._cmd_switch_model("opus", session_key)
         elif cmd == "#sonnet":
             return self._cmd_switch_model("sonnet", session_key)
+        elif cmd == "#haiku":
+            return self._cmd_switch_model("haiku", session_key)
         elif cmd == "#think":
             return self._cmd_think(session_key)
         else:
@@ -771,6 +800,7 @@ class FeishuBot(MediaMixin, SessionMixin):
             "|------|------|\n"
             "| `#opus` | 切换主模型到 Opus |\n"
             "| `#sonnet` | 切换主模型到 Sonnet |\n"
+            "| `#haiku` | 切换主模型到 Haiku |\n"
             "| `#think` | 开/关深度推理 |\n\n"
             "**运维**\n"
             "| 命令 | 说明 |\n"

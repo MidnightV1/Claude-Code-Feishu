@@ -6,6 +6,12 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.16.0] — 2026-03-13
+
+feat: address community issues #2-#5 (orphan cleanup, #haiku command, quoted attachments, merged-forward expansion) + daily GitHub issue scanner
+
+---
+
 ## [0.15.0] — 2026-03-13
 
 ### Added
