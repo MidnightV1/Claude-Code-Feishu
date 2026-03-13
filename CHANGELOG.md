@@ -6,21 +6,47 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.15.0] — 2026-03-13
+
+### Added
+- **Attention boundary** — User input wrapped in `<user-input>` tags; FEISHU_SYSTEM_PROMPT now includes attention rules to prevent CC from responding to system-level injections as if they were user messages.
+- **Shared workspace workflow** — CLAUDE.md updated with document lifecycle guidance: shared folder creation, auto-inherited permissions, subfolder organization.
+
+### Fixed
+- **Table creation resilience** — `_create_table_in_doc` now catches HTTP exceptions and returns False instead of crashing. `append_markdown_to_doc` tracks created blocks and performs best-effort rollback on mid-way failures. Table creation failures degrade gracefully to plain-text pipe-delimited rows.
+
+---
+
+## [0.14.0] — 2026-03-12
+
+### Added
+- **Code block rendering in Feishu docs** — Fenced code blocks (` ```lang `) now render as native Feishu code blocks with language-specific syntax highlighting (50+ language mappings).
+- **IM media API** — `FeishuAPI.upload()`, `send_image()`, `send_file()` methods for uploading and sending images/files via Feishu IM, with token retry.
+- **Drive send commands** — `drive_ctl.py send-image` and `send-file` commands to upload and send media directly to chats.
+
+### Fixed
+- **Bitable record update** — `PUT` → `PATCH` for record update API (was returning 400 on partial field updates).
+- **Document update block counting** — `cmd_update` now uses `_list_blocks()` instead of a separate `_count_direct_children()` call, fixing incorrect block deletion count that could leave stale content.
+
+---
+
 ## [0.13.0] — 2026-03-11
 
 ### Added
-- **Weather skill** — Standalone weather queries with multi-day forecasts and location persistence. Free API, zero cost.
-- **Native table rendering in Feishu docs** — Markdown tables now render as native Feishu table blocks (two-step API: create empty → fill cells), replacing the old plain-text fallback.
-- **Long content auto-redirect** — Replies exceeding 3,500 chars automatically create a Feishu document with summary card + link, preventing chunked message loss in cards.
-- **Bot time awareness** — Message timestamp and sender identity injected into user prompt, giving the bot natural awareness of "when" and "who".
+- **Native table rendering in Feishu docs** — Markdown tables now render as native Feishu table blocks (two-step API: create empty table → fill cells) instead of plain text.
+- **Long content auto-redirect** — Replies exceeding 3500 chars are automatically written to a Feishu document with a summary card + link, preventing chunked message loss.
+- **Weather skill** — Standalone weather queries with location persistence, multi-day forecasts, and morning briefing integration.
+- **Orchestrator prompt improvements** — Worker self-validation (import tests before reporting), structured result summaries, interface contracts for cross-task consistency.
+- **User prompt enhancements** — Sender identity injection and message timestamp in user prompts for better context awareness.
 
 ### Changed
-- **CLI timeout increase** — Idle timeout 600s → 900s, hard cap 1800s → 3600s, accommodating longer multi-agent orchestration tasks.
-- **Orchestrator prompt strengthening** — Workers now self-validate (import test before reporting), return structured result summaries, and receive interface contracts for cross-task consistency.
-- **Unified doc append** — `append_markdown_to_doc()` is now the single entry point for writing content to Feishu docs (handles both regular blocks and native tables). `doc_ctl.py` and `briefing_run.py` updated accordingly.
+- CLI idle timeout increased from 600s to 900s, hard cap from 1800s to 3600s — supports longer multi-agent tasks.
+- `append_markdown_to_doc()` is now the unified function for writing content to Feishu docs (handles both regular blocks and tables).
+- `doc_ctl.py` create/append commands use the new unified append function.
+- `briefing_run.py` uses `append_markdown_to_doc` for doc content writes.
 
 ### Fixed
-- **Skill-creator** — Description optimization and eval loop refinements.
+- Skill-creator description optimization and eval loop refinements.
 
 ---
 
