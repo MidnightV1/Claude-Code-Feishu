@@ -34,8 +34,10 @@ Plan → Feishu document → user comments → read comments → implement. Do n
 | Rule | Details |
 |------|---------|
 | Existing doc on same topic → update | Check memory doc tracking table; avoid duplicate creation |
-| New doc → record | Write doc_id + URL to memory |
-| Ownership transfer | Transfer to user after creation |
+| New doc → shared folder | Place in appropriate subfolder (`--parent <folder_token>`), record doc_id in memory |
+| No suitable subfolder → create | Create new subfolder under the shared workspace, update memory folder structure |
+| Permissions | Docs created in the shared workspace auto-inherit user access. For docs outside, use `--share` (bot keeps owner). `transfer_owner` only for finalized docs |
+| Timing | Write all content first → then handle permissions (if needed). Never transfer or share before append |
 
 #### 4. Periodic Self-Audit
 
@@ -55,6 +57,20 @@ When discovering new, better, or user-preferred patterns during interaction, pro
 |----------|--------------|
 | Long output | Card 4000-char auto-chunking; mind formatting completeness |
 | File exchange | User uploads → `data/files/`; CC reads with Read tool |
+
+#### 6. Shared Workspace Setup
+
+On first use, create a shared workspace folder in Feishu Drive for document collaboration:
+
+1. **Create root folder** — `drive_ctl.py mkdir "Shared Workspace"` (or localized name)
+2. **Grant user full access** — `perm_ctl.py add <folder_token> --type folder --user <user> --perm full_access`
+3. **Create subfolders** — Organize by category (e.g., Engineering, Design, Reports, etc.)
+4. **Record in memory** — Save folder tokens to memory for future document placement
+
+Benefits:
+- All docs created inside inherit user permissions automatically — no per-doc sharing needed
+- Organized by category for easy browsing
+- Both bot and user can manage contents
 
 ---
 
@@ -112,7 +128,7 @@ CLI timeout strategy (`claude.py`):
 
 | Scenario | Timeout Type | Default |
 |----------|-------------|---------|
-| Chat (no explicit timeout) | **Idle timeout**: disconnect on no stream output | idle=300s, hard cap=1800s |
+| Chat (no explicit timeout) | **Idle timeout**: disconnect on no stream output | idle=900s, hard cap=3600s |
 | Heartbeat/compression (explicit timeout) | **Absolute timeout**: disconnect at deadline | Caller-specified |
 
 Error recovery:
@@ -147,6 +163,9 @@ Error recovery:
 | `skill-creator` | `.claude/skills/skill-creator/` | Skill development framework: create, test, evaluate, iterate (official Apache 2.0) |
 | `brave-web-search` | `.claude/skills/brave-web-search/` | Brave Web Search API (official skill, `brave/brave-search-skills`) |
 | `brave-news-search` | `.claude/skills/brave-news-search/` | Brave News Search API (official skill, `brave/brave-search-skills`) |
+| `weather` | `.claude/skills/weather/` | Weather queries, multi-day forecasts, location persistence (free API, zero cost) |
+| `arxiv-tracker` | `.claude/skills/arxiv-tracker/` | ArXiv paper tracking: keyword pre-filter + LLM evaluation pipeline |
+| `feishu-sheet` | `.claude/skills/feishu-sheet/` | Spreadsheet cell read/write, worksheet management |
 
 Reference: https://code.claude.com/docs/en/skills
 

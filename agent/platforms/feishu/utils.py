@@ -295,25 +295,31 @@ def _create_table_in_doc(api, doc_id: str, rows: list[list[str]]) -> bool:
         return False
 
     # Step 1: Create empty table
-    resp = api.post(
-        f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-        {
-            "children": [{
-                "block_type": 31,
-                "table": {
-                    "property": {
-                        "row_size": row_count,
-                        "column_size": col_count,
-                        "header_row": True,
+    try:
+        resp = api.post(
+            f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+            {
+                "children": [{
+                    "block_type": 31,
+                    "table": {
+                        "property": {
+                            "row_size": row_count,
+                            "column_size": col_count,
+                            "header_row": True,
+                        }
                     }
-                }
-            }],
-            "index": -1,
-        },
-        params={"document_revision_id": "-1"},
-    )
+                }],
+                "index": -1,
+            },
+            params={"document_revision_id": "-1"},
+        )
+    except Exception as e:
+        log.error("Create table failed (HTTP): %s | rows=%d cols=%d doc=%s",
+                  e, row_count, col_count, doc_id)
+        return False
     if resp.get("code") != 0:
-        log.warning("Create table failed: %s", resp.get("msg"))
+        log.error("Create table failed (API): %s | rows=%d cols=%d doc=%s",
+                  resp.get("msg"), row_count, col_count, doc_id)
         return False
 
     # Extract cell block_ids (ordered left→right, top→bottom)
@@ -369,6 +375,9 @@ def append_markdown_to_doc(api, doc_id: str, markdown: str) -> int:
 
     Regular blocks use the children API (flat).
     Tables use a two-step create-then-fill flow.
+    If table creation fails, degrades to plain-text pipe-delimited rows
+    (no information loss). If a flush itself fails, attempts to rollback
+    previously created blocks in this call (best-effort).
 
     Returns the total number of top-level blocks appended.
     """
@@ -377,41 +386,72 @@ def append_markdown_to_doc(api, doc_id: str, markdown: str) -> int:
         return 0
 
     total = 0
+    created_block_ids: list[str] = []  # track for rollback
     regular_batch: list[dict] = []
 
     def _flush_regular():
         nonlocal total
         if not regular_batch:
             return
-        resp = api.post(
-            f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-            {"children": regular_batch, "index": -1},
-            params={"document_revision_id": "-1"},
-        )
+        try:
+            resp = api.post(
+                f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+                {"children": regular_batch, "index": -1},
+                params={"document_revision_id": "-1"},
+            )
+        except Exception as e:
+            log.error("Flush %d blocks failed (HTTP): %s | doc=%s",
+                      len(regular_batch), e, doc_id)
+            regular_batch.clear()
+            raise  # propagate for rollback
         if resp.get("code") != 0:
-            log.warning("Append blocks failed: %s", resp.get("msg"))
+            log.error("Flush %d blocks failed (API): %s | doc=%s",
+                      len(regular_batch), resp.get("msg"), doc_id)
         else:
+            # Track created block IDs for potential rollback
+            for child in resp.get("data", {}).get("children", []):
+                bid = child.get("block_id")
+                if bid:
+                    created_block_ids.append(bid)
             total += len(regular_batch)
         regular_batch.clear()
 
-    for block in all_blocks:
-        if "_table" in block:
-            _flush_regular()
-            rows = block["_table"]
-            if _create_table_in_doc(api, doc_id, rows):
-                total += 1
+    try:
+        for block in all_blocks:
+            if "_table" in block:
+                _flush_regular()
+                rows = block["_table"]
+                if _create_table_in_doc(api, doc_id, rows):
+                    total += 1
+                else:
+                    # Degrade: table failed → write as plain-text pipe rows
+                    log.warning("Table degraded to text: %d rows | doc=%s",
+                                len(rows), doc_id)
+                    for row in rows:
+                        line = "| " + " | ".join(row) + " |"
+                        regular_batch.append({
+                            "block_type": 2,
+                            "text": {"elements": [{"text_run": {"content": line}}]},
+                        })
             else:
-                # Fallback: plain text rows
-                for row in rows:
-                    line = "| " + " | ".join(row) + " |"
-                    regular_batch.append({
-                        "block_type": 2,
-                        "text": {"elements": [{"text_run": {"content": line}}]},
-                    })
-        else:
-            regular_batch.append(block)
+                regular_batch.append(block)
 
-    _flush_regular()
+        _flush_regular()
+    except Exception:
+        # Rollback: best-effort delete blocks created in this call
+        if created_block_ids:
+            log.error("Append failed mid-way, rolling back %d blocks | doc=%s",
+                      len(created_block_ids), doc_id)
+            for bid in reversed(created_block_ids):
+                try:
+                    api.delete(
+                        f"/open-apis/docx/v1/documents/{doc_id}/blocks/{bid}",
+                        params={"document_revision_id": "-1"},
+                    )
+                except Exception as e:
+                    log.debug("Rollback delete %s failed: %s", bid, e)
+        raise
+
     return total
 
 

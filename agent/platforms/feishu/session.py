@@ -155,7 +155,11 @@ class SessionMixin:
                 sender_tag = batch.sender_name or ""
                 if batch.chat_type == "group" and sender_tag:
                     sender_tag += f"@{batch.chat_id[:8]}"
-                prompt = f"[{_now}] {sender_tag}: {prompt}" if sender_tag else f"[{_now}] {prompt}"
+                prompt = (
+                    f"<user-input>\n[{_now}] {sender_tag}: {prompt}\n</user-input>"
+                    if sender_tag
+                    else f"<user-input>\n[{_now}] {prompt}\n</user-input>"
+                )
                 # File context: filtered by recent conversation history
                 session_entry = self.router._sessions.get(session_key, {})
                 history = session_entry.get("history", [])

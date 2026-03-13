@@ -6,6 +6,17 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.15.0] — 2026-03-13
+
+### Added
+- **Attention boundary** — User input wrapped in `<user-input>` tags; FEISHU_SYSTEM_PROMPT now includes attention rules to prevent CC from responding to system-level injections as if they were user messages.
+- **Shared workspace workflow** — CLAUDE.md updated with document lifecycle guidance: shared folder creation, auto-inherited permissions, subfolder organization.
+
+### Fixed
+- **Table creation resilience** — `_create_table_in_doc` now catches HTTP exceptions and returns False instead of crashing. `append_markdown_to_doc` tracks created blocks and performs best-effort rollback on mid-way failures. Table creation failures degrade gracefully to plain-text pipe-delimited rows.
+
+---
+
 ## [0.14.0] — 2026-03-12
 
 ### Added
