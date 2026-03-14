@@ -8,10 +8,10 @@ settings:
   batch_size: 8
   # 评估模型
   model: "3.1-Pro"
-  # Feishu folder token for archiving paper digests
-  feishu_folder: ""
-  # Share to Feishu user (open_id)
-  share_to: ""
+  # 飞书文档归档文件夹 token（论文日报）
+  feishu_folder: "QCnFfPWEIlKDrfd6pVgcXQIdnUf"
+  # 分享给用户
+  share_to: "ou_9d4c4d2799507f845ffccd476c58920d"
   # 评分权重（v2: 新增 collaboration 维度）
   weights:
     novelty: 0.25

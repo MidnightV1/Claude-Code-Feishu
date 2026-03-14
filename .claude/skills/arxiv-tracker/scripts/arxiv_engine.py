@@ -518,7 +518,13 @@ class ArxivEngine:
                     timeout=30,
                 )
                 if r.returncode != 0:
-                    log.warning("Append chunk %d failed: %s", ci, r.stderr[:200])
+                    # Filter noise from stderr (RequestsDependencyWarning etc.)
+                    err = "\n".join(
+                        l for l in r.stderr.splitlines()
+                        if "Warning" not in l and "warnings.warn" not in l
+                    ).strip()
+                    if err:
+                        log.warning("Append chunk %d failed: %s", ci, err[:200])
             except subprocess.TimeoutExpired:
                 log.warning("Append chunk %d timed out", ci)
 

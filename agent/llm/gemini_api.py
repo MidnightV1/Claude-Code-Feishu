@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Gemini API wrapper via google-genai SDK.
 
-Calling pattern derived from project work_functions.py (geminiRequest).
+Calling pattern derived from Agent_Space/work_functions.py:229 (geminiRequest).
 """
 
 import asyncio
+import mimetypes
+import os
 import time
 import logging
 from agent.infra.models import LLMResult
@@ -15,12 +17,18 @@ log = logging.getLogger("hub.gemini_api")
 MODELS = {
     "3.1-Pro":        "gemini-3.1-pro-preview",
     "3-Flash":        "gemini-3-flash-preview",
+    "2.5-Flash":      "gemini-2.5-flash",
+    "2.5-Pro":        "gemini-2.5-pro",
+    "2.0-flash-lite": "gemini-2.0-flash-lite",
+    "3.1-Flash-Lite": "gemini-3.1-flash-lite-preview",
 }
 
 # Pricing: USD per million tokens
 PRICING = {
     "3.1-Pro":        {"input": 2.0,   "output": 12},
     "3-Flash":        {"input": 0.5,   "output": 3},
+    "2.5-Flash":      {"input": 0.15,  "output": 0.6},
+    "2.5-Pro":        {"input": 1.25,  "output": 10},
 }
 
 # Thinking level support per model
@@ -110,12 +118,20 @@ class GeminiAPI:
         # Build contents
         parts = []
 
-        # File uploads via Files API
+        # File attachments — inline bytes for small files, Files API for large
         if files:
             for file_path in files:
-                uploaded = client.files.upload(file=file_path)
-                parts.append(uploaded)
-                self._uploaded_files.append((uploaded.name, time.time()))
+                mime = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+                size = os.path.getsize(file_path)
+                if size < 10 * 1024 * 1024:  # <10MB: inline bytes (faster)
+                    with open(file_path, "rb") as f:
+                        parts.append(types.Part.from_bytes(data=f.read(), mime_type=mime))
+                else:  # >=10MB: Files API upload
+                    uploaded = client.files.upload(file=file_path)
+                    parts.append(types.Part.from_uri(
+                        file_uri=uploaded.uri, mime_type=uploaded.mime_type,
+                    ))
+                    self._uploaded_files.append((uploaded.name, time.time()))
 
         # Image handling (inline bytes)
         if image_src:

@@ -6,7 +6,13 @@ import signal
 import sys
 import os
 import logging
+import warnings
 import yaml
+
+# Suppress RequestsDependencyWarning globally (requests 2.32 vs urllib3 2.6 compat)
+warnings.filterwarnings("ignore", message="urllib3.*doesn't match a supported version")
+# Also suppress in subprocesses via env var
+os.environ.setdefault("PYTHONWARNINGS", "ignore:::requests")
 
 from agent.infra.models import LLMConfig
 from agent.llm.claude import ClaudeCli

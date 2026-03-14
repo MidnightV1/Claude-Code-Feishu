@@ -423,5 +423,107 @@ class MediaMixin:
                         parts.append(text_obj.get("content", ""))
         return "\n".join(parts)
 
+    # ═══ Audio Processing (Voice Messages) ═══
+
+    _VOICE_TRANSCRIBE_PROMPT = (
+        "Transcribe this voice message. Output in the speaker's language.\n\n"
+        "Rules:\n"
+        "1. Remove filler words (嗯、啊、那个、就是说、you know, like, um)\n"
+        "2. Fix grammar, organize into clear sentences\n"
+        "3. Keep the original meaning — don't add or infer content\n"
+        "4. Output ONLY the transcription, no meta-commentary\n\n"
+        "If the message is long (>30s) or covers multiple topics:\n"
+        "- Separate topics with bullet points\n"
+        "- If it contains tasks/instructions, format as:\n"
+        "  **指令**: <what to do>\n"
+        "  **细节**: <any specifics mentioned>\n"
+        "- For rambling or disorganized speech, reorganize by topic while preserving all points"
+    )
+
+    async def _process_audio(
+        self, message_id: str, content_str: str, session_key: str,
+    ) -> str | None:
+        """Download voice message and transcribe via Gemini Flash.
+
+        Returns structured transcription text, or None on failure.
+        """
+        try:
+            content = json.loads(content_str) if isinstance(content_str, str) else {}
+        except Exception:
+            content = {}
+
+        file_key = content.get("file_key", "")
+        duration = content.get("duration", 0)  # milliseconds
+        if not file_key:
+            return None
+
+        tmp_path = None
+        try:
+            # Step 1: Download audio from Feishu
+            tmp_path = await asyncio.to_thread(
+                self._download_feishu_audio_sync, message_id, file_key
+            )
+            if not tmp_path:
+                return None
+
+            duration_s = round(duration / 1000) if duration else "?"
+            log.info("Audio downloaded: %s (duration=%ss)", file_key[:16], duration_s)
+
+            # Step 2: Gemini API transcription + structuring
+            # Gemini CLI @file doesn't support audio; use Gemini API Files upload
+            if not self.router.gemini_api.api_key:
+                log.warning("Gemini API not configured for audio transcription")
+                return None
+
+            voice_config = LLMConfig(provider="gemini-api", model="3.1-Flash-Lite")
+            result = await self.router.run(
+                prompt=self._VOICE_TRANSCRIBE_PROMPT,
+                llm_config=voice_config,
+                files=[tmp_path],
+            )
+
+            if result.is_error or not result.text.strip():
+                log.warning("Audio transcription failed: %s",
+                            (result.text or "empty")[:200])
+                return None
+
+            transcription = result.text.strip()
+            log.info("Audio transcribed (%dms): %s", result.duration_ms,
+                     transcription[:100])
+            return transcription
+
+        except Exception as e:
+            log.error("Audio processing error: %s", e)
+            return None
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+    def _download_feishu_audio_sync(
+        self, message_id: str, file_key: str,
+    ) -> str | None:
+        """Download audio file from Feishu API. Returns temp file path."""
+        try:
+            resp = self._feishu_api.download(
+                f"/open-apis/im/v1/messages/{message_id}/resources/{file_key}?type=file",
+                timeout=30,
+            )
+            # Must be within project dir for Gemini CLI file sandbox
+            _project_root = os.path.normpath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "..")
+            )
+            tmp_path = os.path.join(_project_root, "data", "tmp", f"feishu_audio_{file_key[:16]}.opus")
+            os.makedirs(os.path.dirname(tmp_path), exist_ok=True)
+            with open(tmp_path, "wb") as f:
+                f.write(resp.content)
+            log.info("Audio file saved: %.1fKB", len(resp.content) / 1024)
+            return tmp_path
+        except Exception as e:
+            log.error("Audio download error: %s", e)
+            return None
+
     # Feishu API returns this placeholder for interactive cards
     _DEGRADED_PLACEHOLDER = "请升级至最新版本客户端，以查看内容"

@@ -6,6 +6,24 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.17.0] — 2026-03-14
+
+## [0.17.0] — 2026-03-14
+
+### Added
+- **Voice message support** — Transcribe voice messages via Gemini 3.1 Flash Lite API. Short messages get verbatim transcription; long/multi-topic messages are auto-structured with bullet points and task extraction. Requires Gemini API key.
+- **Auto-remediation error scanner** — Noon error scan now auto-evaluates fixes: Sonnet generates patches, Opus reviews diffs (approve/revise/reject). Auto-fixable issues are silently resolved; complex changes require user confirmation. Bitable status updated automatically.
+- **Social media CLI skills** — Added SKILL.md for twitter-cli, xiaohongshu-cli, and bilibili-cli (jackwener CLIs). Enables reading, searching, and posting on Twitter/X, Xiaohongshu/RED, and Bilibili.
+- **Voice UX** — Thinking card shows transcription progress (🎙️ → 💭), no extra cards created/deleted. Transcription cached in reply_cache for quoted message lookup.
+
+### Fixed
+- **Gemini API file handling** — Small files (<10MB) use inline bytes via `Part.from_bytes()` instead of Files API upload, fixing 400 INVALID_ARGUMENT errors and improving latency.
+- **Task event handler spam** — Registered correct Lark SDK event handlers (`task_updated_v1`, `task_comment_updated_v1`) to suppress ERROR logs.
+- **ArXiv stderr noise** — Filter RequestsDependencyWarning lines from subprocess stderr before logging.
+- **Warning suppression** — Suppress urllib3 `RequestsDependencyWarning` in main process and subprocesses.
+
+---
+
 ## [0.16.1] — 2026-03-13
 
 ### Added

@@ -185,6 +185,8 @@ class FeishuBot(MediaMixin, SessionMixin):
             .register_p2_im_message_message_read_v1(_noop) \
             .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(_noop) \
             .register_p2_task_task_update_tenant_v1(_noop) \
+            .register_p2_task_task_updated_v1(_noop) \
+            .register_p2_task_task_comment_updated_v1(_noop) \
             .build()
 
         self._loop = asyncio.get_running_loop()
@@ -506,6 +508,36 @@ class FeishuBot(MediaMixin, SessionMixin):
                 sender_name = user.name if user else ""
                 log.info("Location from %s: %s (%s, %s)", sender_id[:8], loc_name, lat, lng)
                 key = self._debounce_key(chat_type, chat_id, sender_id)
+                await self._enqueue(key, text, "", message_id, chat_id, chat_type, sender_id,
+                                    sender_name, debounce_seconds=0)
+                return
+            elif msg_type == "audio":
+                key = self._debounce_key(chat_type, chat_id, sender_id)
+                # Reuse thinking card: show transcription state, then hand off to _flush
+                hint_mid = await self.dispatcher.send_card_return_id(
+                    chat_id, "🎙️ 语音识别中…",
+                    reply_to=message_id,
+                )
+                session_key = self._session_key(chat_type, chat_id, sender_id)
+                transcription = await self._process_audio(
+                    message_id, msg.content, session_key
+                )
+                if not transcription:
+                    if hint_mid:
+                        asyncio.create_task(self.dispatcher.delete_message(hint_mid))
+                    await self.dispatcher.send_text(
+                        chat_id, "语音识别失败，请重新发送或改用文字。",
+                        reply_to=message_id,
+                    )
+                    return
+                # Stash as thinking card so _flush reuses it (no duplicate card)
+                if hint_mid:
+                    self._thinking_cards[key] = hint_mid
+                # Cache transcription so quoted voice messages resolve to text
+                self._cache_reply(message_id, f"[语音转写] {transcription}")
+                text = f"[语音消息转写]\n{transcription}"
+                sender_name = user.name if user else ""
+                log.info("Voice from %s: %s", sender_id[:8], transcription[:100])
                 await self._enqueue(key, text, "", message_id, chat_id, chat_type, sender_id,
                                     sender_name, debounce_seconds=0)
                 return

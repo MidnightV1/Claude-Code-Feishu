@@ -124,13 +124,18 @@ class SessionMixin:
                 # Not a confirmation — silently cancel pending plan, process as normal
                 self.orchestrator.cancel(session_key)
 
-        # Send "thinking" card as immediate feedback
-        thinking_msg_id = await self.dispatcher.send_card_return_id(
-            batch.chat_id, "💭 脑子在转…",
-            reply_to=batch.first_message_id,
-        )
+        # Send "thinking" card as immediate feedback (reuse if pre-created by audio flow)
+        thinking_msg_id = self._thinking_cards.get(key)
         if thinking_msg_id:
-            self._thinking_cards[key] = thinking_msg_id
+            # Pre-created (e.g. voice "🎙️ 语音识别中…") → update text
+            await self.dispatcher.update_card(thinking_msg_id, "💭 脑子在转…")
+        else:
+            thinking_msg_id = await self.dispatcher.send_card_return_id(
+                batch.chat_id, "💭 脑子在转…",
+                reply_to=batch.first_message_id,
+            )
+            if thinking_msg_id:
+                self._thinking_cards[key] = thinking_msg_id
         if batch.received_at:
             io_latency = time.time() - batch.received_at
             log.info("IO latency: %.0fms (recv → thinking card)", io_latency * 1000)
