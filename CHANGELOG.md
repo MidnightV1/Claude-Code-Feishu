@@ -6,6 +6,55 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.20.0] — 2026-03-23
+
+## [0.20.0] — 2026-03-23
+
+### Added
+- **Superintendent framework** — Autonomous operation with L0-L3 autonomy matrix.
+  Built-in autonomous tasks: daily briefing, error scan with auto-fix, daily review,
+  exploration engine (discover research directions from conversations/tasks/errors),
+  strategic planner (goal tree + priority ranking), heartbeat monitoring,
+  weekly skill review. Agent guides users through initial setup on first launch.
+- **Voice message support** — Gemini-powered transcription with adaptive prompting
+  (short→verbatim, long→structured). Requires Gemini API key (google-genai SDK);
+  Gemini CLI (2.5 Flash) can substitute but with reduced accuracy.
+- **Interactive card actions** — Button callbacks, abort buttons on thinking cards,
+  feedback buttons on exploration outputs.
+  Requires enabling `card.action.trigger` event in Feishu bot configuration.
+- **Multi-org bot support** — Per-bot workspace isolation with independent app credentials,
+  threads, and working directories. See config.yaml.example for multi-bot setup.
+- **plan-review skill** — CEO/Founder-mode plan review with four modes
+  (scope expansion, selective expansion, hold scope, scope reduction).
+  Adapted from gstack (MIT license).
+- **Award screening script** — Automated award opportunity evaluation.
+- **Gemini search benchmark** — Systematic evaluation of search quality across models.
+
+### Changed
+- **brave-web-search** slimmed from 322→74 lines (agent-operational guide).
+- **brave-news-search** slimmed from 183→49 lines.
+- **Frontmatter standardization** — all skills now have proper name/description fields.
+- **Error scanner** enhanced with auto-remediation capabilities.
+- **Heartbeat** two-layer architecture improvements.
+- **arxiv-tracker** engine refactored for trend analysis.
+- **Briefing pipeline** abstracted with generic domain support.
+
+### Fixed
+- Card rendering edge cases (table limits, column sets, action buttons).
+- WebSocket stability for multi-bot scenarios.
+- Session recovery resilience — context compression, resume fallback.
+- Reply splitting for long content instead of truncation.
+- Cross-org message filtering by tenant_key boundary.
+
+### Setup Notes
+- **Gemini API**: Voice messages require `gemini_api_key` in config.yaml
+- **Card callbacks**: Enable `card.action.trigger` in Feishu bot event settings
+- **Exploration**: Agent will guide folder creation on first exploration task
+- **Cron tasks**: Agent guides users through `hub_ctl.py cron create` on first launch
+- **Multi-bot**: Configure per-bot credentials and workspace in config.yaml
+
+---
+
 ## [0.17.0] — 2026-03-14
 
 ## [0.17.0] — 2026-03-14

@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -248,9 +249,39 @@ def _count_direct_children(api, doc_id: str) -> int:
     return len(resp.get("data", {}).get("items", []))
 
 
+def _auto_archive_comments(doc_id: str):
+    """Archive comments before destructive doc operations.
+
+    Best-effort: failures here should never block the actual operation.
+    """
+    try:
+        archive_script = os.path.join(
+            os.path.dirname(__file__), "..", "..", "..",
+            "scripts", "comment_archive.py"
+        )
+        archive_script = os.path.normpath(archive_script)
+        if not os.path.exists(archive_script):
+            return
+        result = subprocess.run(
+            [sys.executable, archive_script, "archive", doc_id],
+            capture_output=True, text=True, timeout=15,
+            cwd=os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "..")),
+        )
+        if result.returncode == 0:
+            # Only print if something was actually archived
+            out = result.stdout.strip()
+            if out and "0 comments" not in out:
+                print(f"[comment-archive] {out}")
+    except Exception:
+        pass  # Never block doc operations
+
+
 def cmd_update(args, api, cfg):
     """Replace entire document content."""
     doc_id = _extract_doc_id(args.doc_id)
+
+    # Archive comments before destructive update
+    _auto_archive_comments(doc_id)
 
     # Count direct children (not nested blocks like table cells)
     child_count = _count_direct_children(api, doc_id)
@@ -270,6 +301,10 @@ def cmd_update(args, api, cfg):
 def cmd_replace(args, api, cfg):
     """Replace a specific section identified by heading text."""
     doc_id = _extract_doc_id(args.doc_id)
+
+    # Archive comments before destructive replace
+    _auto_archive_comments(doc_id)
+
     section = args.section
     blocks = _list_blocks(api, doc_id)
 
@@ -368,27 +403,76 @@ def _extract_reply_text(reply: dict) -> str:
     return "".join(parts) or "(empty)"
 
 
+_REPLY_MAX_CHARS = 400  # Target max per reply; hard API limit ~800-1000
+
+
+def _split_reply(text, limit):
+    """Split text into chunks that fit within the reply char limit.
+
+    Splits on paragraph boundaries (double newline) first, then sentence
+    boundaries, falling back to hard cut at limit.
+    """
+    if len(text) <= limit:
+        return [text]
+
+    chunks = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining)
+            break
+        # Try paragraph boundary
+        cut = remaining.rfind("\n\n", 0, limit)
+        if cut > limit // 3:
+            chunks.append(remaining[:cut].rstrip())
+            remaining = remaining[cut:].lstrip("\n")
+            continue
+        # Try sentence boundary (。.！!？?)
+        for sep in ("。", ".\n", ". ", "！", "？", "!\n", "?\n"):
+            cut = remaining.rfind(sep, 0, limit)
+            if cut > limit // 3:
+                cut += len(sep)
+                break
+        else:
+            cut = limit
+        chunks.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    return [c for c in chunks if c]
+
+
 def cmd_reply(args, api, cfg):
-    """Reply to a specific comment on a document."""
+    """Reply to a specific comment on a document.
+
+    If content exceeds _REPLY_MAX_CHARS, splits into multiple sequential
+    replies to avoid 400 Bad Request (code 1069302) without information loss.
+    """
     doc_id = _extract_doc_id(args.doc_id)
     file_type = args.file_type or "docx"
 
-    body = {
-        "content": {
-            "elements": [
-                {"type": "text_run", "text_run": {"text": args.content}}
-            ]
+    chunks = _split_reply(args.content, _REPLY_MAX_CHARS)
+    if len(chunks) > 1:
+        print(
+            f"INFO: splitting reply into {len(chunks)} parts ({len(args.content)} chars total)",
+            file=sys.stderr,
+        )
+
+    for i, chunk in enumerate(chunks):
+        body = {
+            "content": {
+                "elements": [
+                    {"type": "text_run", "text_run": {"text": chunk}}
+                ]
+            }
         }
-    }
-    resp = api.post(
-        f"/open-apis/drive/v1/files/{doc_id}/comments/{args.comment_id}/replies",
-        body=body,
-        params={"file_type": file_type},
-    )
-    if resp.get("code") != 0:
-        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
-        sys.exit(1)
-    print(f"Replied to comment {args.comment_id} (reply_id: {resp['data']['reply_id']})")
+        resp = api.post(
+            f"/open-apis/drive/v1/files/{doc_id}/comments/{args.comment_id}/replies",
+            body=body,
+            params={"file_type": file_type},
+        )
+        if resp.get("code") != 0:
+            print(f"ERROR on part {i+1}/{len(chunks)}: {resp.get('msg')}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Replied to comment {args.comment_id} part {i+1}/{len(chunks)} (reply_id: {resp['data']['reply_id']})")
 
 
 def cmd_analyze(args, api, cfg):

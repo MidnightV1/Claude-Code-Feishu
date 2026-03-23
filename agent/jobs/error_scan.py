@@ -220,7 +220,7 @@ async def _auto_fix_error(router, error: dict) -> dict:
         fix_plan=error.get("fix_plan", ""),
     )
 
-    sonnet_cfg = LLMConfig(provider="claude-cli", model="sonnet", timeout_seconds=120)
+    sonnet_cfg = LLMConfig(provider="claude-cli", model="sonnet")
     result = await router.run(prompt=prompt, llm_config=sonnet_cfg)
 
     if result.is_error:
@@ -244,7 +244,7 @@ async def _auto_fix_error(router, error: dict) -> dict:
         files=files_str,
     )
 
-    opus_cfg = LLMConfig(provider="claude-cli", model="opus", timeout_seconds=120)
+    opus_cfg = LLMConfig(provider="claude-cli", model="opus")
     review = await router.run(prompt=review_prompt, llm_config=opus_cfg)
 
     if review.is_error:
@@ -323,7 +323,7 @@ async def scan_errors(router, dispatcher, config: dict):
     # ── Phase 2: Sonnet analysis with fixability classification ──
     error_summary = json.dumps(grouped, ensure_ascii=False, indent=2)
     prompt = _ANALYSIS_PROMPT.format(date=yesterday, errors=error_summary)
-    llm_config = LLMConfig(provider="claude-cli", model="sonnet", timeout_seconds=60)
+    llm_config = LLMConfig(provider="claude-cli", model="sonnet", timeout_seconds=120)
     result = await router.run(prompt=prompt, llm_config=llm_config)
 
     if result.is_error:
@@ -445,7 +445,9 @@ async def scan_errors(router, dispatcher, config: dict):
             log.info("All %d errors are transient (monitor only), no notification sent", len(monitor_items))
         return
 
-    parts = [f"**错误扫描报告** ({yesterday})"]
+    has_confirm = bool(confirm_items)
+    scan_color = "orange" if has_confirm else "green"
+    parts = [f"{{{{card:header=错误扫描报告,color={scan_color}}}}}", f"**{yesterday}**"]
 
     # Auto-fixed summary (FYI, no action needed)
     if auto_fixed:

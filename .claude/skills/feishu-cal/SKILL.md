@@ -60,6 +60,9 @@ python3 .claude/skills/feishu-cal/scripts/cal_ctl.py contact remove "张三"
 
 # Learn contacts from recent calendar events
 python3 .claude/skills/feishu-cal/scripts/cal_ctl.py contact sync
+
+# List group chat members (auto-learns into contacts)
+python3 .claude/skills/feishu-cal/scripts/cal_ctl.py chat members <chat_id>
 ```
 
 ## Behavior Notes

@@ -114,7 +114,7 @@ schedule: "0 8 * * *"
 | `keywords_dynamic.yaml` | **No** — read fresh by collector |
 | This SKILL.md | **No** |
 | `briefing_plugin.py` (shim) | Yes — but it never changes |
-| `config.yaml` (credentials) | Yes — tell user `hub.sh restart` |
+| `config.yaml` (credentials) | Yes — tell user to send `#restart` in Feishu |
 
 ## Registered Handlers
 

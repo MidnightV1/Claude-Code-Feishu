@@ -73,7 +73,7 @@ class HeartbeatMonitor:
         self.triage_llm = LLMConfig(
             provider=triage_cfg.get("provider", "claude-cli"),
             model=triage_cfg.get("model", "sonnet"),
-            timeout_seconds=triage_cfg.get("timeout_seconds", 120),
+            timeout_seconds=triage_cfg.get("timeout_seconds", 240),
         )
 
         # Action LLM (Sonnet — full tool access, triggered only on anomaly)
@@ -94,25 +94,42 @@ class HeartbeatMonitor:
         self._alert_window_hours = config.get("alert_window_hours",
             config.get("tasks", {}).get("alert_window_hours", 2))
 
+        # Explore layer config
+        explore_cfg = config.get("explore", {})
+        self.explore_enabled = explore_cfg.get("enabled", True)
+        self.explore_idle_minutes = explore_cfg.get("idle_minutes", 30)
+
         self.router = router
         self.dispatcher = dispatcher
         self._task: asyncio.Task | None = None
+        self._explore_task: asyncio.Task | None = None
         self._last_sent_at: float | None = None
+        # Idle detection: callback injected by bot via set_idle_checker
+        self._idle_checker: callable | None = None
         # Pending notifications per session key — consumed by feishu_bot on next user message
         self._pending_notifications: dict[str, list[str]] = defaultdict(list)
         # Notification dedup: hash → timestamp, 30-min window
         self._sent_hashes: dict[str, float] = {}
         self._dedup_window = 1800  # seconds
 
+    def set_idle_checker(self, checker: callable):
+        """Inject idle-detection callback from bot.
+
+        checker() should return (is_idle: bool, idle_seconds: float).
+        is_idle=True when: no user messages for idle_minutes AND no active CLI tasks.
+        """
+        self._idle_checker = checker
+
     async def start(self):
         if not self.enabled:
             log.info("Heartbeat disabled")
             return
         self._task = asyncio.create_task(self._loop())
-        log.info("Heartbeat started (interval=%ds, triage=%s/%s, action=%s/%s)",
+        log.info("Heartbeat started (interval=%ds, triage=%s/%s, action=%s/%s, explore=%s)",
                  self.interval,
                  self.triage_llm.provider, self.triage_llm.model,
-                 self.action_llm.provider, self.action_llm.model)
+                 self.action_llm.provider, self.action_llm.model,
+                 "on" if self.explore_enabled else "off")
 
     async def stop(self):
         if self._task and not self._task.done():
@@ -156,6 +173,8 @@ class HeartbeatMonitor:
         should_skip, cleaned = self._strip_heartbeat_token(triage_result.text)
         if should_skip:
             log.info("Heartbeat OK (triage: all clear) [%s]", reason)
+            # Layer 3: Explore — trigger when idle and triage is clear
+            await self._maybe_explore()
             return "suppressed"
 
         log.info("Heartbeat triage detected anomaly, triggering action [%s]", reason)
@@ -189,6 +208,7 @@ class HeartbeatMonitor:
             return "error"
 
     def status(self) -> dict:
+        exploring = self._explore_task and not self._explore_task.done()
         return {
             "enabled": self.enabled,
             "interval_seconds": self.interval,
@@ -196,7 +216,51 @@ class HeartbeatMonitor:
             "action_model": f"{self.action_llm.provider}/{self.action_llm.model}",
             "active_hours": f"{self.active_start}-{self.active_end} ({self.tz_name})",
             "last_sent_at": self._last_sent_at,
+            "explore_enabled": self.explore_enabled,
+            "explore_idle_minutes": self.explore_idle_minutes,
+            "exploring": exploring,
         }
+
+    # ═══ Layer 3: Explore ═══
+
+    async def _maybe_explore(self):
+        """Trigger exploration if system is idle and no explore already running."""
+        if not self.explore_enabled:
+            return
+        # Skip if already exploring
+        if self._explore_task and not self._explore_task.done():
+            log.debug("Explore skipped: already running")
+            return
+        # Check idle via injected callback
+        if not self._idle_checker:
+            log.debug("Explore skipped: no idle checker registered")
+            return
+
+        is_idle, idle_secs = self._idle_checker()
+        if not is_idle:
+            log.debug("Explore skipped: system not idle (idle=%.0fs, threshold=%dm)",
+                      idle_secs, self.explore_idle_minutes)
+            return
+
+        log.info("System idle for %.0fs (>%dm), triggering explore",
+                 idle_secs, self.explore_idle_minutes)
+
+        # Fire-and-forget — explore runs as background task
+        self._explore_task = asyncio.create_task(self._run_explore())
+
+    async def _run_explore(self):
+        """Run exploration session (fire-and-forget, errors logged)."""
+        try:
+            from agent.jobs.explorer_v2 import run_exploration
+            result = await run_exploration(
+                router=self.router,
+                dispatcher=self.dispatcher,
+                workspace_dir=self.workspace_dir,
+                notify_open_id=self.notify_open_id,
+            )
+            log.info("Explore session result: %s", result)
+        except Exception as e:
+            log.error("Explore session error: %s", e, exc_info=True)
 
     # ═══ Internal ═══
 

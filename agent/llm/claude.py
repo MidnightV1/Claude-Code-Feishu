@@ -193,6 +193,7 @@ class ClaudeCli:
         on_todo: Callable[[list[dict]], Awaitable[None]] | None = None,
         setting_sources: str | None = None,
         env_override: dict | None = None,
+        cwd_override: str | None = None,
     ) -> LLMResult:
         """Execute Claude CLI with streaming progress.
 
@@ -203,12 +204,14 @@ class ClaudeCli:
             on_todo: async callback receiving the full todo list whenever CC
                      calls TodoWrite (list of {content, status, activeForm}).
             env_override: Extra env vars merged into subprocess env (e.g. HOME for isolation).
+            cwd_override: Working directory override (None → use self.workspace_dir).
         """
         return await self._execute(
             prompt, session_id=session_id, model=model,
             system_prompt=system_prompt, timeout_seconds=timeout_seconds,
             effort=effort, on_activity=on_activity, on_todo=on_todo,
             setting_sources=setting_sources, env_override=env_override,
+            cwd_override=cwd_override,
         )
 
     async def _execute(
@@ -223,6 +226,7 @@ class ClaudeCli:
         on_todo: Callable[[list[dict]], Awaitable[None]] | None = None,
         setting_sources: str | None = None,
         env_override: dict | None = None,
+        cwd_override: str | None = None,
     ) -> LLMResult:
         # Timeout strategy:
         # - Explicit timeout_seconds (heartbeat, compression) → absolute timeout (old behavior)
@@ -269,7 +273,7 @@ class ClaudeCli:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 limit=8 * 1024 * 1024,  # 8MB; CC result events can be very large
-                cwd=self.workspace_dir,
+                cwd=cwd_override or self.workspace_dir,
                 env=env,
                 start_new_session=True,  # own process group so we can kill children on timeout
             )
@@ -284,13 +288,15 @@ class ClaudeCli:
 
             # Stream stdout line by line, extracting tool events
             text = ""
+            tagged_text = ""  # primary: tagged reply from assistant events
+            explore_text = ""  # capture <next-explore> hints
             new_session_id = None
             cost = 0.0
 
             hard_deadline = time.monotonic() + hard_cap
 
             async def _read_stream():
-                nonlocal text, new_session_id, cost
+                nonlocal text, new_session_id, cost, tagged_text, explore_text
                 while True:
                     remaining = hard_deadline - time.monotonic()
                     if remaining <= 0:
@@ -319,8 +325,38 @@ class ClaudeCli:
                     evt_type = obj.get("type")
 
                     if evt_type == "assistant":
-                        # Check for tool_use in content blocks
+                        # Primary reply extraction: scan assistant events for
+                        # <reply-to-user> tags. This is immune to task-notification
+                        # race conditions because we capture the tagged content
+                        # directly from the stream, not from the result event
+                        # (which only reflects the last assistant turn).
+                        # Concatenate all text blocks in the turn before checking,
+                        # because tags may span multiple blocks (e.g. tool_use splits).
                         content = obj.get("message", {}).get("content", [])
+                        full_turn = "\n".join(
+                            block.get("text", "")
+                            for block in content
+                            if block.get("type") == "text"
+                        )
+                        has_reply_open = "<reply-to-user>" in full_turn
+                        has_reply_close = "</reply-to-user>" in full_turn
+                        has_reply = has_reply_open and has_reply_close
+                        has_explore = "<next-explore>" in full_turn and "</next-explore>" in full_turn
+                        if has_reply:
+                            tagged_text = full_turn  # last tagged turn wins
+                        elif has_reply_open:
+                            # Opening tag present but closing tag missing — context
+                            # truncation.  Still capture it; session layer handles
+                            # incomplete tag extraction.
+                            tagged_text = full_turn
+                            log.warning("Partial reply-to-user tag in assistant turn "
+                                        "(%d text blocks, %d chars) — capturing anyway",
+                                        sum(1 for b in content if b.get("type") == "text"),
+                                        len(full_turn))
+                        if has_explore:
+                            explore_text = full_turn  # capture explore hints
+
+                        # Check for tool_use in content blocks
                         for block in content:
                             if block.get("type") != "tool_use":
                                 continue
@@ -358,10 +394,40 @@ class ClaudeCli:
                         text = obj.get("result", "")
                         new_session_id = obj.get("session_id")
                         cost = obj.get("total_cost_usd") or obj.get("cost_usd") or 0.0
+                        # Diagnostic: log result event tag presence + text length
+                        _has_open = "<reply-to-user>" in text
+                        _has_close = "</reply-to-user>" in text
+                        if _has_open or _has_close:
+                            log.info(
+                                "Result event tags: open=%s close=%s | "
+                                "text=%d chars | stop=%s",
+                                _has_open, _has_close, len(text),
+                                obj.get("stop_reason", "n/a"),
+                            )
 
                 await proc.wait()
 
             await _read_stream()
+
+            # Priority: tagged reply from assistant events > result event.
+            # The result event only captures the last assistant turn's text,
+            # which may be a task-notification response instead of the user reply.
+            # Tagged text from assistant events is the authoritative source.
+            if tagged_text:
+                if "<reply-to-user>" not in text:
+                    log.info("Using tagged reply from assistant event (result had no tags)")
+                text = tagged_text
+
+            # ── Unclosed tag diagnostic ──
+            _final_open = "<reply-to-user>" in text
+            _final_close = "</reply-to-user>" in text
+            if _final_open and not _final_close:
+                log.warning(
+                    "Unclosed <reply-to-user> in final text | "
+                    "len=%d | tagged_text=%s | tail=%.100r",
+                    len(text), bool(tagged_text), text[-200:],
+                )
+
             duration = int((time.monotonic() - start) * 1000)
 
             # Collect stderr
@@ -422,4 +488,5 @@ class ClaudeCli:
             session_id=new_session_id,
             duration_ms=duration,
             cost_usd=cost,
+            explore_hints=explore_text,
         )

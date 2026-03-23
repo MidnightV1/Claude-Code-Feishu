@@ -335,6 +335,8 @@ class LLMRouter:
         session_id = self.get_session_id(session_key) if session_key else None
 
         env_override = llm_config.env or None
+        cwd_override = llm_config.workspace_dir
+        setting_sources = llm_config.setting_sources
 
         # ── Step 1: Try resume ──
         if session_id:
@@ -348,6 +350,8 @@ class LLMRouter:
                 on_activity=on_activity,
                 on_todo=on_todo,
                 env_override=env_override,
+                cwd_override=cwd_override,
+                setting_sources=setting_sources,
             )
             if result.cancelled:
                 return result
@@ -385,6 +389,8 @@ class LLMRouter:
                 on_activity=on_activity,
                 on_todo=on_todo,
                 env_override=env_override,
+                cwd_override=cwd_override,
+                setting_sources=setting_sources,
             )
             if result.cancelled:
                 return result

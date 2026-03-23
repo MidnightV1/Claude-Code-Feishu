@@ -294,6 +294,27 @@ def cmd_contact_remove(args, api, cal_id, contacts):
         print(f"Not found: {args.name}")
 
 
+def cmd_chat_members(args, api, cal_id, contacts):
+    """List members of a group chat, optionally auto-learn into contacts."""
+    members = api.get_chat_members(args.chat_id)
+    if not members:
+        print("No members found (check bot permissions: im:chat.members:read)")
+        return
+    print(f"{'Name':<20} {'Open ID':<45} {'Type'}")
+    print("-" * 80)
+    learned = 0
+    for m in members:
+        name = m.get("name", "")
+        oid = m.get("member_id", "")
+        mtype = m.get("member_id_type", "")
+        print(f"{name:<20} {oid:<45} {mtype}")
+        # Auto-learn into contacts store
+        if name and oid and not contacts.lookup_name(oid):
+            contacts.add(name, oid, source="chat_member")
+            learned += 1
+    print(f"\nTotal: {len(members)} members" + (f", {learned} new contacts learned" if learned else ""))
+
+
 def cmd_contact_sync(args, api, cal_id, contacts):
     """Learn contacts from recent calendar events (attendees)."""
     now = datetime.now(TZ)
@@ -375,6 +396,12 @@ def main():
 
     contact_sub.add_parser("sync")
 
+    # chat subcommands
+    chat_p = sub.add_parser("chat")
+    chat_sub = chat_p.add_subparsers(dest="action")
+    cm = chat_sub.add_parser("members")
+    cm.add_argument("chat_id", help="Group chat ID (oc_xxx)")
+
     args = parser.parse_args()
     if not args.group:
         parser.print_help()
@@ -397,6 +424,7 @@ def main():
         ("contact", "list"): cmd_contact_list,
         ("contact", "remove"): cmd_contact_remove,
         ("contact", "sync"): cmd_contact_sync,
+        ("chat", "members"): cmd_chat_members,
     }
 
     action = getattr(args, "action", None)

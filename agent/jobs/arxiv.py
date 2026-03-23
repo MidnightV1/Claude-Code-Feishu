@@ -54,8 +54,8 @@ class ArxivPlugin:
             fetched = result.get("total_fetched", 0)
             kw_matched = result.get("keyword_matched", 0)
             lines = [
-                f"**ArXiv 论文日报 — {date}**",
-                f"扫描 {fetched} 篇 → 预筛 {kw_matched} 篇 → 精选 {selected} 篇",
+                f"{{{{card:header=ArXiv 论文日报,color=blue}}}}",
+                f"**{date}** | 扫描 {fetched} 篇 → 预筛 {kw_matched} 篇 → 精选 {selected} 篇",
             ]
             if doc_url:
                 lines.append(f"\n📄 [查看日报]({doc_url})")

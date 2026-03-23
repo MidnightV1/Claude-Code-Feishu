@@ -83,6 +83,39 @@ def _parse_inline(text: str) -> list[dict]:
     return elements
 
 
+TABLE_MAX_ROWS = 100   # Feishu docx API: row_size ≤ 100
+TABLE_MAX_COLS = 9     # Feishu docx API: column_size ≤ 9
+TABLE_MAX_CELLS = 200  # Feishu docx API: row_size × column_size ≤ 200
+
+
+def _split_table_rows(rows: list[list[str]]) -> list[list[list[str]]]:
+    """Split a table into chunks respecting all Feishu table limits.
+
+    Three constraints apply simultaneously:
+      - row_size ≤ TABLE_MAX_ROWS (100)
+      - column_size ≤ TABLE_MAX_COLS (9)
+      - row_size × column_size ≤ TABLE_MAX_CELLS (200)
+
+    E.g. 9-col table: 200//9=22 rows max → data rows per chunk = 21
+         2-col table: 200//2=100 rows max, but capped at 100 → data rows = 99
+    Header is repeated in each chunk.
+    """
+    col_count = max(len(rows[0]), 1) if rows else 1
+    # Max total rows (incl. header) per chunk, driven by cell-count limit
+    max_total_rows = max(1, TABLE_MAX_CELLS // col_count)
+    # Cap by absolute row limit, then subtract 1 slot for header
+    chunk_size = min(max_total_rows, TABLE_MAX_ROWS) - 1
+
+    if len(rows) <= chunk_size + 1:
+        return [rows]
+    header = rows[0]
+    data = rows[1:]
+    return [
+        [header] + data[i:i + chunk_size]
+        for i in range(0, len(data), chunk_size)
+    ]
+
+
 def _parse_markdown_table(lines: list[str]) -> list[list[str]] | None:
     """Parse consecutive markdown table lines into a 2D list of cell texts.
 
@@ -141,8 +174,8 @@ def text_to_blocks(text: str) -> list[dict]:
     - # H1 .. ###### H6 → heading blocks
     - --- → divider
     - ```lang ... ``` → code blocks (block_type 14)
-    - - item → text block with bullet prefix (block_type 16 unsupported by create API)
-    - 1. item → text block with number prefix (block_type 17 unsupported by create API)
+    - - item → bullet list block (block_type 12)
+    - 1. item → ordered list block (block_type 13)
     - > quote → text block with quote prefix (callout is container, loses inline content)
     - **bold**, `code`, [text](url) → inline formatting
     - | table | rows → native table blocks (via descendant API in append_markdown_to_doc)
@@ -227,26 +260,26 @@ def text_to_blocks(text: str) -> list[dict]:
             i += 1
             continue
 
-        # Unordered list: - item or * item
+        # Unordered list: - item or * item → native bullet block (block_type 12)
         ul_match = re.match(r'^[-*]\s+(.+)$', line)
         if ul_match:
-            elements = [{"text_run": {"content": "• "}}]
-            elements.extend(_parse_inline(ul_match.group(1)))
             blocks.append({
-                "block_type": 2,
-                "text": {"elements": elements},
+                "block_type": 12,
+                "bullet": {
+                    "elements": _parse_inline(ul_match.group(1)),
+                },
             })
             i += 1
             continue
 
-        # Ordered list: 1. item
+        # Ordered list: 1. item → native ordered block (block_type 13)
         ol_match = re.match(r'^(\d+)\.\s+(.+)$', line)
         if ol_match:
-            elements = [{"text_run": {"content": f"{ol_match.group(1)}. "}}]
-            elements.extend(_parse_inline(ol_match.group(2)))
             blocks.append({
-                "block_type": 2,
-                "text": {"elements": elements},
+                "block_type": 13,
+                "ordered": {
+                    "elements": _parse_inline(ol_match.group(2)),
+                },
             })
             i += 1
             continue
@@ -275,7 +308,7 @@ def text_to_blocks(text: str) -> list[dict]:
     return blocks
 
 
-def _create_table_in_doc(api, doc_id: str, rows: list[list[str]]) -> bool:
+def _create_table_in_doc(api, doc_id: str, rows: list[list[str]]) -> str | None:
     """Create a native table in a Feishu document.
 
     Two-step process:
@@ -287,12 +320,12 @@ def _create_table_in_doc(api, doc_id: str, rows: list[list[str]]) -> bool:
         doc_id: Document ID
         rows: 2D list of cell texts (first row = header)
 
-    Returns True on success, False on failure.
+    Returns table block_id on success, None on failure.
     """
     row_count = len(rows)
     col_count = len(rows[0]) if rows else 0
     if row_count == 0 or col_count == 0:
-        return False
+        return None
 
     # Step 1: Create empty table
     try:
@@ -316,19 +349,20 @@ def _create_table_in_doc(api, doc_id: str, rows: list[list[str]]) -> bool:
     except Exception as e:
         log.error("Create table failed (HTTP): %s | rows=%d cols=%d doc=%s",
                   e, row_count, col_count, doc_id)
-        return False
+        return None
     if resp.get("code") != 0:
         log.error("Create table failed (API): %s | rows=%d cols=%d doc=%s",
                   resp.get("msg"), row_count, col_count, doc_id)
-        return False
+        return None
 
     # Extract cell block_ids (ordered left→right, top→bottom)
     table_block = resp["data"]["children"][0]
     cell_ids = table_block.get("table", {}).get("cells", [])
+    table_bid = table_block.get("block_id")
     if len(cell_ids) != row_count * col_count:
         log.warning("Table cell count mismatch: expected %d, got %d",
                      row_count * col_count, len(cell_ids))
-        return True  # table created but can't fill
+        return table_bid  # table created but can't fill
 
     # Step 2: Fill cells
     idx = 0
@@ -337,16 +371,30 @@ def _create_table_in_doc(api, doc_id: str, rows: list[list[str]]) -> bool:
             cell_id = cell_ids[idx]
             idx += 1
 
-            # Get the auto-generated text block inside the cell
+            # Get or create the text block inside the cell
             try:
                 child_resp = api.get(
                     f"/open-apis/docx/v1/documents/{doc_id}/blocks/{cell_id}/children",
                     params={"document_revision_id": "-1"},
                 )
                 items = child_resp.get("data", {}).get("items", [])
-                if not items:
-                    continue
-                text_block_id = items[0]["block_id"]
+                if items:
+                    text_block_id = items[0]["block_id"]
+                else:
+                    # No auto-generated text block — create one
+                    create_resp = api.post(
+                        f"/open-apis/docx/v1/documents/{doc_id}/blocks/{cell_id}/children",
+                        {"children": [{"block_type": 2, "text": {"elements": [
+                            {"text_run": {"content": ""}}
+                        ]}}]},
+                        params={"document_revision_id": "-1"},
+                    )
+                    created = create_resp.get("data", {}).get("children", [])
+                    if not created:
+                        log.warning("Create text block in cell [%d,%d] failed | doc=%s",
+                                    ri, ci, doc_id)
+                        continue
+                    text_block_id = created[0]["block_id"]
 
                 # Build elements (header row = bold)
                 if ri == 0:
@@ -365,9 +413,9 @@ def _create_table_in_doc(api, doc_id: str, rows: list[list[str]]) -> bool:
                     params={"document_revision_id": "-1"},
                 )
             except Exception as e:
-                log.debug("Fill cell [%d,%d] failed: %s", ri, ci, e)
+                log.warning("Fill cell [%d,%d] failed: %s", ri, ci, e)
 
-    return True
+    return table_bid
 
 
 def append_markdown_to_doc(api, doc_id: str, markdown: str) -> int:
@@ -389,31 +437,41 @@ def append_markdown_to_doc(api, doc_id: str, markdown: str) -> int:
     created_block_ids: list[str] = []  # track for rollback
     regular_batch: list[dict] = []
 
+    FLUSH_BATCH_SIZE = 50  # Feishu API limit: too many children per request → 400
+
     def _flush_regular():
         nonlocal total
         if not regular_batch:
             return
-        try:
-            resp = api.post(
-                f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-                {"children": regular_batch, "index": -1},
-                params={"document_revision_id": "-1"},
-            )
-        except Exception as e:
-            log.error("Flush %d blocks failed (HTTP): %s | doc=%s",
-                      len(regular_batch), e, doc_id)
-            regular_batch.clear()
-            raise  # propagate for rollback
-        if resp.get("code") != 0:
-            log.error("Flush %d blocks failed (API): %s | doc=%s",
-                      len(regular_batch), resp.get("msg"), doc_id)
-        else:
-            # Track created block IDs for potential rollback
-            for child in resp.get("data", {}).get("children", []):
-                bid = child.get("block_id")
-                if bid:
-                    created_block_ids.append(bid)
-            total += len(regular_batch)
+        # Split into chunks to stay within API limits
+        chunks = [regular_batch[i:i + FLUSH_BATCH_SIZE]
+                  for i in range(0, len(regular_batch), FLUSH_BATCH_SIZE)]
+        sent = 0
+        for chunk in chunks:
+            try:
+                resp = api.post(
+                    f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+                    {"children": chunk, "index": -1},
+                    params={"document_revision_id": "-1"},
+                )
+            except Exception as e:
+                log.error("Flush %d blocks failed (HTTP): %s | doc=%s",
+                          len(chunk), e, doc_id)
+                # Remove only the successfully sent items, keep the rest
+                del regular_batch[:sent]
+                raise  # propagate for rollback
+            if resp.get("code") != 0:
+                log.error("Flush %d blocks failed (API code %s): %s | doc=%s",
+                          len(chunk), resp.get("code"), resp.get("msg"), doc_id)
+                # Don't count failed chunk but continue with next
+            else:
+                # Track created block IDs for potential rollback
+                for child in resp.get("data", {}).get("children", []):
+                    bid = child.get("block_id")
+                    if bid:
+                        created_block_ids.append(bid)
+                total += len(chunk)
+            sent += len(chunk)
         regular_batch.clear()
 
     try:
@@ -421,18 +479,35 @@ def append_markdown_to_doc(api, doc_id: str, markdown: str) -> int:
             if "_table" in block:
                 _flush_regular()
                 rows = block["_table"]
-                if _create_table_in_doc(api, doc_id, rows):
-                    total += 1
-                else:
-                    # Degrade: table failed → write as plain-text pipe rows
-                    log.warning("Table degraded to text: %d rows | doc=%s",
-                                len(rows), doc_id)
-                    for row in rows:
-                        line = "| " + " | ".join(row) + " |"
-                        regular_batch.append({
-                            "block_type": 2,
-                            "text": {"elements": [{"text_run": {"content": line}}]},
-                        })
+
+                # Truncate columns exceeding API limit
+                col_count = max(len(r) for r in rows) if rows else 0
+                if col_count > TABLE_MAX_COLS:
+                    log.warning("Table cols %d > max %d, truncating | doc=%s",
+                                col_count, TABLE_MAX_COLS, doc_id)
+                    rows = [r[:TABLE_MAX_COLS] for r in rows]
+
+                # Split rows exceeding API limit (header repeated in each chunk)
+                chunks = _split_table_rows(rows)
+                if len(chunks) > 1:
+                    log.info("Table %d rows split into %d chunks | doc=%s",
+                             len(rows), len(chunks), doc_id)
+
+                for chunk in chunks:
+                    table_bid = _create_table_in_doc(api, doc_id, chunk)
+                    if table_bid:
+                        created_block_ids.append(table_bid)
+                        total += 1
+                    else:
+                        # Degrade: table failed → write as plain-text pipe rows
+                        log.warning("Table degraded to text: %d rows | doc=%s",
+                                    len(chunk), doc_id)
+                        for row in chunk:
+                            line = "| " + " | ".join(row) + " |"
+                            regular_batch.append({
+                                "block_type": 2,
+                                "text": {"elements": [{"text_run": {"content": line}}]},
+                            })
             else:
                 regular_batch.append(block)
 

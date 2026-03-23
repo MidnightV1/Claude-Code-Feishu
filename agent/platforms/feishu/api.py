@@ -46,8 +46,22 @@ class FeishuAPI:
         self._token_lock = threading.Lock()
 
     @classmethod
+    def from_env(cls) -> "FeishuAPI | None":
+        """Create from FEISHU_APP_ID / FEISHU_APP_SECRET env vars (injected by bot process)."""
+        app_id = os.environ.get("FEISHU_APP_ID", "")
+        app_secret = os.environ.get("FEISHU_APP_SECRET", "")
+        if app_id and app_secret:
+            domain = os.environ.get("FEISHU_DOMAIN", "https://open.feishu.cn")
+            return cls(app_id, app_secret, domain)
+        return None
+
+    @classmethod
     def from_config(cls, config_path: str | None = None,
                     section: str = "feishu") -> "FeishuAPI":
+        # Priority: env vars (per-bot injection) > config.yaml
+        instance = cls.from_env()
+        if instance:
+            return instance
         cfg = _load_config(config_path)
         sec = cfg[section]
         # Support both legacy (feishu.app_id) and multi-bot (feishu.bots[0]) formats
@@ -198,6 +212,30 @@ class FeishuAPI:
             data = r.json()
         return data
 
+
+    # ── Chat members ─────────────────────────────────────────
+
+    def get_chat_members(self, chat_id: str, page_size: int = 100) -> list[dict]:
+        """Get all members of a group chat. Returns list of {member_id, name, member_id_type, tenant_key}.
+
+        Requires scope: im:chat.members:read
+        """
+        members = []
+        page_token = ""
+        while True:
+            params = {"member_id_type": "open_id", "page_size": page_size}
+            if page_token:
+                params["page_token"] = page_token
+            data = self.get(f"/open-apis/im/v1/chats/{chat_id}/members", params=params)
+            if data.get("code") != 0:
+                log.warning("get_chat_members failed: %s", data.get("msg"))
+                break
+            items = data.get("data", {}).get("items", [])
+            members.extend(items)
+            page_token = data.get("data", {}).get("page_token", "")
+            if not data.get("data", {}).get("has_more") or not page_token:
+                break
+        return members
 
     # ── IM media convenience methods ────────────────────────
 

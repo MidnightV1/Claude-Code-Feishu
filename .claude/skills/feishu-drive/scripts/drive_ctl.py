@@ -104,8 +104,25 @@ def cmd_info(args, api):
 
 
 def cmd_mkdir(args, api):
-    body = {"name": args.name, "folder_token": args.parent or ""}
+    parent = args.parent or ""
 
+    # Check for existing folder with the same name to avoid duplicates
+    list_resp = api.get("/open-apis/drive/v1/files", params={
+        "folder_token": parent,
+        "page_size": "200",
+    })
+    if list_resp.get("code") == 0:
+        for item in list_resp.get("data", {}).get("files", []):
+            if item.get("name") == args.name and item.get("type") == "folder":
+                token = item.get("token", "?")
+                url = item.get("url", "")
+                print(f"Folder already exists: {args.name}")
+                print(f"  Token: {token}")
+                if url:
+                    print(f"  URL: {url}")
+                return
+
+    body = {"name": args.name, "folder_token": parent}
     resp = api.post("/open-apis/drive/v1/files/create_folder", body)
     if resp.get("code") != 0:
         print(f"ERROR: {resp.get('msg')}", file=sys.stderr)

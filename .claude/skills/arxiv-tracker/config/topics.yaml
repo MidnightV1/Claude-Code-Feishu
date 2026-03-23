@@ -11,7 +11,7 @@ settings:
   # 飞书文档归档文件夹 token（论文日报）
   feishu_folder: "QCnFfPWEIlKDrfd6pVgcXQIdnUf"
   # 分享给用户
-  share_to: "YOUR_FEISHU_USER_ID"
+  share_to: "ou_9d4c4d2799507f845ffccd476c58920d"
   # 评分权重（v2: 新增 collaboration 维度）
   weights:
     novelty: 0.25
@@ -125,7 +125,15 @@ topics:
       - "multi-agent"
       - "agent framework"
       - "code agent"
-    description: "AI Agent 的评测方法、benchmark 设计、能力边界探索"
+      - "agent skill"
+      - "agent tool"
+      - "tool augmented"
+      - "SWE-bench"
+      - "SWE-agent"
+      - "software engineering agent"
+      - "coding agent"
+      - "procedural knowledge"
+    description: "AI Agent 的评测方法、benchmark 设计、能力边界探索、技能/工具系统评估"
 
   - name: "训练数据合成"
     name_en: "Training Data Synthesis"

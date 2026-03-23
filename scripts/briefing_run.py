@@ -210,8 +210,8 @@ class BriefingRunner:
         pid_tag = f"\n<font color='grey'>pid:{pid}</font>"
         review_tag = f" → Claude {self.review_model} 审稿" if self.review_enabled else ""
         card_text = (
-            f"📋 **{self.dc.display_name}** | {date_str}\n"
-            f"采集 → {self._gen_provider} 生成{review_tag} → 分发\n\n"
+            f"{{{{card:header={self.dc.display_name} 日报,color=wathet}}}}\n"
+            f"**{date_str}** | 采集 → {self._gen_provider} 生成{review_tag} → 分发\n\n"
             f"⏳ 采集中...{pid_tag}"
         )
         card_mid = await self.dispatcher.send_card_to_delivery(card_text)
@@ -230,8 +230,8 @@ class BriefingRunner:
         ok, output = await self._run_collector(date_str)
         if not ok:
             await _update_card(
-                f"❌ **{self.dc.display_name}** | {date_str}\n"
-                f"采集失败\n```\n{output[-500:]}\n```{pid_tag}"
+                f"{{{{card:header={self.dc.display_name} 日报,color=red}}}}\n"
+                f"**{date_str}** | ❌ 采集失败\n```\n{output[-500:]}\n```{pid_tag}"
             )
             status.update({"status": "error", "error": "collector failed"})
             self._save_status(status)
@@ -242,8 +242,8 @@ class BriefingRunner:
         if article_count == 0:
             log.info("[%s] %s: 0 articles, skipping", self.domain_name, date_str)
             await _update_card(
-                f"📭 **{self.dc.display_name}** | {date_str}\n"
-                f"今日无新增匹配信号，跳过生成。{pid_tag}"
+                f"{{{{card:header={self.dc.display_name} 日报,color=grey}}}}\n"
+                f"**{date_str}** | 📭 今日无新增匹配信号，跳过生成。{pid_tag}"
             )
             status.update({"status": "skipped", "elapsed_s": round(time.time() - start, 1)})
             self._save_status(status)
@@ -253,15 +253,15 @@ class BriefingRunner:
 
         # ── Step 2: Generate ──
         await _update_card(
-            f"📋 **{self.dc.display_name}** | {date_str}\n"
-            f"✅ 采集 {article_count} 篇 → ⏳ {self._gen_provider} 生成中...{pid_tag}"
+            f"{{{{card:header={self.dc.display_name} 日报,color=wathet}}}}\n"
+            f"**{date_str}** | ✅ 采集 {article_count} 篇 → ⏳ {self._gen_provider} 生成中...{pid_tag}"
         )
         log.info("[%s] %s: generating via %s...", self.domain_name, date_str, self._gen_provider)
         gen_result = await self._generate(date_str)
         if gen_result.is_error:
             await _update_card(
-                f"❌ **{self.dc.display_name}** | {date_str}\n"
-                f"生成失败\n{gen_result.text[:500]}{pid_tag}"
+                f"{{{{card:header={self.dc.display_name} 日报,color=red}}}}\n"
+                f"**{date_str}** | ❌ 生成失败\n{gen_result.text[:500]}{pid_tag}"
             )
             status.update({"status": "error", "error": "generation failed"})
             self._save_status(status)
@@ -351,10 +351,10 @@ class BriefingRunner:
         self._save_status(status)
 
         # ── Final card update ──
-        icon = "✅" if final_status == "ok" else "⚠️"
+        final_color = "green" if final_status == "ok" else "yellow"
         final_text = (
-            f"{icon} **{self.dc.display_name}** | {date_str}\n"
-            f"生成: {self._gen_provider} ({gen_result.duration_ms / 1000:.1f}s)"
+            f"{{{{card:header={self.dc.display_name} 日报,color={final_color}}}}}\n"
+            f"**{date_str}** | 生成: {self._gen_provider} ({gen_result.duration_ms / 1000:.1f}s)"
         )
         if review_model_used != "off":
             final_text += f" | 审稿: Claude {review_model_used}"
@@ -393,7 +393,7 @@ class BriefingRunner:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                 cwd=str(BRIEFING_DIR))
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=480)
             output = stdout.decode("utf-8", errors="replace")
             if proc.returncode != 0:
                 log.error("[%s] Collector failed: %s", self.domain_name, output[-500:])
@@ -402,7 +402,7 @@ class BriefingRunner:
             return True, output
         except asyncio.TimeoutError:
             proc.kill()
-            return False, "Collector timed out (300s)"
+            return False, "Collector timed out (480s)"
         except Exception as e:
             return False, str(e)
 
@@ -835,7 +835,7 @@ class BriefingRunner:
         return transitions
 
     async def _notify_evolution(self, date_str, added, promoted, deprecated, cost):
-        parts = [f"🔄 **Keyword Evolution** | {self.dc.display_name} | {date_str}"]
+        parts = [f"{{{{card:header=关键词进化,color=turquoise}}}}", f"**{self.dc.display_name}** | {date_str}"]
         if added:
             parts.append("\n**New Candidates:**")
             for a in added:

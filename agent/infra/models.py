@@ -2,9 +2,26 @@
 """Shared data structures for claude-code-feishu."""
 
 from dataclasses import dataclass, field, asdict
+from enum import IntEnum
 from typing import Optional
 import time
 import uuid
+
+
+# ═══ Autonomy ═══
+
+class AutonomyLevel(IntEnum):
+    """Superintendent autonomy levels (L0–L3).
+
+    L0: Silent — reversible, low-risk, precedented. Log only.
+    L1: Notify — reversible changes. Execute then notify user.
+    L2: Approve — irreversible or directional. Doc → user confirms → execute.
+    L3: Discuss — requires user judgment. Real-time conversation.
+    """
+    L0_SILENT = 0
+    L1_NOTIFY = 1
+    L2_APPROVE = 2
+    L3_DISCUSS = 3
 
 
 # ═══ LLM ═══
@@ -19,6 +36,8 @@ class LLMConfig:
     thinking: Optional[str] = None     # gemini thinking level: minimal/low/medium/high
     effort: Optional[str] = None        # claude-cli effort: low/medium/high (None = CLI decides)
     env: dict = field(default_factory=dict)  # extra env vars for subprocess (e.g. HOME override)
+    workspace_dir: Optional[str] = None      # per-bot working directory override (None → use global)
+    setting_sources: Optional[str] = None    # claude-cli --setting-sources override (e.g. "local" to skip global config)
 
 
 @dataclass
@@ -31,6 +50,7 @@ class LLMResult:
     cost_usd: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
+    explore_hints: str = ""  # raw <next-explore> content from assistant events
 
 
 # ═══ Cron ═══
@@ -63,6 +83,7 @@ class CronJob:
     handler: str = ""              # registered handler name, takes precedence over prompt
     llm: LLMConfig = field(default_factory=LLMConfig)
     deliver_to_feishu: bool = True
+    silent_token: str = ""         # e.g. "SILENT_OK" — suppress delivery when output contains this token
     one_shot: bool = False
     created_at: float = 0.0
     updated_at: float = 0.0

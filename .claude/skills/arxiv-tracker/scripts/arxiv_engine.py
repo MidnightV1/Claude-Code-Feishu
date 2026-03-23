@@ -272,15 +272,17 @@ class ArxivEngine:
 
     def _parse_evaluation(self, text: str, batch: list[dict]) -> list[dict]:
         """Parse LLM evaluation JSON output, merge scores into paper data."""
-        # Extract JSON array (may be wrapped in ```json ... ```)
-        json_match = re.search(r'\[\s*\{.*?\}\s*\]', text, re.DOTALL)
+        # Extract JSON array, with fallback for ```json ... ``` code blocks
+        json_match = re.search(r'```json\s*(\[.*?\])\s*```', text, re.DOTALL)
+        if not json_match:
+            json_match = re.search(r'(\[\s*\{.*?\}\s*\])', text, re.DOTALL)
         if not json_match:
             log.warning("Failed to extract JSON from evaluation output")
             log.debug("Raw output: %s", text[:500])
             return []
 
         try:
-            scores = json.loads(json_match.group())
+            scores = json.loads(json_match.group(1))
         except json.JSONDecodeError as e:
             log.warning("Invalid JSON in evaluation: %s", e)
             return []

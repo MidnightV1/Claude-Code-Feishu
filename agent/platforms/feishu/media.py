@@ -475,7 +475,10 @@ class MediaMixin:
                 log.warning("Gemini API not configured for audio transcription")
                 return None
 
-            voice_config = LLMConfig(provider="gemini-api", model="3.1-Flash-Lite")
+            voice_config = LLMConfig(
+                provider="gemini-api", model="3.1-Flash-Lite",
+                thinking="low", timeout_seconds=60,
+            )
             result = await self.router.run(
                 prompt=self._VOICE_TRANSCRIBE_PROMPT,
                 llm_config=voice_config,

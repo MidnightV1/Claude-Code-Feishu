@@ -30,6 +30,8 @@ from agent.orchestrator.pool import WorkerPool
 from agent.orchestrator.engine import Orchestrator
 from agent.jobs.briefing import BriefingPlugin
 from agent.jobs.arxiv import ArxivPlugin
+from agent.jobs.explorer import ExplorerPlugin
+from agent.jobs.planner import PlannerPlugin
 
 
 def setup_logging(config: dict):
@@ -148,7 +150,7 @@ async def main():
     await router.load_sessions()
 
     # Resolve bot configs once
-    bot_configs = normalize_bot_configs(cfg)
+    bot_configs = [b for b in normalize_bot_configs(cfg) if not b.get("standalone")]
     primary_cfg = bot_configs[0]
 
     # Primary bot dispatcher (used by heartbeat for DM sending)
@@ -216,15 +218,27 @@ async def main():
     bots: list[FeishuBot] = []
     for bot_cfg in bot_configs:
         # Per-bot default model + env override
-        bot_env = {}
+        bot_env = {
+            "FEISHU_APP_ID": bot_cfg.get("app_id", ""),
+            "FEISHU_APP_SECRET": bot_cfg.get("app_secret", ""),
+        }
+        if bot_cfg.get("domain"):
+            bot_env["FEISHU_DOMAIN"] = bot_cfg["domain"]
         if bot_cfg.get("home_dir"):
             bot_env["HOME"] = os.path.expanduser(bot_cfg["home_dir"])
+        # Per-bot workspace_dir: expand and resolve
+        bot_workspace = None
+        if bot_cfg.get("workspace_dir"):
+            bot_workspace = os.path.expanduser(bot_cfg["workspace_dir"])
+
         bot_llm = default_llm
-        if bot_cfg.get("default_model") or bot_env:
+        if bot_cfg.get("default_model") or bot_env or bot_workspace:
             bot_llm = LLMConfig(
                 provider=bot_cfg.get("default_provider", default_llm.provider),
                 model=bot_cfg.get("default_model", default_llm.model),
                 env=bot_env,
+                workspace_dir=bot_workspace,
+                setting_sources=bot_cfg.get("setting_sources"),
             )
         # Per-bot dispatcher: reuse primary for first bot, create new for others
         if bot_cfg["name"] == primary_cfg["name"]:
@@ -254,6 +268,23 @@ async def main():
             arxiv_plugin = ArxivPlugin()
             register_plugin(arxiv_plugin.descriptor(), bot=bot, scheduler=scheduler)
 
+            # Autonomous explorer
+            explorer_cfg = cfg.get("explorer", {})
+            explorer = ExplorerPlugin(
+                router=router,
+                dispatcher=notifier,
+                budget=explorer_cfg.get("budget", 50),
+                open_id=explorer_cfg.get("notify_open_id", ""),
+                card_dispatcher=primary_dispatcher,
+            )
+            register_plugin(explorer.descriptor(), bot=bot, scheduler=scheduler)
+            # Store reference for queue access from bot commands
+            bot.explorer = explorer
+
+            # Daily planner (strategic task generation)
+            planner = PlannerPlugin(router=router, queue=explorer.queue)
+            register_plugin(planner.descriptor(), bot=bot, scheduler=scheduler)
+
             # Error scan handler
             from agent.jobs.error_scan import scan_errors
             _error_cfg = cfg.get("error_scan", {})
@@ -264,6 +295,10 @@ async def main():
 
         await bot.start()
         bots.append(bot)
+
+        # Wire idle checker: primary bot → heartbeat explore layer
+        if bot_cfg["name"] == primary_cfg["name"]:
+            hb.set_idle_checker(bot.check_idle)
         log.info("Bot '%s' started (app_id=%s)", bot.name, bot_cfg["app_id"][:8])
 
     log.info("All services started (%d bot(s)). Waiting for events...", len(bots))
@@ -275,7 +310,8 @@ async def main():
     try:
         ok = await asyncio.wait_for(
             notifier.send_to_delivery_target(
-                f"✅ **claude-code-feishu 已启动** (pid={os.getpid()}, bots: {bot_names})"
+                f"{{{{card:header=服务已启动,color=green}}}}\n"
+                f"**claude-code-feishu** (pid={os.getpid()}, bots: {bot_names})"
             ),
             timeout=10,
         )
@@ -314,7 +350,7 @@ async def main():
     # Graceful shutdown
     log.info("Shutting down...")
     try:
-        await notifier.send_to_delivery_target("\u26a0\ufe0f **claude-code-feishu \u6b63\u5728\u5173\u95ed...**")
+        await notifier.send_to_delivery_target("{{card:header=服务关闭中,color=orange}}\n**claude-code-feishu 正在关闭...**")
     except Exception:
         pass
     stopped_dispatchers = set()

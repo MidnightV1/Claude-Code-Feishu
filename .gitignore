@@ -19,3 +19,4 @@ Thumbs.db
 test_*.py
 get_chat_id.py
 
+.gemini/

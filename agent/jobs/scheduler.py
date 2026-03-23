@@ -2,6 +2,7 @@
 """In-process cron scheduler. Pattern from OpenClaw src/cron/service/timer.ts."""
 
 import asyncio
+import re
 import time
 import logging
 from datetime import datetime, timezone
@@ -224,10 +225,27 @@ class CronScheduler:
                 job.state.consecutive_errors = 0
                 log.info("Job %s ok (%dms, $%.4f)", job.id, result.duration_ms, result.cost_usd)
 
+                # Silent token suppression (like heartbeat's HEARTBEAT_OK)
+                if job.silent_token and job.deliver_to_feishu:
+                    pattern = re.compile(
+                        r'(\*{0,2})' + re.escape(job.silent_token) + r'(\*{0,2})',
+                        re.IGNORECASE,
+                    )
+                    if pattern.search(result.text):
+                        cleaned = pattern.sub("", result.text).strip()
+                        if len(cleaned) <= 300:
+                            log.info("Job %s silent (token found, %d residual chars)",
+                                     job.id, len(cleaned))
+                            await self._save_store()
+                            return result.text
+
                 # Deliver to Feishu
                 if job.deliver_to_feishu and result.text.strip():
-                    header = f"**[{job.name}]** ({job.llm.provider}/{job.llm.model})\n\n"
-                    await self.dispatcher.send_to_delivery_target(header + result.text)
+                    text = result.text
+                    # Only add card header if job result doesn't have its own
+                    if not text.lstrip().startswith("{{card:"):
+                        text = f"{{{{card:header={job.name},color=blue}}}}\n" + text
+                    await self.dispatcher.send_to_delivery_target(text)
 
             # One-shot: disable after run
             if job.one_shot:

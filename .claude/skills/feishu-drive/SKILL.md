@@ -60,6 +60,7 @@ Drive URLs are automatically parsed — pass full Feishu URLs directly to `info`
 ## Behavior Notes
 
 - `list` with no `--folder` shows root folder contents.
+- `mkdir` automatically checks for existing same-name folder before creating — returns existing folder if found, no duplicates.
 - `delete` moves to trash (recoverable), not permanent deletion.
 - `search` uses the Drive file search API with keyword matching.
 - Bot needs `drive:drive` and `drive:file` permission scopes.
