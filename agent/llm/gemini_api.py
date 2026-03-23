@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Gemini API wrapper via google-genai SDK.
 
-Calling pattern derived from Agent_Space/work_functions.py:229 (geminiRequest).
+Calling pattern derived from project workspace (geminiRequest).
 """
 
 import asyncio
