@@ -358,9 +358,17 @@ class ExplorerPlugin:
         import re
         import os
 
-        memory_dir = os.path.expanduser(
-            "~/.claude/projects/-Users-john-Agent-Space-claude-code-feishu/memory"
-        )
+        # Auto-discover the memory directory from .claude/projects/
+        projects_dir = os.path.expanduser("~/.claude/projects")
+        memory_dir = None
+        if os.path.isdir(projects_dir):
+            for d in os.listdir(projects_dir):
+                candidate = os.path.join(projects_dir, d, "memory")
+                if os.path.isdir(candidate):
+                    memory_dir = candidate
+                    break
+        if not memory_dir:
+            return
 
         # Look for structured memory suggestions in the output
         # The exploration prompt can include instructions to output these

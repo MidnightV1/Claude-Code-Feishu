@@ -1,6 +1,6 @@
 ---
 name: weather
-description: Weather queries and location management (天气/气温/温度/下雨/下雪/空气质量/AQI/穿什么). TRIGGER when user asks about weather conditions (天气怎么样/会下雨吗), temperature (多少度/冷不冷), air quality (空气质量/AQI/雾霾), clothing advice (穿什么/要带伞吗), travel weather (那边天气/出行天气), or multi-day forecasts (未来几天/这周天气). Also triggers when user shares a location message and you need to persist it. Used by garmin-health briefing for morning weather data. DO NOT TRIGGER for climate/geography knowledge questions — answer those directly.
+description: Weather queries and location management (天气/气温/温度/下雨/下雪/空气质量/AQI/穿什么). TRIGGER when user asks about weather conditions (天气怎么样/会下雨吗), temperature (多少度/冷不冷), air quality (空气质量/AQI/雾霾), clothing advice (穿什么/要带伞吗), travel weather (那边天气/出行天气), or multi-day forecasts (未来几天/这周天气). Also triggers when user shares a location message and you need to persist it. DO NOT TRIGGER for climate/geography knowledge questions — answer those directly.
 ---
 
 # Weather
@@ -49,7 +49,7 @@ weather_ctl.py location --set --name "北京朝阳" --lat 39.967 --lng 116.535
 
 **流程**：用户在飞书分享位置 → CC 确认 → 调用 `location --set` 持久化 → 后续查询自动使用
 
-garmin-health 晨间简报调用 `weather_ctl.py current` 获取天气，自动读取持久化位置。
+Other skills or cron jobs can call `weather_ctl.py current` to get weather data, automatically using the persisted location.
 
 ## Behavior Notes
 

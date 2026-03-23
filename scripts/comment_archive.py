@@ -242,7 +242,16 @@ def archive_doc(archive: CommentArchive, doc_id: str) -> int:
 
 def get_tracked_doc_ids() -> list[str]:
     """Get list of tracked document IDs from MEMORY.md doc index."""
-    memory_path = PROJECT_ROOT.parent.parent / ".claude/projects/-Users-john-Agent-Space-claude-code-feishu/memory/MEMORY.md"
+    # Auto-discover memory path from .claude/projects/
+    projects_dir = Path.home() / ".claude" / "projects"
+    memory_path = None
+    if projects_dir.is_dir():
+        for d in projects_dir.iterdir():
+            candidate = d / "memory" / "MEMORY.md"
+            if candidate.exists():
+                memory_path = candidate
+                break
+    if not memory_path:
     if not memory_path.exists():
         return TRACKED_DOCS_FALLBACK
 

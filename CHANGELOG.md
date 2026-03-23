@@ -8,8 +8,6 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ## [0.20.0] — 2026-03-23
 
-## [0.20.0] — 2026-03-23
-
 ### Added
 - **Superintendent framework** — Autonomous operation with L0-L3 autonomy matrix.
   Built-in autonomous tasks: daily briefing, error scan with auto-fix, daily review,
@@ -57,8 +55,6 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ## [0.17.0] — 2026-03-14
 
-## [0.17.0] — 2026-03-14
-
 ### Added
 - **Voice message support** — Transcribe voice messages via Gemini 3.1 Flash Lite API. Short messages get verbatim transcription; long/multi-topic messages are auto-structured with bullet points and task extraction. Requires Gemini API key.
 - **Auto-remediation error scanner** — Noon error scan now auto-evaluates fixes: Sonnet generates patches, Opus reviews diffs (approve/revise/reject). Auto-fixable issues are silently resolved; complex changes require user confirmation. Bitable status updated automatically.
@@ -97,38 +93,6 @@ Format: feature-oriented grouping per release, not per-commit.
 ## [0.16.0] — 2026-03-13
 
 feat: address GitHub issues #2-#5 (orphan cleanup, #haiku command, quoted attachments, merged-forward expansion) + daily GitHub issue scanner cron
-
----
-
-## [0.17.0] — 2026-03-13
-
-## [0.17.0] — 2026-03-13
-
-### Added
-- **ArXiv paper tracker skill** — keyword pre-filter + LLM evaluation pipeline with trend radar and dual-model cross-analysis
-- **Hub-ops skill** — cron job CRUD, service status, scheduler hot-reload (scripts now included in opensource)
-- **GitHub issue scanner** — daily cron job scans open issues and posts analysis to Feishu
-- **Error scanner** — automated error log analysis module
-- **Community issues #2-#5** — orphan process cleanup in hub.sh (#2), #haiku model switch (#3), quoted attachment recognition in group replies (#4), merged-forward message expansion (#5)
-
-### Improved
-- **Session management** — quoted message handling rewritten to support image/file attachments and merged-forward expansion
-- **Orchestrator prompts** — worker self-validation, structured summaries, interface contracts
-- **Skill-creator** — improved description optimization and eval loop
-- **Context injection** — sender identity moved to user prompt, message timestamps injected
-- **Chat timeouts** — idle timeout 600→900s, hard cap 1800→3600s
-
-### Fixed
-- **CHANGELOG path** — opensource uses root CHANGELOG.md, dev uses docs/CHANGELOG.md
-- **Table creation resilience** — graceful degradation to plain-text on Feishu doc table failures
-- **Subprocess timeout** — added to feishu doc create/append operations
-- **Complete CHANGELOG** — backfilled all missing versions 0.5.0–0.15.0
-
----
-
-## [0.16.0] — 2026-03-13
-
-feat: address community issues #2-#5 (orphan cleanup, #haiku command, quoted attachments, merged-forward expansion) + daily GitHub issue scanner
 
 ---
 

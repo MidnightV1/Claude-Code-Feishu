@@ -108,7 +108,7 @@ cp config.yaml.example config.yaml
 tail -f data/hub.log
 ```
 
-For detailed setup with an AI agent guiding you through each step, see [SETUP.md](SETUP.md).
+For detailed setup with an AI agent guiding you through each step, see [SETUP.md](docs/SETUP.md).
 
 ## Feishu App Setup
 
@@ -175,7 +175,7 @@ See `config.yaml.example` for all options. Key sections:
 
 ## For AI Agents
 
-If you're a Claude Code instance setting up this service for the first time, read [`SETUP.md`](SETUP.md) — it's a step-by-step bootstrap guide designed for you to walk the user through the entire setup interactively.
+If you're a Claude Code instance setting up this service for the first time, read [`SETUP.md`](docs/SETUP.md) — it's a step-by-step bootstrap guide designed for you to walk the user through the entire setup interactively.
 
 ## License
 

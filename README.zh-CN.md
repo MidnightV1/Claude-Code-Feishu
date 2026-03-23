@@ -108,7 +108,7 @@ cp config.yaml.example config.yaml
 tail -f data/hub.log
 ```
 
-如需 AI agent 引导你完成完整配置，请参阅 [SETUP.md](SETUP.md)。
+如需 AI agent 引导你完成完整配置，请参阅 [SETUP.md](docs/SETUP.md)。
 
 ## 飞书应用配置
 
@@ -175,7 +175,7 @@ Skills 是 `.claude/skills/` 下的模块化能力。每个 Skill 都有 `SKILL.
 
 ## AI Agent 指南
 
-如果你是首次部署此服务的 Claude Code 实例，请阅读 [`SETUP.md`](SETUP.md) — 这是一份逐步引导指南，帮助你交互式地带用户完成全部配置。
+如果你是首次部署此服务的 Claude Code 实例，请阅读 [`SETUP.md`](docs/SETUP.md) — 这是一份逐步引导指南，帮助你交互式地带用户完成全部配置。
 
 ## 许可证
 
