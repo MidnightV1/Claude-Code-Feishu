@@ -54,7 +54,7 @@ class ExplorationTask:
     source_context: str = ""             # Original context (e.g. user quote)
     priority: int = Priority.P2_NORMAL
     autonomy_level: int = 0              # AutonomyLevel value (0=L0, 1=L1, 2=L2)
-    pillar: str = ""                     # "collect" | "internalize" | "feedback"
+    pillar: str = ""                     # "collect" | "internalize" | "feedback" | "ops"
     estimated_messages: int = 10         # Estimated Sonnet messages to complete
     status: str = "pending"              # "pending" | "in_progress" | "done" | "dropped"
     result_summary: str = ""             # Filled when done
@@ -82,9 +82,16 @@ class ExplorationLog:
     messages_used: int = 0
     summary: str = ""
     action_taken: str = ""               # What was done as a result
+    finding_type: str = ""               # "l1_fix" | "l2_proposal" | "monitoring" | "diagnostic"
     autonomy_level: int = 0
     user_rating: str = ""                # "up" | "down" | "" (unrated)
+    adoption_status: str = ""            # "adopted_l1" | "adopted_l2" | "rejected" | ""
+    adoption_evidence: str = ""          # commit SHA / ticket ID / user confirmation
     timestamp: float = field(default_factory=time.time)
+    duration_seconds: int = 0            # Wall-clock time for exploration
+    auto_scores: dict = field(default_factory=dict)
+    # auto_scores format: {"novelty": 1-5, "actionability": 1-5,
+    #   "depth": 1-5, "efficiency": 1-5, "weighted": float, "tier": "HIGH"|"MED"|"LOW"}
 
 
 class ExplorationQueue:
@@ -118,6 +125,41 @@ class ExplorationQueue:
 
     async def add(self, task: ExplorationTask) -> ExplorationTask:
         """Add a task to the queue. Auto-prunes if over limit."""
+        normalized = task.title.lower().strip()
+        for sep in ("：", ":"):
+            if sep in normalized:
+                normalized = normalized.split(sep, 1)[0].strip()
+        for sep in ('"', "'", "“", "”", "‘", "’", "（", "）", "(", ")", "[", "]", "【", "】",
+                    "{", "}", ",", "，", ".", "。", ";", "；", "!", "！", "?", "？", "/", "\\",
+                    "|", "-", "_", "+"):
+            normalized = normalized.replace(sep, " ")
+        candidate_tokens = {part for part in normalized.split() if part}
+        compact = "".join(ch for ch in normalized if ch.isalnum())
+        if compact:
+            candidate_tokens.update(compact[i:i + 2] for i in range(len(compact) - 1))
+            candidate_tokens.add(compact)
+        for existing in self._tasks:
+            if existing.status not in ("pending", "in_progress"):
+                continue
+            existing_normalized = existing.title.lower().strip()
+            for sep in ("：", ":"):
+                if sep in existing_normalized:
+                    existing_normalized = existing_normalized.split(sep, 1)[0].strip()
+            for sep in ('"', "'", "“", "”", "‘", "’", "（", "）", "(", ")", "[", "]", "【", "】",
+                        "{", "}", ",", "，", ".", "。", ";", "；", "!", "！", "?", "？", "/", "\\",
+                        "|", "-", "_", "+"):
+                existing_normalized = existing_normalized.replace(sep, " ")
+            existing_tokens = {part for part in existing_normalized.split() if part}
+            existing_compact = "".join(ch for ch in existing_normalized if ch.isalnum())
+            if existing_compact:
+                existing_tokens.update(existing_compact[i:i + 2] for i in range(len(existing_compact) - 1))
+                existing_tokens.add(existing_compact)
+            if existing_tokens and candidate_tokens:
+                overlap = len(candidate_tokens & existing_tokens)
+                total = len(candidate_tokens | existing_tokens)
+                if total and overlap / total > 0.7:
+                    log.info("Exploration task skipped as duplicate: %s -> %s", task.title, existing.title)
+                    return existing
         self._tasks.append(task)
         await self._prune()
         await self.save()
@@ -234,6 +276,12 @@ async def append_log(entry: ExplorationLog) -> None:
     """Append a completed exploration to the log."""
     import asyncio
 
+    # Auto-set adoption_status for L1 fixes
+    if (isinstance(entry.action_taken, str) and entry.action_taken.strip()
+            and not entry.adoption_status):
+        entry.adoption_status = "adopted_l1"
+        entry.adoption_evidence = entry.action_taken
+
     line = json.dumps(asdict(entry), ensure_ascii=False)
 
     def _write():
@@ -299,6 +347,98 @@ async def rate_log_entry(task_id: str, rating: str) -> bool:
                     entry = json.loads(stripped)
                     if entry.get("task_id") == task_id and not entry.get("user_rating"):
                         entry["user_rating"] = rating
+                        if rating == "up" and not entry.get("adoption_status"):
+                            entry["adoption_status"] = "adopted_l2"
+                        found = True
+                    lines.append(json.dumps(entry, ensure_ascii=False) + "\n")
+                except (json.JSONDecodeError, KeyError):
+                    lines.append(line)
+        if found:
+            with open(LOG_PATH, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+        return found
+
+    return await asyncio.to_thread(_update)
+
+
+def get_weekly_adoption_count(weeks: int = 4) -> dict[str, dict]:
+    """Count adoptions per calendar week for KR measurement.
+
+    KR: >= 1 autonomous discovery adopted per week.
+
+    Returns:
+        Dict of {iso_week: {"l1": count, "l2": count, "total": count, "kr_met": bool}}
+    """
+    import datetime as _dt
+
+    cutoff = time.time() - weeks * 7 * 86400
+    by_week: dict[str, dict] = {}
+
+    try:
+        with open(LOG_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                    ts = entry.get("timestamp", 0)
+                    if ts < cutoff:
+                        continue
+                    # Adoption signal: action_taken set (L1) OR user_rating=up (L2)
+                    has_l1 = bool(isinstance(entry.get("action_taken", ""), str)
+                                  and entry.get("action_taken", "").strip())
+                    has_l2 = entry.get("user_rating") == "up"
+                    if not (has_l1 or has_l2):
+                        continue
+                    week = _dt.datetime.fromtimestamp(ts).strftime("%Y-W%W")
+                    if week not in by_week:
+                        by_week[week] = {"l1": 0, "l2": 0, "total": 0, "kr_met": False}
+                    if has_l1:
+                        by_week[week]["l1"] += 1
+                    if has_l2:
+                        by_week[week]["l2"] += 1
+                    by_week[week]["total"] += 1
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except FileNotFoundError:
+        pass
+
+    for wk in by_week:
+        by_week[wk]["kr_met"] = by_week[wk]["total"] >= 1
+
+    return dict(sorted(by_week.items()))
+
+
+async def adopt_log_entry(task_id: str, evidence: str, status: str = "adopted_l1") -> bool:
+    """Mark an exploration log entry as adopted with evidence.
+
+    Args:
+        task_id: The task_id to match in the log.
+        evidence: Commit SHA, ticket ID, or description.
+        status: "adopted_l1" | "adopted_l2" | "rejected"
+
+    Returns:
+        True if the entry was found and updated.
+    """
+    import asyncio
+
+    def _update():
+        if not os.path.exists(LOG_PATH):
+            return False
+        lines = []
+        found = False
+        with open(LOG_PATH, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    lines.append(line)
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                    if entry.get("task_id") == task_id and not entry.get("adoption_status"):
+                        entry["adoption_status"] = status
+                        entry["adoption_evidence"] = evidence
                         found = True
                     lines.append(json.dumps(entry, ensure_ascii=False) + "\n")
                 except (json.JSONDecodeError, KeyError):

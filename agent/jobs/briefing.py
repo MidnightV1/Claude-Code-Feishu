@@ -48,13 +48,25 @@ class BriefingPlugin:
         return handler
 
     async def _handler_default(self):
+        if not self.default_domain:
+            if not DOMAINS_DIR.exists():
+                log.warning("No domain specified and no default_domain configured, skipping briefing")
+                return
+            domains = sorted(d.name for d in DOMAINS_DIR.iterdir() if (d / "domain.yaml").exists())
+            if not domains:
+                log.warning("No domain specified and no default_domain configured, skipping briefing")
+                return
+            for domain in domains:
+                await self.run(domain)
+            return
         return await self.run(self.default_domain)
 
     async def run(self, domain: str = None, date_str: str = None) -> str:
         """Entry point for cron handlers."""
         domain = domain or self.default_domain
         if not domain:
-            raise ValueError("No domain specified and no default_domain configured")
+            log.warning("No domain specified and no default_domain configured")
+            return
         result = await self._spawn("run", domain, date_str=date_str)
         try:
             data = json.loads(result)

@@ -23,97 +23,89 @@ def _sanitize_doc_text(text: str) -> str:
     return text
 
 
+# Combined pattern for inline formatting: bold, italic, strikethrough, code, links
+_INLINE_RE = re.compile(
+    r'\*\*(.+?)\*\*'              # group 1: bold
+    r'|~~(.+?)~~'                 # group 2: strikethrough
+    r'|\*(.+?)\*'                 # group 3: italic
+    r'|`([^`]+)`'                 # group 4: inline code
+    r'|\[([^\]]+)\]\(([^)]+)\)'   # group 5,6: link
+)
+
+# HTML tags that appear in Feishu card markdown but not supported in doc blocks
+_HTML_STRIP_RE = re.compile(
+    r"<font\s+color=['\"]?\w+['\"]?>(.*?)</font>"
+    r"|<text_tag\s+color=['\"]?\w+['\"]?>(.*?)</text_tag>"
+    r"|<at\s+id=['\"]?[\w]+['\"]?>\s*</at>"
+)
+
+
+def _strip_html_tags(text: str) -> str:
+    """Strip Feishu card HTML tags, keeping inner text content."""
+    def _replace(m: re.Match) -> str:
+        return m.group(1) or m.group(2) or ""
+    return _HTML_STRIP_RE.sub(_replace, text)
+
+
 def _parse_inline(text: str) -> list[dict]:
-    """Parse inline markdown (bold, inline code, links) into Feishu text_run elements."""
+    """Parse inline markdown (bold, italic, strikethrough, code, link) into Feishu text_run elements."""
+    text = _strip_html_tags(text)
+
     elements = []
-    # Pattern: **bold**, `code`, [text](url)
-    pattern = re.compile(
-        r'\*\*(.+?)\*\*'        # bold
-        r'|`([^`]+)`'           # inline code
-        r'|\[([^\]]+)\]\(([^)]+)\)'  # link
-    )
     pos = 0
-    for m in pattern.finditer(text):
-        # Add plain text before match
+    for m in _INLINE_RE.finditer(text):
         if m.start() > pos:
             plain = text[pos:m.start()]
             if plain:
                 elements.append({"text_run": {"content": plain}})
 
         if m.group(1) is not None:  # bold
-            elements.append({
-                "text_run": {
-                    "content": m.group(1),
-                    "text_element_style": {"bold": True},
-                }
-            })
-        elif m.group(2) is not None:  # inline code
-            elements.append({
-                "text_run": {
-                    "content": m.group(2),
-                    "text_element_style": {"inline_code": True},
-                }
-            })
-        elif m.group(3) is not None:  # link
-            url = m.group(4)
+            elements.append({"text_run": {
+                "content": m.group(1),
+                "text_element_style": {"bold": True},
+            }})
+        elif m.group(2) is not None:  # strikethrough
+            elements.append({"text_run": {
+                "content": m.group(2),
+                "text_element_style": {"strikethrough": True},
+            }})
+        elif m.group(3) is not None:  # italic
+            elements.append({"text_run": {
+                "content": m.group(3),
+                "text_element_style": {"italic": True},
+            }})
+        elif m.group(4) is not None:  # inline code
+            elements.append({"text_run": {
+                "content": m.group(4),
+                "text_element_style": {"inline_code": True},
+            }})
+        elif m.group(5) is not None:  # link
+            url = m.group(6)
             if url.startswith("http://") or url.startswith("https://"):
-                elements.append({
-                    "text_run": {
-                        "content": m.group(3),
-                        "text_element_style": {
-                            "link": {"url": url},
-                        },
-                    }
-                })
+                elements.append({"text_run": {
+                    "content": m.group(5),
+                    "text_element_style": {"link": {"url": url}},
+                }})
             else:
-                # Relative path — Feishu API rejects non-http URLs
-                elements.append({"text_run": {"content": m.group(3)}})
+                elements.append({"text_run": {"content": m.group(5)}})
         pos = m.end()
 
-    # Remaining text after last match
     if pos < len(text):
         remaining = text[pos:]
         if remaining:
             elements.append({"text_run": {"content": remaining}})
 
-    # No matches at all — return single plain element
     if not elements:
         elements.append({"text_run": {"content": text}})
 
     return elements
 
 
-TABLE_MAX_ROWS = 100   # Feishu docx API: row_size ≤ 100
+TABLE_CREATE_ROWS = 9  # Feishu docx API: initial create limit (10+ → 1770001)
 TABLE_MAX_COLS = 9     # Feishu docx API: column_size ≤ 9
-TABLE_MAX_CELLS = 200  # Feishu docx API: row_size × column_size ≤ 200
-
-
-def _split_table_rows(rows: list[list[str]]) -> list[list[list[str]]]:
-    """Split a table into chunks respecting all Feishu table limits.
-
-    Three constraints apply simultaneously:
-      - row_size ≤ TABLE_MAX_ROWS (100)
-      - column_size ≤ TABLE_MAX_COLS (9)
-      - row_size × column_size ≤ TABLE_MAX_CELLS (200)
-
-    E.g. 9-col table: 200//9=22 rows max → data rows per chunk = 21
-         2-col table: 200//2=100 rows max, but capped at 100 → data rows = 99
-    Header is repeated in each chunk.
-    """
-    col_count = max(len(rows[0]), 1) if rows else 1
-    # Max total rows (incl. header) per chunk, driven by cell-count limit
-    max_total_rows = max(1, TABLE_MAX_CELLS // col_count)
-    # Cap by absolute row limit, then subtract 1 slot for header
-    chunk_size = min(max_total_rows, TABLE_MAX_ROWS) - 1
-
-    if len(rows) <= chunk_size + 1:
-        return [rows]
-    header = rows[0]
-    data = rows[1:]
-    return [
-        [header] + data[i:i + chunk_size]
-        for i in range(0, len(data), chunk_size)
-    ]
+TABLE_ROW_INSERT_DELAY = 0.05  # seconds between insert_table_row calls (rate limit)
+BLOCK_CHUNK_DELAY = 0.1
+TABLE_CELL_FILL_DELAY = 0.05
 
 
 def _parse_markdown_table(lines: list[str]) -> list[list[str]] | None:
@@ -150,20 +142,43 @@ def _is_table_line(line: str) -> bool:
     return (stripped.startswith('|') and stripped.endswith('|'))
 
 
+_MARKDOWN_SYNTAX_RE = re.compile(
+    r'\*\*(.+?)\*\*'              # bold → content
+    r'|~~(.+?)~~'                 # strikethrough → content
+    r'|\*(.+?)\*'                 # italic → content
+    r'|`([^`]+)`'                 # inline code → content
+    r'|\[([^\]]+)\]\([^)]+\)'     # link → link text only
+)
+
+
+def _display_width(text: str) -> int:
+    """Calculate display width of cell text, stripping markdown syntax.
+
+    CJK characters count as 2 units. Markdown formatting markers (**bold**,
+    `code`, [text](url), etc.) are stripped to measure only visible content.
+    """
+    # Strip markdown syntax, keeping only visible text
+    def _replace(m: re.Match) -> str:
+        return m.group(1) or m.group(2) or m.group(3) or m.group(4) or m.group(5) or ""
+    plain = _MARKDOWN_SYNTAX_RE.sub(_replace, text or "")
+    return sum(2 if ord(c) > 0x7F else 1 for c in plain)
+
+
 _CODE_LANG_MAP = {
+    # Ref: DocxCodeLanguage enum (chyroc/lark type_docx.go)
     "": 1, "text": 1, "plaintext": 1,
-    "bash": 7, "sh": 7, "shell": 61, "zsh": 7,
+    "bash": 7, "sh": 7, "shell": 60, "zsh": 7,
     "c": 10, "cpp": 9, "c++": 9, "csharp": 8, "c#": 8,
     "css": 12, "dart": 15, "dockerfile": 18,
-    "go": 23, "groovy": 24, "html": 25, "http": 27,
-    "java": 30, "javascript": 31, "js": 31,
-    "json": 29, "kotlin": 33, "latex": 34, "lua": 37,
-    "makefile": 39, "markdown": 40, "md": 40,
-    "nginx": 41, "objc": 42, "objective-c": 42,
-    "php": 44, "perl": 45, "powershell": 47,
-    "python": 50, "py": 50, "r": 51, "ruby": 53, "rust": 54,
-    "scss": 56, "sql": 57, "scala": 58, "swift": 62,
-    "typescript": 64, "ts": 64, "xml": 67, "yaml": 68, "yml": 68,
+    "go": 22, "groovy": 23, "html": 24, "http": 26,
+    "java": 29, "javascript": 30, "js": 30,
+    "json": 28, "kotlin": 32, "latex": 33, "lua": 36,
+    "makefile": 38, "markdown": 39, "md": 39,
+    "nginx": 40, "objc": 41, "objective-c": 41,
+    "php": 43, "perl": 44, "powershell": 46,
+    "python": 49, "py": 49, "r": 50, "ruby": 52, "rust": 53,
+    "scss": 55, "sql": 56, "scala": 57, "swift": 61,
+    "typescript": 63, "ts": 63, "xml": 66, "yaml": 67, "yml": 67,
 }
 
 
@@ -176,7 +191,7 @@ def text_to_blocks(text: str) -> list[dict]:
     - ```lang ... ``` → code blocks (block_type 14)
     - - item → bullet list block (block_type 12)
     - 1. item → ordered list block (block_type 13)
-    - > quote → text block with quote prefix (callout is container, loses inline content)
+    - > quote → quote_container (block_type 34) with text children
     - **bold**, `code`, [text](url) → inline formatting
     - | table | rows → native table blocks (via descendant API in append_markdown_to_doc)
     - Plain text → text block (block_type 2)
@@ -187,6 +202,14 @@ def text_to_blocks(text: str) -> list[dict]:
     """
     text = text.replace("\\n", "\n")
     text = _sanitize_doc_text(text)
+
+    # Strip card directive (chat-only, not renderable in docs)
+    text = re.sub(
+        r'^\{\{card:header=[^}]*\}\}\s*\n?',
+        '',
+        text,
+    )
+
     blocks = []
     lines = text.split("\n")
     i = 0
@@ -260,40 +283,62 @@ def text_to_blocks(text: str) -> list[dict]:
             i += 1
             continue
 
-        # Unordered list: - item or * item → native bullet block (block_type 12)
-        ul_match = re.match(r'^[-*]\s+(.+)$', line)
-        if ul_match:
-            blocks.append({
-                "block_type": 12,
-                "bullet": {
-                    "elements": _parse_inline(ul_match.group(1)),
-                },
-            })
-            i += 1
+        # List items: collect consecutive items, detect nesting
+        ul_match = re.match(r'^(\s*)([-*])\s+(.+)$', line)
+        ol_match = re.match(r'^(\s*)(\d+)\.\s+(.+)$', line) if not ul_match else None
+        if ul_match or ol_match:
+            list_items = []
+            while i < len(lines):
+                cur = lines[i].rstrip()
+                if not cur:
+                    break
+                cur_ul = re.match(r'^(\s*)([-*])\s+(.+)$', cur)
+                cur_ol = re.match(r'^(\s*)(\d+)\.\s+(.+)$', cur) if not cur_ul else None
+                if cur_ul:
+                    indent = len(cur_ul.group(1))
+                    list_items.append({
+                        "type": "bullet", "depth": indent // 2,
+                        "elements": _parse_inline(cur_ul.group(3)),
+                    })
+                    i += 1
+                elif cur_ol:
+                    indent = len(cur_ol.group(1))
+                    list_items.append({
+                        "type": "ordered", "depth": indent // 2,
+                        "elements": _parse_inline(cur_ol.group(3)),
+                    })
+                    i += 1
+                else:
+                    break
+
+            has_nesting = any(item["depth"] > 0 for item in list_items)
+            if has_nesting:
+                blocks.append({"_nested_list": list_items})
+            else:
+                for item in list_items:
+                    bt = 12 if item["type"] == "bullet" else 13
+                    key = "bullet" if item["type"] == "bullet" else "ordered"
+                    blocks.append({"block_type": bt, key: {"elements": item["elements"]}})
             continue
 
-        # Ordered list: 1. item → native ordered block (block_type 13)
-        ol_match = re.match(r'^(\d+)\.\s+(.+)$', line)
-        if ol_match:
-            blocks.append({
-                "block_type": 13,
-                "ordered": {
-                    "elements": _parse_inline(ol_match.group(2)),
-                },
-            })
-            i += 1
-            continue
-
-        # Blockquote: > text
+        # Blockquote: consecutive > lines → native quote container
         quote_match = re.match(r'^>\s*(.*)$', line)
         if quote_match:
-            content = quote_match.group(1) or ""
-            elements = [{"text_run": {"content": f"▎{content}" if content else "▎"}}]
-            blocks.append({
-                "block_type": 2,
-                "text": {"elements": elements},
-            })
-            i += 1
+            quote_lines: list[dict] = []
+            while i < len(lines):
+                qm = re.match(r'^>\s*(.*)$', lines[i])
+                if not qm:
+                    break
+                content = qm.group(1) or ""
+                elements = _parse_inline(content) if content else [
+                    {"text_run": {"content": ""}}
+                ]
+                quote_lines.append({
+                    "block_type": 2,
+                    "text": {"elements": elements},
+                })
+                i += 1
+            blocks.append({"_quote": quote_lines})
             continue
 
         # Regular text with inline formatting
@@ -308,17 +353,19 @@ def text_to_blocks(text: str) -> list[dict]:
     return blocks
 
 
-def _create_table_in_doc(api, doc_id: str, rows: list[list[str]]) -> str | None:
+def _create_table_in_doc(api, doc_id: str, rows: list[list[str]], index: int = -1) -> str | None:
     """Create a native table in a Feishu document.
 
-    Two-step process:
-    1. Create empty table → get cell block_ids
-    2. Fill each cell with content via PATCH
+    For tables with more rows than TABLE_CREATE_ROWS, uses incremental approach:
+    1. Create table with initial batch of rows (≤ TABLE_CREATE_ROWS)
+    2. Append remaining rows via insert_table_row (batch_update API)
+    3. Fill all cells with content via PATCH
 
     Args:
         api: FeishuAPI instance
         doc_id: Document ID
         rows: 2D list of cell texts (first row = header)
+        index: Insert position (-1 = append)
 
     Returns table block_id on success, None on failure.
     """
@@ -327,7 +374,21 @@ def _create_table_in_doc(api, doc_id: str, rows: list[list[str]]) -> str | None:
     if row_count == 0 or col_count == 0:
         return None
 
-    # Step 1: Create empty table
+    # Calculate column widths based on content length
+    TABLE_TOTAL_WIDTH = 700
+    MIN_COL_WIDTH = 60
+    max_lens = [0] * col_count
+    for row in rows:
+        for ci, cell in enumerate(row):
+            w = _display_width(cell)
+            if w > max_lens[ci]:
+                max_lens[ci] = w
+    max_lens = [max(l, 1) for l in max_lens]
+    total_w = sum(max_lens)
+    col_widths = [max(MIN_COL_WIDTH, int(TABLE_TOTAL_WIDTH * l / total_w)) for l in max_lens]
+
+    # Step 1: Create table with initial rows (capped at TABLE_CREATE_ROWS)
+    initial_rows = min(row_count, TABLE_CREATE_ROWS)
     try:
         resp = api.post(
             f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
@@ -336,13 +397,14 @@ def _create_table_in_doc(api, doc_id: str, rows: list[list[str]]) -> str | None:
                     "block_type": 31,
                     "table": {
                         "property": {
-                            "row_size": row_count,
+                            "row_size": initial_rows,
                             "column_size": col_count,
+                            "column_width": col_widths,
                             "header_row": True,
                         }
                     }
                 }],
-                "index": -1,
+                "index": index,
             },
             params={"document_revision_id": "-1"},
         )
@@ -355,70 +417,374 @@ def _create_table_in_doc(api, doc_id: str, rows: list[list[str]]) -> str | None:
                   resp.get("msg"), row_count, col_count, doc_id)
         return None
 
-    # Extract cell block_ids (ordered left→right, top→bottom)
     table_block = resp["data"]["children"][0]
-    cell_ids = table_block.get("table", {}).get("cells", [])
     table_bid = table_block.get("block_id")
-    if len(cell_ids) != row_count * col_count:
-        log.warning("Table cell count mismatch: expected %d, got %d",
-                     row_count * col_count, len(cell_ids))
-        return table_bid  # table created but can't fill
 
-    # Step 2: Fill cells
-    idx = 0
-    for ri, row in enumerate(rows):
-        for ci, cell_text in enumerate(row):
-            cell_id = cell_ids[idx]
-            idx += 1
-
-            # Get or create the text block inside the cell
+    # Step 2: Insert remaining rows incrementally via batch_update
+    extra_rows = row_count - initial_rows
+    if extra_rows > 0:
+        log.info("Table %d rows: created %d, inserting %d more | doc=%s",
+                 row_count, initial_rows, extra_rows, doc_id)
+        for i in range(extra_rows):
+            if i > 0 and TABLE_ROW_INSERT_DELAY > 0:
+                import time
+                time.sleep(TABLE_ROW_INSERT_DELAY)
             try:
-                child_resp = api.get(
-                    f"/open-apis/docx/v1/documents/{doc_id}/blocks/{cell_id}/children",
+                r = api.patch(
+                    f"/open-apis/docx/v1/documents/{doc_id}/blocks/batch_update",
+                    {"requests": [{"block_id": table_bid,
+                                   "insert_table_row": {"row_index": initial_rows + i}}]},
                     params={"document_revision_id": "-1"},
                 )
-                items = child_resp.get("data", {}).get("items", [])
-                if items:
-                    text_block_id = items[0]["block_id"]
-                else:
-                    # No auto-generated text block — create one
-                    create_resp = api.post(
-                        f"/open-apis/docx/v1/documents/{doc_id}/blocks/{cell_id}/children",
-                        {"children": [{"block_type": 2, "text": {"elements": [
-                            {"text_run": {"content": ""}}
-                        ]}}]},
-                        params={"document_revision_id": "-1"},
-                    )
-                    created = create_resp.get("data", {}).get("children", [])
-                    if not created:
-                        log.warning("Create text block in cell [%d,%d] failed | doc=%s",
-                                    ri, ci, doc_id)
-                        continue
-                    text_block_id = created[0]["block_id"]
-
-                # Build elements (header row = bold)
-                if ri == 0:
-                    elements = [{"text_run": {
-                        "content": cell_text,
-                        "text_element_style": {"bold": True},
-                    }}]
-                else:
-                    elements = _parse_inline(cell_text) if cell_text else [
-                        {"text_run": {"content": ""}}
-                    ]
-
-                api.patch(
-                    f"/open-apis/docx/v1/documents/{doc_id}/blocks/{text_block_id}",
-                    {"update_text_elements": {"elements": elements}},
-                    params={"document_revision_id": "-1"},
-                )
+                if r.get("code") != 0:
+                    log.error("insert_table_row failed at %d: %s | doc=%s",
+                              initial_rows + i, r.get("msg"), doc_id)
+                    # Truncate rows to what we have
+                    row_count = initial_rows + i
+                    break
             except Exception as e:
-                log.warning("Fill cell [%d,%d] failed: %s", ri, ci, e)
+                log.error("insert_table_row HTTP error at %d: %s | doc=%s",
+                          initial_rows + i, e, doc_id)
+                row_count = initial_rows + i
+                break
+
+    # Step 3: Get all cell IDs (re-fetch after row insertion)
+    # Brief delay to let server finalize table mutations before reading
+    import time
+    time.sleep(0.3)
+    try:
+        block_resp = api.get(
+            f"/open-apis/docx/v1/documents/{doc_id}/blocks/{table_bid}",
+            params={"document_revision_id": "-1"},
+        )
+        cell_ids = block_resp.get("data", {}).get("block", {}).get("table", {}).get("cells", [])
+    except Exception as e:
+        log.error("Failed to fetch table cells: %s | doc=%s", e, doc_id)
+        return table_bid
+
+    expected_cells = row_count * col_count
+    if len(cell_ids) < expected_cells:
+        log.warning("Table cell count mismatch: expected %d, got %d",
+                     expected_cells, len(cell_ids))
+        row_count = len(cell_ids) // col_count  # fill what we can
+
+    # Step 4: Fill cells
+    _fill_table_cells(api, doc_id, table_bid, cell_ids, rows[:row_count], col_count)
 
     return table_bid
 
 
-def append_markdown_to_doc(api, doc_id: str, markdown: str) -> int:
+def _resolve_cell_text_blocks(api, doc_id: str, cell_ids: list[str]) -> dict[str, str]:
+    """Batch-resolve cell_id -> text_block_id by listing all doc blocks once.
+
+    Falls back to per-cell GET if the bulk approach fails.
+    """
+    cell_set = set(cell_ids)
+    mapping: dict[str, str] = {}  # cell_id -> text_block_id
+
+    try:
+        # Fetch ALL blocks in the document (includes nested table cell children)
+        blocks: list[dict] = []
+        page_token = None
+        while True:
+            params = {"page_size": "500", "document_revision_id": "-1"}
+            if page_token:
+                params["page_token"] = page_token
+            resp = api.get(f"/open-apis/docx/v1/documents/{doc_id}/blocks", params=params)
+            if resp.get("code") != 0:
+                break
+            blocks.extend(resp.get("data", {}).get("items", []))
+            if not resp.get("data", {}).get("has_more"):
+                break
+            page_token = resp["data"].get("page_token")
+
+        # Build mapping: find text blocks whose parent_id is a cell
+        for block in blocks:
+            parent = block.get("parent_id", "")
+            if parent in cell_set and block.get("block_type") == 2:
+                if parent not in mapping:  # first text child only
+                    mapping[parent] = block["block_id"]
+    except Exception as e:
+        log.warning("Bulk block listing failed, will fallback per-cell: %s", e)
+
+    return mapping
+
+
+def _fill_table_cells(api, doc_id: str, table_bid: str,
+                      cell_ids: list[str], rows: list[list[str]], col_count: int):
+    """Fill table cells with content using batch operations.
+
+    Optimized: resolves all text_block_ids in one bulk call, then batches
+    update_text_elements via batch_update API (up to 20 per call).
+    """
+    BATCH_SIZE = 20  # batch_update API limit per request
+
+    # Phase 1: Bulk-resolve cell_id -> text_block_id
+    cell_text_map = _resolve_cell_text_blocks(api, doc_id, cell_ids)
+
+    # Phase 2: Build update requests
+    update_requests: list[dict] = []
+    fallback_cells: list[tuple[int, int, int, str]] = []  # (ri, ci, idx, cell_text)
+
+    idx = 0
+    for ri, row in enumerate(rows):
+        for ci, cell_text in enumerate(row):
+            if idx >= len(cell_ids):
+                break
+            cell_id = cell_ids[idx]
+            idx += 1
+
+            # Build elements
+            if ri == 0:
+                if cell_text:
+                    elements = _parse_inline(cell_text)
+                    for el in elements:
+                        tr = el.get("text_run")
+                        if tr:
+                            style = tr.setdefault("text_element_style", {})
+                            style["bold"] = True
+                else:
+                    elements = [{"text_run": {"content": ""}}]
+            else:
+                elements = _parse_inline(cell_text) if cell_text else [
+                    {"text_run": {"content": ""}}
+                ]
+
+            text_bid = cell_text_map.get(cell_id)
+            if text_bid:
+                update_requests.append({
+                    "block_id": text_bid,
+                    "update_text_elements": {"elements": elements},
+                })
+            else:
+                fallback_cells.append((ri, ci, idx - 1, cell_text))
+
+    # Phase 3: Batch update via batch_update API
+    for i in range(0, len(update_requests), BATCH_SIZE):
+        batch = update_requests[i:i + BATCH_SIZE]
+        try:
+            resp = api.patch(
+                f"/open-apis/docx/v1/documents/{doc_id}/blocks/batch_update",
+                {"requests": batch},
+                params={"document_revision_id": "-1"},
+            )
+            if resp.get("code") != 0:
+                log.warning("batch_update failed (code %s): %s | doc=%s batch_offset=%d",
+                            resp.get("code"), resp.get("msg"), doc_id, i)
+                # Fallback: try individual updates for this batch
+                for req in batch:
+                    try:
+                        api.patch(
+                            f"/open-apis/docx/v1/documents/{doc_id}/blocks/{req['block_id']}",
+                            {"update_text_elements": req["update_text_elements"]},
+                            params={"document_revision_id": "-1"},
+                        )
+                    except Exception:
+                        pass
+        except Exception as e:
+            log.warning("batch_update HTTP error: %s | doc=%s", e, doc_id)
+
+    # Phase 4: Handle cells that weren't in the bulk mapping (fallback per-cell)
+    for ri, ci, cell_idx, cell_text in fallback_cells:
+        cell_id = cell_ids[cell_idx]
+        try:
+            child_resp = api.get(
+                f"/open-apis/docx/v1/documents/{doc_id}/blocks/{cell_id}/children",
+                params={"document_revision_id": "-1"},
+            )
+            items = child_resp.get("data", {}).get("items", [])
+            if items:
+                text_block_id = items[0]["block_id"]
+            else:
+                create_resp = api.post(
+                    f"/open-apis/docx/v1/documents/{doc_id}/blocks/{cell_id}/children",
+                    {"children": [{"block_type": 2, "text": {"elements": [
+                        {"text_run": {"content": ""}}
+                    ]}}]},
+                    params={"document_revision_id": "-1"},
+                )
+                created = create_resp.get("data", {}).get("children", [])
+                if not created:
+                    log.warning("Create text block in cell [%d,%d] failed | doc=%s",
+                                ri, ci, doc_id)
+                    continue
+                text_block_id = created[0]["block_id"]
+
+            if ri == 0:
+                if cell_text:
+                    elements = _parse_inline(cell_text)
+                    for el in elements:
+                        tr = el.get("text_run")
+                        if tr:
+                            style = tr.setdefault("text_element_style", {})
+                            style["bold"] = True
+                else:
+                    elements = [{"text_run": {"content": ""}}]
+            else:
+                elements = _parse_inline(cell_text) if cell_text else [
+                    {"text_run": {"content": ""}}
+                ]
+
+            api.patch(
+                f"/open-apis/docx/v1/documents/{doc_id}/blocks/{text_block_id}",
+                {"update_text_elements": {"elements": elements}},
+                params={"document_revision_id": "-1"},
+            )
+        except Exception as e:
+            log.warning("Fill cell [%d,%d] fallback failed: %s", ri, ci, e)
+
+
+def _build_descendant_payload(items: list[dict]) -> tuple[list[str], list[dict]]:
+    """Build Feishu descendant API payload from flat list items with depth.
+
+    Returns (children_id, descendants) where:
+    - children_id: top-level temp block IDs
+    - descendants: all block definitions with parent-child relationships
+    """
+    # Assign temp IDs
+    for item in items:
+        item["_tid"] = f"tmp_{uuid.uuid4().hex[:8]}"
+
+    descendants = []
+    top_level_ids = []
+    # Stack: [(depth, temp_id, desc_dict)]
+    stack: list[tuple[int, str, dict]] = []
+
+    for item in items:
+        depth = item["depth"]
+        bt = 12 if item["type"] == "bullet" else 13
+        key = "bullet" if item["type"] == "bullet" else "ordered"
+
+        desc = {
+            "block_id": item["_tid"],
+            "block_type": bt,
+            key: {"elements": item["elements"]},
+        }
+
+        # Pop stack to find parent (first item with depth < current)
+        while stack and stack[-1][0] >= depth:
+            stack.pop()
+
+        if stack:
+            # Attach as child of parent
+            stack[-1][2].setdefault("children", []).append(item["_tid"])
+        else:
+            top_level_ids.append(item["_tid"])
+
+        descendants.append(desc)
+        stack.append((depth, item["_tid"], desc))
+
+    # Clean up temp keys
+    for item in items:
+        item.pop("_tid", None)
+
+    return top_level_ids, descendants
+
+
+def _create_nested_list_in_doc(api, doc_id: str, items: list[dict], index: int = -1) -> int:
+    """Create nested list blocks using the Feishu descendant API.
+
+    Returns the number of top-level blocks created.
+    """
+    children_id, descendants = _build_descendant_payload(items)
+    if not children_id:
+        return 0
+
+    try:
+        resp = api.post(
+            f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/descendant",
+            {
+                "children_id": children_id,
+                "index": index,
+                "descendants": descendants,
+            },
+            params={"document_revision_id": "-1"},
+        )
+    except Exception as e:
+        log.error("Descendant API failed (HTTP): %s | doc=%s", e, doc_id)
+        return 0
+
+    if resp.get("code") != 0:
+        log.error("Descendant API failed (code %s): %s | doc=%s",
+                  resp.get("code"), resp.get("msg"), doc_id)
+        return 0
+
+    return len(children_id)
+
+
+def _create_quote_in_doc(api, doc_id: str, text_blocks: list[dict], index: int = -1) -> str | None:
+    """Create a native quote_container (block_type 34) for markdown blockquotes.
+
+    Two-step: create empty quote_container, then add text children.
+    Returns the container block_id, or None on failure.
+    """
+    if not text_blocks:
+        return None
+
+    # Step 1: Create quote_container
+    try:
+        resp = api.post(
+            f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
+            {
+                "children": [{"block_type": 34, "quote_container": {}}],
+                "index": index,
+            },
+            params={"document_revision_id": "-1"},
+        )
+    except Exception as e:
+        log.error("Create quote_container failed (HTTP): %s | doc=%s", e, doc_id)
+        return None
+
+    if resp.get("code") != 0:
+        log.error("Create quote_container failed (code %s): %s | doc=%s",
+                  resp.get("code"), resp.get("msg"), doc_id)
+        return None
+
+    qc_block = resp["data"]["children"][0]
+    qc_bid = qc_block.get("block_id")
+
+    # Step 2: Overwrite the auto-generated empty child with our first block.
+    # Feishu creates a default empty text block inside quote_container;
+    # deleting it just re-creates another. Instead, PATCH it with our content.
+    try:
+        child_resp = api.get(
+            f"/open-apis/docx/v1/documents/{doc_id}/blocks/{qc_bid}/children",
+            params={"document_revision_id": "-1"},
+        )
+        auto_items = child_resp.get("data", {}).get("items", [])
+        if auto_items and text_blocks:
+            first_block = text_blocks[0]
+            auto_bid = auto_items[0]["block_id"]
+            # Overwrite the empty block with our first block's content
+            elements = first_block.get("text", {}).get("elements", [])
+            if elements:
+                api.patch(
+                    f"/open-apis/docx/v1/documents/{doc_id}/blocks/{auto_bid}",
+                    {"update_text_elements": {"elements": elements}},
+                    params={"document_revision_id": "-1"},
+                )
+            text_blocks = text_blocks[1:]  # remaining blocks
+    except Exception as e:
+        log.debug("Overwrite auto-child in quote_container: %s", e)
+
+    # Step 3: Add remaining children inside the container
+    if text_blocks:
+        try:
+            resp2 = api.post(
+                f"/open-apis/docx/v1/documents/{doc_id}/blocks/{qc_bid}/children",
+                {"children": text_blocks, "index": -1},
+                params={"document_revision_id": "-1"},
+            )
+            if resp2.get("code") != 0:
+                log.warning("Add quote children failed (code %s): %s | doc=%s",
+                            resp2.get("code"), resp2.get("msg"), doc_id)
+        except Exception as e:
+            log.warning("Add quote children failed (HTTP): %s | doc=%s", e, doc_id)
+
+    return qc_bid
+
+
+def append_markdown_to_doc(api, doc_id: str, markdown: str, index: int = -1) -> int:
     """Append markdown content to a Feishu document, with native table support.
 
     Regular blocks use the children API (flat).
@@ -434,13 +800,17 @@ def append_markdown_to_doc(api, doc_id: str, markdown: str) -> int:
         return 0
 
     total = 0
+    _offset = 0  # blocks inserted so far at positional index (only used when index != -1)
     created_block_ids: list[str] = []  # track for rollback
     regular_batch: list[dict] = []
 
     FLUSH_BATCH_SIZE = 50  # Feishu API limit: too many children per request → 400
 
+    def _eff_index() -> int:
+        return -1 if index == -1 else index + _offset
+
     def _flush_regular():
-        nonlocal total
+        nonlocal total, _offset
         if not regular_batch:
             return
         # Split into chunks to stay within API limits
@@ -448,10 +818,13 @@ def append_markdown_to_doc(api, doc_id: str, markdown: str) -> int:
                   for i in range(0, len(regular_batch), FLUSH_BATCH_SIZE)]
         sent = 0
         for chunk in chunks:
+            if sent > 0 and BLOCK_CHUNK_DELAY > 0:
+                import time
+                time.sleep(BLOCK_CHUNK_DELAY)
             try:
                 resp = api.post(
                     f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
-                    {"children": chunk, "index": -1},
+                    {"children": chunk, "index": _eff_index()},
                     params={"document_revision_id": "-1"},
                 )
             except Exception as e:
@@ -471,6 +844,7 @@ def append_markdown_to_doc(api, doc_id: str, markdown: str) -> int:
                     if bid:
                         created_block_ids.append(bid)
                 total += len(chunk)
+                _offset += len(chunk)
             sent += len(chunk)
         regular_batch.clear()
 
@@ -487,27 +861,55 @@ def append_markdown_to_doc(api, doc_id: str, markdown: str) -> int:
                                 col_count, TABLE_MAX_COLS, doc_id)
                     rows = [r[:TABLE_MAX_COLS] for r in rows]
 
-                # Split rows exceeding API limit (header repeated in each chunk)
-                chunks = _split_table_rows(rows)
-                if len(chunks) > 1:
-                    log.info("Table %d rows split into %d chunks | doc=%s",
-                             len(rows), len(chunks), doc_id)
-
-                for chunk in chunks:
-                    table_bid = _create_table_in_doc(api, doc_id, chunk)
-                    if table_bid:
-                        created_block_ids.append(table_bid)
-                        total += 1
-                    else:
-                        # Degrade: table failed → write as plain-text pipe rows
-                        log.warning("Table degraded to text: %d rows | doc=%s",
-                                    len(chunk), doc_id)
-                        for row in chunk:
-                            line = "| " + " | ".join(row) + " |"
-                            regular_batch.append({
-                                "block_type": 2,
-                                "text": {"elements": [{"text_run": {"content": line}}]},
-                            })
+                # Single table with incremental row insertion for large tables
+                table_bid = _create_table_in_doc(api, doc_id, rows, index=_eff_index())
+                if table_bid:
+                    created_block_ids.append(table_bid)
+                    total += 1
+                    _offset += 1
+                else:
+                    # Degrade: table failed → write as plain-text pipe rows
+                    log.warning("Table degraded to text: %d rows | doc=%s",
+                                len(rows), doc_id)
+                    for row in rows:
+                        line = "| " + " | ".join(row) + " |"
+                        regular_batch.append({
+                            "block_type": 2,
+                            "text": {"elements": [{"text_run": {"content": line}}]},
+                        })
+            elif "_quote" in block:
+                _flush_regular()
+                quote_bid = _create_quote_in_doc(api, doc_id, block["_quote"], index=_eff_index())
+                if quote_bid:
+                    created_block_ids.append(quote_bid)
+                    total += 1
+                    _offset += 1
+                else:
+                    # Degrade: quote container failed → plain text with ▎ prefix
+                    log.warning("Quote container degraded to text | doc=%s", doc_id)
+                    for qblock in block["_quote"]:
+                        elements = qblock.get("text", {}).get("elements", [])
+                        degraded = [{"text_run": {"content": "▎"}}] + elements
+                        regular_batch.append({
+                            "block_type": 2,
+                            "text": {"elements": degraded},
+                        })
+            elif "_nested_list" in block:
+                _flush_regular()
+                count = _create_nested_list_in_doc(api, doc_id, block["_nested_list"], index=_eff_index())
+                if count:
+                    total += count
+                    _offset += count
+                else:
+                    # Degrade: descendant API failed → flat blocks
+                    log.warning("Nested list degraded to flat | doc=%s", doc_id)
+                    for item in block["_nested_list"]:
+                        bt = 12 if item["type"] == "bullet" else 13
+                        key = "bullet" if item["type"] == "bullet" else "ordered"
+                        regular_batch.append({
+                            "block_type": bt,
+                            key: {"elements": item["elements"]},
+                        })
             else:
                 regular_batch.append(block)
 

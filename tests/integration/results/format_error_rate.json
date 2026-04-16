@@ -1,0 +1,193 @@
+{
+  "timestamp": "2026-04-10 03:22:27",
+  "total": 23,
+  "passed": 23,
+  "failed": 0,
+  "error_rate_pct": 0.0,
+  "results": [
+    {
+      "name": "plain_text",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 16
+    },
+    {
+      "name": "heading_h1",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 12
+    },
+    {
+      "name": "heading_mixed",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 28
+    },
+    {
+      "name": "code_python",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "Code content intact",
+      "markdown_len": 67
+    },
+    {
+      "name": "code_no_lang",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 31
+    },
+    {
+      "name": "table_simple",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "Table content intact",
+      "markdown_len": 35
+    },
+    {
+      "name": "table_3col_5row",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 120
+    },
+    {
+      "name": "bold",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 18
+    },
+    {
+      "name": "inline_code",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 22
+    },
+    {
+      "name": "link",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 33
+    },
+    {
+      "name": "bullet_list",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 17
+    },
+    {
+      "name": "ordered_list",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 20
+    },
+    {
+      "name": "divider",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 17
+    },
+    {
+      "name": "blockquote",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 10
+    },
+    {
+      "name": "mixed_real_world",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 225
+    },
+    {
+      "name": "card_directive_stripped",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 43
+    },
+    {
+      "name": "special_chars",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 41
+    },
+    {
+      "name": "long_text_1000_chars",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 500
+    },
+    {
+      "name": "empty_lines_between",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 18
+    },
+    {
+      "name": "nested_ul_3_levels",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 59
+    },
+    {
+      "name": "nested_ol_2_levels",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 33
+    },
+    {
+      "name": "nested_mixed_complex",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 64
+    },
+    {
+      "name": "table_inline_styles",
+      "status": "PASS",
+      "write_ok": true,
+      "valid": true,
+      "detail": "All fragments found",
+      "markdown_len": 118
+    }
+  ]
+}

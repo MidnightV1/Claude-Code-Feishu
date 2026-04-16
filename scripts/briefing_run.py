@@ -313,30 +313,35 @@ class BriefingRunner:
         if new_entities:
             self._update_entities(new_entities)
 
-        # ── Step 4: Email ──
-        if self.dc.distribution.get("email", {}).get("enabled", True):
-            log.info("[%s] %s: sending email...", self.domain_name, date_str)
-            email_ok, email_out = await self._send_email(date_str)
-            if not email_ok:
-                errors.append(f"邮件失败: {email_out[-200:]}")
+        # ── Distribution & post-processing (errors must not leave status="running") ──
+        try:
+            # ── Step 4: Email ──
+            if self.dc.distribution.get("email", {}).get("enabled", True):
+                log.info("[%s] %s: sending email...", self.domain_name, date_str)
+                email_ok, email_out = await self._send_email(date_str)
+                if not email_ok:
+                    errors.append(f"邮件失败: {email_out[-200:]}")
 
-        # ── Step 4.5: Feishu Document ──
-        doc_cfg = self.dc.distribution.get("feishu_doc", {})
-        if doc_cfg.get("enabled", False):
-            log.info("[%s] %s: creating Feishu doc...", self.domain_name, date_str)
-            doc_ok, doc_out = await self._send_feishu_doc(date_str)
-            if doc_ok:
-                errors.append(f"📄 [文档]({doc_out})")  # include in final card
-            else:
-                errors.append(f"飞书文档失败: {doc_out[-200:]}")
-                log.warning("[%s] Feishu doc failed: %s", self.domain_name, doc_out)
+            # ── Step 4.5: Feishu Document ──
+            doc_cfg = self.dc.distribution.get("feishu_doc", {})
+            if doc_cfg.get("enabled", False):
+                log.info("[%s] %s: creating Feishu doc...", self.domain_name, date_str)
+                doc_ok, doc_out = await self._send_feishu_doc(date_str)
+                if doc_ok:
+                    errors.append(f"📄 [文档]({doc_out})")  # include in final card
+                else:
+                    errors.append(f"飞书文档失败: {doc_out[-200:]}")
+                    log.warning("[%s] Feishu doc failed: %s", self.domain_name, doc_out)
 
-        # ── Step 5: Keyword Evolution (inline, not fire-and-forget) ──
-        if self.dc.keyword_evolution.get("enabled", False):
-            try:
-                await self._evolve_keywords(date_str, briefing_md)
-            except Exception:
-                log.exception("[%s] Keyword evolution failed", self.domain_name)
+            # ── Step 5: Keyword Evolution (inline, not fire-and-forget) ──
+            if self.dc.keyword_evolution.get("enabled", False):
+                try:
+                    await self._evolve_keywords(date_str, briefing_md)
+                except Exception:
+                    log.exception("[%s] Keyword evolution failed", self.domain_name)
+        except Exception:
+            log.exception("[%s] Distribution phase failed", self.domain_name)
+            errors.append("分发阶段异常")
 
         elapsed = time.time() - start
         final_status = "ok" if not errors else "partial"
@@ -513,44 +518,46 @@ class BriefingRunner:
             return False, f"Briefing not found: {output_file}"
 
         try:
+            # app_id/app_secret live under config["notify"], not config["feishu"]
+            notify_cfg = self._cfg.get("notify", {})
             feishu_cfg = self._cfg.get("feishu", {})
             api = FeishuAPI(
-                app_id=feishu_cfg.get("app_id", ""),
-                app_secret=feishu_cfg.get("app_secret", ""),
+                app_id=notify_cfg.get("app_id") or feishu_cfg.get("app_id", ""),
+                app_secret=notify_cfg.get("app_secret") or feishu_cfg.get("app_secret", ""),
                 domain=feishu_cfg.get("domain", "https://open.feishu.cn"),
             )
+
+            title = f"{self.dc.display_name} | {date_str}"
+            doc_cfg = self.dc.distribution.get("feishu_doc", {})
+            body = {"title": title}
+            folder = doc_cfg.get("folder_token")
+            if folder:
+                body["folder_token"] = folder
+
+            resp = api.post("/open-apis/docx/v1/documents", body)
+            if resp.get("code") != 0:
+                return False, f"Create doc failed: {resp.get('msg')}"
+
+            doc_id = resp["data"]["document"]["document_id"]
+            content = output_file.read_text(encoding="utf-8")
+            count = append_markdown_to_doc(api, doc_id, content)
+            if not count:
+                log.warning("[%s] Doc content write returned 0 blocks", self.domain_name)
+
+            share_to = doc_cfg.get("share_to")
+            if share_to:
+                api.post(
+                    f"/open-apis/drive/v1/permissions/{doc_id}/members",
+                    body={"member_type": "openid", "member_id": share_to, "perm": "full_access"},
+                    params={"type": "docx", "need_notification": "true"},
+                )
+
+            domain = feishu_cfg.get("domain", "https://open.feishu.cn").replace("open.", "")
+            doc_url = f"{domain}/docx/{doc_id}"
+            log.info("[%s] Feishu doc created: %s", self.domain_name, doc_url)
+            return True, doc_url
         except Exception as e:
-            return False, f"FeishuAPI init failed: {e}"
-
-        title = f"{self.dc.display_name} | {date_str}"
-        doc_cfg = self.dc.distribution.get("feishu_doc", {})
-        body = {"title": title}
-        folder = doc_cfg.get("folder_token")
-        if folder:
-            body["folder_token"] = folder
-
-        resp = api.post("/open-apis/docx/v1/documents", body)
-        if resp.get("code") != 0:
-            return False, f"Create doc failed: {resp.get('msg')}"
-
-        doc_id = resp["data"]["document"]["document_id"]
-        content = output_file.read_text(encoding="utf-8")
-        count = append_markdown_to_doc(api, doc_id, content)
-        if not count:
-            log.warning("[%s] Doc content write returned 0 blocks", self.domain_name)
-
-        share_to = doc_cfg.get("share_to")
-        if share_to:
-            api.post(
-                f"/open-apis/drive/v1/permissions/{doc_id}/members",
-                body={"member_type": "openid", "member_id": share_to, "perm": "full_access"},
-                params={"type": "docx", "need_notification": "true"},
-            )
-
-        domain = feishu_cfg.get("domain", "https://open.feishu.cn").replace("open.", "")
-        doc_url = f"{domain}/docx/{doc_id}"
-        log.info("[%s] Feishu doc created: %s", self.domain_name, doc_url)
-        return True, doc_url
+            return False, f"Feishu doc error: {e}"
 
     # ── Helpers ──────────────────────────────────────────
 

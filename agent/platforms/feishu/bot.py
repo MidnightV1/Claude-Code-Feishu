@@ -10,6 +10,8 @@ import time
 import asyncio
 import logging
 import os
+import signal
+import threading
 from dataclasses import dataclass, field
 
 from agent.infra.models import LLMConfig
@@ -44,20 +46,19 @@ ADMIN_OPEN_IDS: set[str] = set()
 # ═══ Feishu Channel System Prompt ═══
 # Injected via --append-system-prompt for all Feishu-originated Claude CLI calls.
 # Tells the model about its communication channel, capabilities, and constraints.
-FEISHU_SYSTEM_PROMPT = """\
-## 飞书通道上下文
+FEISHU_SYSTEM_PROMPT = """## 飞书协同准则
 
 你当前通过飞书消息与用户沟通。消息通过飞书卡片（JSON 2.0）的 markdown 组件渲染。
-你在任务过程中会收到大量系统通知的干扰，只有`<user-input>`中的内容才是用户在飞书中真正输入的内容。
+你在任务过程中会收到大量系统消息、通知的干扰，只有`<user-input>`中的内容才是用户在飞书中真正输入的内容。
 当你对`<user-input>`进行回应时，务必将回复内容完整的放入`<reply-to-user>`标记中。
-如果你在处理过程中发现了值得后续探索的**进化方向**，可以在回复后输出`<next-explore>`标记。这部分内容不会发送给用户，系统会自动评估并在空闲时执行深度调研。
+如果你在互动过程中发现了对长期目标有价值的探索方向，可以在回复后输出`<next-explore>`标记。这部分内容不会发送给用户，系统会自动评估并在空闲时执行深度调研。
 
-**产出规则（严格遵守）**：
+**产出规则**：
 - **每次最多 1 个方向**——质量优先于数量，宁可不产出也不凑数
 - **只产出需要深度调研才能回答的问题**——如果 10 分钟代码阅读就能解决，不需要探索
-- **必须是决策级问题**——探索结论会影响接下来 2 周内的架构/策略/优先级决策
+- **必须是决策级问题**——探索结论会影响未来面向长期目标的架构/策略/优先级
 
-**排除（不要产出这些）**：
+**排除**：
 - 部署验证、运维确认、配置检查（遇到再查）
 - 已知答案但还没做的事（那是任务，不是探索）
 - 太泛的方向（"如何提升系统稳定性"）
@@ -68,16 +69,43 @@ FEISHU_SYSTEM_PROMPT = """\
 - 涉及系统当前不掌握的外部信息（如：某 API 的实际可靠性、某框架的真实限制）
 - 解决后能消除一类问题而非一个问题
 
+如果你在互动过程中提炼出了**现有灵魂/认知/记忆文件尚未覆盖的**可复用模式或原则，可以在回复后输出`<next-reflect>`标记。系统会自动评估其新颖性，通过后持久化。
+
+**反思 vs 探索的区别**：
+- **探索**是前瞻性的——提出需要调研的问题
+- **反思**是回顾性的——从已完成的互动中提取可复用知识
+
+**反思的产出标准**：
+- **增量性**：必须是 `~/.claude/CLAUDE.md`（灵魂）、`~/.claude/COGNITION.md`（认知）、项目 memory 中**尚未覆盖**的知识。已有规则的细化或补充也算增量，但重复表述不算
+- **可泛化**：不是任务细节，而是跨场景适用的模式或原则
+- **行为指导性**：记住它会改变未来的具体行为，而非仅仅"知道了"
+
+**反思的载体与目标文件**：
+- `feedback` — 操作模式、do/don't 规则 → 系统自动写入项目 memory 文件（L1，无需确认）
+- `soul` — 认知框架、分析方法论、工作原则 → 通知用户确认后更新 `~/.claude/CLAUDE.md`（L2）
+- `cognition` — 用户行为模式的新发现 → 通知用户确认后更新 `~/.claude/COGNITION.md`（L2）
+
 示例：
 ```
-<reply-to-user>回复内容</reply-to-user>
+<user-input>用户在飞书输入的实际内容</user-input>
+task-notification: 1
+task-notification: 2
+task-notification: 你可能收到的多条过程任务通知，你可以正常回应，系统会拦截这些回应
+<reply-to-user>你对<user-input>的正式回复，只有这部分内容才会被用户看到</reply-to-user>
 <next-explore>
 - [方向] 具体的决策问题（问句形式，足够具体到可以用数据回答）
-  [价值] 解决后对哪个决策产生什么影响
+  [价值] 解决后对哪个决策或长期目标产生什么影响
 </next-explore>
+<next-reflect>
+- [模式] 可复用的模式或原则（陈述句，足够具体到可以指导未来行为）
+  [来源] 什么场景/互动触发了这个发现
+  [载体] feedback/soul/cognition
+</next-reflect>
 ```
 
-飞书协作协议、能力声明、Skills 列表见项目 CLAUDE.md（CC 启动时自动加载）。本 prompt 仅补充飞书渲染特有规则。
+## 飞书消息发送规范
+
+以下规范能让你在飞书中发送高可读性的消息，有效提升用户的交互体验。作用范围仅限于飞书消息互动，文档、表格等其他载体的格式要求以具体能力说明为准。
 
 ### 消息渲染（卡片 JSON 2.0）
 
@@ -87,7 +115,7 @@ FEISHU_SYSTEM_PROMPT = """\
 - 格式：`**粗体**` `*斜体*` `~~删除线~~` `` `行内代码` ``
 - 代码块：` ```语言\\n代码\\n``` `（支持语言高亮）
 - 列表：有序 `1.` / 无序 `-`（嵌套用 4 空格缩进）
-- 表格：标准 markdown 表格（原生渲染，单组件最多 4 个表格，超 5 行分页）
+- 表格：标准 markdown 表格（原生渲染，单组件最多 4 个表格，超 5 行分页展示）
 - 链接：`[文本](url)`
 - 引用：`> 引用文字`
 - 分割线：`---` 或 `<hr>`（必须独占一行）
@@ -100,7 +128,7 @@ FEISHU_SYSTEM_PROMPT = """\
 - 换行用 `\\n`（JSON 字符串中），或 `<br>`
 - **4+ 空格开头会触发代码块**——正文不要意外缩进
 - 加粗语法前后保留空格
-- 特殊字符（`< > * ~ [ ] ( ) # : + _ $`）如需原样展示，用 HTML 实体转义（如 `&#60;`）
+- 特殊字符（`< > * ~ [ ] ( ) # : + _ $`）在卡片消息中如需原样展示，用 HTML 实体转义（如 `&#60;`）。注意：此规则仅适用于 `<reply-to-user>` 中的飞书卡片内容，**不适用于**传给 doc_ctl.py、wiki、bitable 等工具的文档内容（文档 API 接受原始字符）
 
 ### 多模态输入
 
@@ -220,6 +248,8 @@ class FeishuBot(MediaMixin, SessionMixin):
         self._extra_system_prompt = config.get("system_prompt", "")
         # Tenant boundary: auto-learned from first message, filters cross-org messages
         self._tenant_key: str = config.get("tenant_key", "")
+        # Hub 3.0: callback for dev signal detection
+        self.on_dev_signal: callable | None = None
 
     def _register_card_actions(self):
         """Register built-in card action handlers."""
@@ -478,10 +508,24 @@ class FeishuBot(MediaMixin, SessionMixin):
         )
 
         def _start_ws():
+            import concurrent.futures
             import lark_oapi.ws.client as ws_mod
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             ws_mod.loop = loop
+            # Guard: if the loop's default executor is shut down (e.g. during reconnect
+            # after asyncio cleanup), recreate it so run_in_executor (used by getaddrinfo
+            # inside websockets.connect) does not raise "cannot schedule new futures after
+            # shutdown".
+            _orig_run_in_executor = loop.run_in_executor
+            def _safe_run_in_executor(executor, func, *args):
+                if executor is None and loop._executor_shutdown_called:
+                    loop._executor_shutdown_called = False
+                    loop._default_executor = concurrent.futures.ThreadPoolExecutor(
+                        thread_name_prefix='asyncio'
+                    )
+                return _orig_run_in_executor(executor, func, *args)
+            loop.run_in_executor = _safe_run_in_executor
             # Patch SDK _configure: server pushes ping_interval=120s via
             # connect response and PONG frames, causing idle disconnects.
             # Cap at 30s to keep the connection alive.
@@ -570,6 +614,9 @@ class FeishuBot(MediaMixin, SessionMixin):
         # Health monitor: check WebSocket connectivity, exit process if dead
         self._health_task = asyncio.ensure_future(self._ws_health_monitor())
 
+        # Event loop watchdog: daemon thread that detects dead/unresponsive loop
+        self._start_loop_watchdog()
+
     async def _ws_health_monitor(self):
         """Periodically check WebSocket health. Exit process if connection is dead.
 
@@ -579,8 +626,10 @@ class FeishuBot(MediaMixin, SessionMixin):
         """
         await asyncio.sleep(30)  # initial grace period
         consecutive_failures = 0
+        sigterm_sent = False
+        check_interval = 10  # seconds between health checks
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(check_interval)
             try:
                 conn = getattr(self._ws_client, '_conn', None)
                 if conn is None:
@@ -592,11 +641,17 @@ class FeishuBot(MediaMixin, SessionMixin):
                 else:
                     consecutive_failures = 0
                     continue
-                if consecutive_failures >= 3:
-                    log.error("WebSocket dead for %ds, exiting for launchd restart",
-                              consecutive_failures * 30)
-                    import sys
-                    sys.exit(1)
+                if consecutive_failures >= 3 and not sigterm_sent:
+                    log.error("WebSocket dead for %ds, signaling shutdown for launchd restart",
+                              consecutive_failures * check_interval)
+                    sigterm_sent = True
+                    try:
+                        os.kill(os.getpid(), signal.SIGTERM)
+                    except Exception:
+                        os._exit(1)
+                elif sigterm_sent:
+                    log.warning("WebSocket still dead (%ds), waiting for restart",
+                                consecutive_failures * check_interval)
             except Exception:
                 pass
 
@@ -613,15 +668,62 @@ class FeishuBot(MediaMixin, SessionMixin):
 
     async def stop(self):
         log.info("Feishu bot stopping")
+        self._shutting_down = True  # signal watchdog to stand down
         if hasattr(self, '_health_task') and self._health_task:
             self._health_task.cancel()
             self._health_task = None
         self._ws_client = None
 
+    # ═══ Event Loop Watchdog ═══
+
+    def _check_loop_alive(self, caller: str = ""):
+        """Check if asyncio event loop is still alive. Call from SDK threads.
+
+        If the loop is closed, the process is a zombie — exit immediately
+        so launchd can restart it.
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            log.error("Event loop is closed (detected in %s), forcing exit for launchd restart", caller)
+            os._exit(1)
+
+    def _start_loop_watchdog(self):
+        """Start a daemon thread that periodically verifies the event loop is alive.
+
+        Unlike _ws_health_monitor (an asyncio task that dies with the loop),
+        this thread runs independently and can detect a dead loop.
+        """
+        def _watchdog():
+            import time as _time
+            _time.sleep(30)  # initial grace period
+            while True:
+                _time.sleep(15)
+                # Stand down during graceful shutdown — let main.py control exit
+                if getattr(self, '_shutting_down', False):
+                    return
+                loop = self._loop
+                if loop is None or loop.is_closed():
+                    log.error("Event loop watchdog: loop is closed, forcing exit for launchd restart")
+                    os._exit(1)
+                # Also verify the loop is responsive — schedule a no-op and check it runs
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
+                    fut.result(timeout=10)
+                except Exception:
+                    if getattr(self, '_shutting_down', False):
+                        return  # loop busy with shutdown, don't interfere
+                    log.error("Event loop watchdog: loop unresponsive, forcing exit for launchd restart")
+                    os._exit(1)
+
+        t = threading.Thread(target=_watchdog, name="loop-watchdog", daemon=True)
+        t.start()
+        log.info("Event loop watchdog thread started")
+
     # ═══ Event Handlers ═══
 
     def _on_message_event(self, data):
         """Called by lark_oapi in its own thread. Bridge to asyncio."""
+        self._check_loop_alive("_on_message_event")
         asyncio.run_coroutine_threadsafe(self._handle_message(data), self._loop)
 
     def _on_card_action_sync(self, data):
@@ -650,6 +752,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                      action_type, operator_id, value)
 
             # Run async handler from sync context
+            self._check_loop_alive("_on_card_action_sync")
             future = asyncio.run_coroutine_threadsafe(
                 self._card_action_router.handle(
                     action_type, value, operator_id, context
@@ -686,6 +789,7 @@ class FeishuBot(MediaMixin, SessionMixin):
 
     def _on_recall_event(self, data):
         """Called when a message is recalled. Bridge to asyncio."""
+        self._check_loop_alive("_on_recall_event")
         log.info("Recall event received: %s", data)
         asyncio.run_coroutine_threadsafe(self._handle_recall(data), self._loop)
 
@@ -1219,9 +1323,16 @@ class FeishuBot(MediaMixin, SessionMixin):
         session_key = self._session_key(chat_type, chat_id, sender_id)
 
         if cmd == "#help":
+            asyncio.ensure_future(self._send_menu_card(chat_id))
             return self._cmd_help()
         elif cmd == "#reset":
-            return self._cmd_reset(session_key)
+            self._cmd_reset(session_key)
+            card_json = self.dispatcher._build_card_json(
+                "会话已重置，下条消息开始新对话。",
+                header="Session Reset", color="grey",
+            )
+            await self.dispatcher.send_card_raw(chat_id, card_json)
+            return None
         elif cmd == "#usage":
             return await self._cmd_usage()
         elif cmd == "#jobs":
@@ -1302,8 +1413,8 @@ class FeishuBot(MediaMixin, SessionMixin):
              "value": {"action": "menu_action", "command": "今天有什么日程？"}},
             {"text": "📰 触发日报", "type": "default",
              "value": {"action": "menu_action", "command": "#briefing run"}},
-            {"text": "☀️ 天气预报", "type": "default",
-             "value": {"action": "menu_action", "command": "今天天气怎么样？"}},
+            {"text": "🔁 重置会话", "type": "default",
+             "value": {"action": "menu_action", "command": "#reset"}},
             {"text": "🔄 定时任务", "type": "default",
              "value": {"action": "menu_action", "command": "#jobs"}},
             {"text": "❓ 帮助", "type": "default",
@@ -1320,10 +1431,9 @@ class FeishuBot(MediaMixin, SessionMixin):
         )
         await self.dispatcher.send_card_raw(chat_id, card_json)
 
-    def _cmd_reset(self, session_key: str) -> str:
+    def _cmd_reset(self, session_key: str) -> None:
         self.router.clear_session(session_key)
         asyncio.create_task(self.router.save_session(session_key))
-        return "会话已重置，下条消息开始新对话。"
 
     def _cmd_switch_model(self, model: str, session_key: str) -> str:
         """Switch session default model."""
@@ -1391,9 +1501,13 @@ class FeishuBot(MediaMixin, SessionMixin):
         with open(log_path, "a") as lf:
             subprocess.Popen(
                 ["/bin/sh", "-c",
-                 "launchctl unload ~/Library/LaunchAgents/com.claude-hub.plist && "
+                 "launchctl unload ~/Library/LaunchAgents/com.claude-code-feishu-health.plist 2>/dev/null; "
+                 "launchctl unload ~/Library/LaunchAgents/com.claude-code-feishu-invest.plist 2>/dev/null; "
+                 "launchctl unload ~/Library/LaunchAgents/com.claude-code-feishu.plist && "
                  "sleep 2 && "
-                 "launchctl load ~/Library/LaunchAgents/com.claude-hub.plist"],
+                 "launchctl load ~/Library/LaunchAgents/com.claude-code-feishu.plist && "
+                 "launchctl load ~/Library/LaunchAgents/com.claude-code-feishu-health.plist 2>/dev/null; "
+                 "launchctl load ~/Library/LaunchAgents/com.claude-code-feishu-invest.plist 2>/dev/null"],
                 cwd=_PROJECT_ROOT,
                 start_new_session=True,
                 stdout=lf,

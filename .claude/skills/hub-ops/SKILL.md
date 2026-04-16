@@ -49,6 +49,22 @@ python3 .claude/skills/hub-ops/scripts/hub_ctl.py cron show abc123
 
 All times use Asia/Shanghai timezone.
 
+### Deploy (Promote dev→master)
+
+```bash
+# Preview — generates gate card (commits, files, test results)
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py promote --preview
+
+# Execute — merge + deploy + NAS sync (run after user confirms preview)
+python3 .claude/skills/hub-ops/scripts/hub_ctl.py promote --execute
+```
+
+**Workflow**: User says "部署" → CC runs `--preview` → formats result as gate card → user confirms → CC runs `--execute` → formats result as deploy notification card.
+
+`--preview` output: JSON with commits, classified files (core/skills/config/docs), smoke+unit test results, needs_restart flag.
+
+`--execute` output: JSON with deploy status, commit summary, NAS sync result. On smoke test failure, auto-rolls back master and reports error.
+
 ### Service Status & Reload
 
 ```bash

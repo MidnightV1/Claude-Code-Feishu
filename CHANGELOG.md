@@ -6,6 +6,45 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.21.0] — 2026-04-16
+
+### Added
+- **MADS (Multi-Agent Development System)** — Full development pipeline: diagnosis, contract, fix, QA, merge. Complexity routing (L1-L5), scope guards, decomposed fixing, Opus design stage, concurrent sub-ticket execution.
+- **MAQS (Multi-Agent Quality System)** — Automated bug discovery from error tracker, stale ticket recovery, QA verdict via XML control blocks, golden data pipeline.
+- **Sentinel** — Autonomous entropy control with health pulse, code quality, and doc audit scanners. Signal aggregation and notification integration.
+- **Visual QA skill** — CDP screenshot, accessibility tree, five-dimension scoring, MADS post-QA integration.
+- **Dev Pipeline skill** — Unified MADS/MAQS entry point: ticket creation, status queries, manual stage advancement.
+- **Codex skill** — OpenAI Codex CLI integration for code review, adversarial review, task handoff.
+- **Feishu Board skill** — Board/whiteboard creation, flowchart drawing, node content reading.
+- **TTS module (Fish.audio)** — S2-Pro text-to-speech with Feishu voice message delivery.
+- **LoopExecutor** — Async orchestration for MADS ticket lifecycle with priority queue and preemption.
+- **WorkerPool** — Concurrent workers with git worktree isolation for parallel tickets.
+- **Merge Queue** — Git conflict prevention with rebase-on-conflict recovery.
+- **Hardgate** — 72-hour reentry gate escalates to L2 when same file auto-modified repeatedly.
+- **Error Tracker** — Error aggregation for MAQS automated bug discovery.
+- **Exploration Scoring** — Four-dimension quality assessment (rule + LLM dual-write).
+- **Document read** — Block tree traversal with image download for feishu-doc and feishu-wiki.
+- **Feishu Sheet CLI** — Phase 1 spreadsheet CLI entry point.
+- **516 unit tests** — Comprehensive coverage for all new subsystems.
+
+### Changed
+- **Autonomy framework** — Expanded L0-L3 with exploration loop, behavior signals, adoption tracking.
+- **Router** — Transient retry, resume graceful degradation, Sonnet/Gemini history compression.
+- **Scheduler** — Hot-reload (SIGUSR1), sentinel/explorer cron handlers, dynamic job config.
+- **Claude CLI** — Idle-based timeout (900s), 8MB stream buffer, unclosed tag auto-repair.
+- **Dispatcher** — Secret scanning, card header color parsing, 230011 fallback.
+- **Session** — Reflect hint capture, skill matching, batch processing.
+- **Explorer v2** — Finding type classification, commit detection, notification routing.
+
+### Fixed
+- Briefing pipeline status stuck after API errors.
+- Semantic break false positives for timeout/error replies.
+- Doc credential routing (notify config vs feishu).
+- Hardcoded personal paths replaced with dynamic resolution.
+- MAQS pipeline fixes: XML resilience, crash recovery, scope drift.
+
+---
+
 ## [0.20.0] — 2026-03-23
 
 ### Added

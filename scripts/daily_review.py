@@ -130,6 +130,25 @@ def collect_exploration(hours: float = HOURS) -> dict:
                 try:
                     entry = json.loads(line.strip())
                     if entry.get("timestamp", 0) >= cutoff:
+                        if not entry.get("finding_type"):
+                            summary = entry.get("summary", "")
+                            action_taken = entry.get("action_taken", "")
+                            s = summary[:3000].lower()
+                            if action_taken:
+                                entry["finding_type"] = "l1_fix"
+                            elif (("## 推荐行动" in summary or "推荐行动" in summary[:2000]
+                                   or "## recommended" in s)
+                                  and any(kw in s for kw in [
+                                      "实施成本", "代码改动", "迁移路径", "改写策略",
+                                      "implementation", "migration", "具体方案",
+                                  ])):
+                                entry["finding_type"] = "l2_proposal"
+                            elif sum(1 for kw in ["验证通过", "确认", "baseline", "基线",
+                                                  "working as", "正常运行", "符合预期"]
+                                     if kw in s) >= 2:
+                                entry["finding_type"] = "monitoring"
+                            else:
+                                entry["finding_type"] = "diagnostic"
                         log_data.append(entry)
                 except (json.JSONDecodeError, KeyError):
                     continue
@@ -203,23 +222,37 @@ def collect_system() -> dict:
     except ImportError:
         data["memory"] = {"note": "psutil not installed"}
 
-    # Cron jobs status
-    jobs_path = PROJECT_ROOT / "data" / "jobs.json"
-    if jobs_path.exists():
-        try:
-            with open(jobs_path) as f:
-                jobs = json.load(f)
-            data["cron_jobs"] = [
-                {"name": j.get("name"), "enabled": j.get("enabled"),
-                 "last_status": j.get("state", {}).get("last_status"),
-                 "last_error": j.get("state", {}).get("last_error")}
-                for j in jobs.get("jobs", [])
-            ]
-        except Exception:
-            data["cron_jobs"] = []
+    # Cron jobs status — merge definitions (jobs.yaml) with runtime state (jobs.json)
+    seed_path = PROJECT_ROOT / "config" / "jobs.yaml"
+    state_path = PROJECT_ROOT / "data" / "jobs.json"
+    try:
+        import yaml
+        defs = {}
+        if seed_path.exists():
+            with open(seed_path) as f:
+                for j in yaml.safe_load(f).get("jobs", []):
+                    defs[j["id"]] = j
+        states = {}
+        if state_path.exists():
+            with open(state_path) as f:
+                states = json.load(f).get("states", {})
+        cron_jobs = []
+        for jid, jdef in defs.items():
+            st = states.get(jid, {})
+            cron_jobs.append({
+                "name": jdef.get("name"),
+                "enabled": jdef.get("enabled", True),
+                "last_status": st.get("last_status"),
+                "last_error": st.get("last_error"),
+                "last_run_at": st.get("last_run_at"),
+                "consecutive_errors": st.get("consecutive_errors", 0),
+            })
+        data["cron_jobs"] = cron_jobs
+    except Exception:
+        data["cron_jobs"] = []
 
     # Recent errors in log
-    log_file = PROJECT_ROOT / "data" / "hub.log"
+    log_file = PROJECT_ROOT / "data" / "claude-code-feishu.log"
     if log_file.exists():
         try:
             result = subprocess.run(

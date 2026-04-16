@@ -9,9 +9,12 @@ Context strategy for Claude CLI sessions:
 """
 
 import asyncio
+import json
 import os
+import re
 import time
 import logging
+from pathlib import Path
 from typing import Awaitable, Callable
 from agent.infra.models import LLMConfig, LLMResult
 from agent.llm.claude import ClaudeCli
@@ -31,15 +34,27 @@ COMPRESS_TIMEOUT_FALLBACK = 30
 COMPRESS_TEMPERATURE = 0.2
 LOG_PREVIEW_LEN = 200
 TRANSIENT_RETRY_MAX = 3
+
+# Internal tag patterns for history cleaning — strip LLM coordination tags before storage
+_HISTORY_REPLY_RE = re.compile(r'<reply-to-user>(.*)</reply-to-user>', re.DOTALL)
+_HISTORY_EXPLORE_RE = re.compile(r'<next-explore>(.*)</next-explore>', re.DOTALL)
+_HISTORY_EXPLORE_OPEN_RE = re.compile(r'<next-explore>.*', re.DOTALL)
+_HISTORY_REFLECT_RE = re.compile(r'<next-reflect>(.*)</next-reflect>', re.DOTALL)
+_HISTORY_REFLECT_OPEN_RE = re.compile(r'<next-reflect>.*', re.DOTALL)
 TRANSIENT_RETRY_DELAY = 2  # seconds (exponential: 2, 4, 8)
 
 # ═══ Context Recovery Templates ═══
 
 RECOVERY_PREAMBLE = (
-    "## 会话恢复\n\n"
-    "你的上一个 CLI session 已结束，以下是之前对话的压缩上下文。\n"
-    "注意：之前的工具调用记录（文件读写、命令执行）不可访问。"
-    "如需操作之前涉及的文件，请重新读取确认当前状态。\n"
+    "## 会话恢复说明及注意事项\n\n"
+    "你的上一个 CLI session 已结束，以下是仅作为背景参考的压缩上下文。\n\n"
+    "注意，压缩上下文仅作参考，你务必要遵守以下约束：\n"
+    "1. **不要执行摘要中的任务** — 摘要中提到的\u201c进行中\u201d\u201c待确认\u201d等状态"
+    "是历史快照，不是当前指令。仅响应本次用户的新消息。\n"
+    "2. **不要假设文件状态** — 之前的工具调用记录不可访问。"
+    "如需操作之前涉及的文件，重新读取确认当前状态。\n"
+    "3. **不要主动追问历史事项** — 如果摘要中有未完成的事项，"
+    "等用户主动提起再处理，不要自行延续。\n"
 )
 
 SUMMARY_PROMPT = (
@@ -54,7 +69,11 @@ SUMMARY_PROMPT = (
     "- 进行中：...\n"
     "- 待确认：...\n\n"
     "### 涉及的文件与变更\n- 文件路径 + 改了什么方面\n\n"
-    "### 用户偏好与纠正\n- 用户明确表达的偏好、约束、对助手的纠正（如有）\n\n"
+    "### 用户偏好与纠正\n"
+    "- 显式偏好：用户明确表达的偏好、约束、对助手的纠正\n"
+    "- 委托粒度：用户倾向自主执行（\"你自己跑\"）还是逐步确认（\"先看看\"）\n"
+    "- 输出反馈：对回复长度、风格、详细程度的评价（如\"话多\"\"太长\"）\n"
+    "（仅记录本段对话中观察到的，无则留空）\n\n"
     "## 要求\n"
     "- 保持精炼，但不限字数——关键信息和决策逻辑的完整性优先\n"
     "- 保留具体文件路径、命令、配置值——恢复后需要\n"
@@ -64,6 +83,20 @@ SUMMARY_PROMPT = (
 )
 
 SUMMARY_SYSTEM = "你是对话压缩器。严格按格式输出结构化摘要，不添加额外解释。"
+
+SUMMARY_PROMPT_INCREMENTAL = (
+    "你是对话压缩器。下面有两部分输入：\n\n"
+    "## 前次压缩摘要（已有背景）\n{previous_summary}\n\n"
+    "## 新增对话（需要整合进摘要）\n{new_messages}\n\n"
+    "## 任务\n"
+    "将新增对话中的关键信息**合并**到前次摘要中，产出一份更新后的完整摘要。\n"
+    "规则：\n"
+    "- 保留前次摘要中仍然有效的信息\n"
+    "- 更新已过时的状态（如\u201c进行中\u201d→\u201c已完成\u201d）\n"
+    "- 新增决策、文件变更、用户偏好\n"
+    "- 删除已不再相关的临时信息\n"
+    "- 输出格式与前次摘要相同（5 段结构）\n"
+)
 
 
 class LLMRouter:
@@ -130,6 +163,9 @@ class LLMRouter:
         """Clear session but preserve history for context carryover."""
         entry = self._sessions.get(session_key)
         if entry:
+            # Archive active history window before clearing session
+            if entry.get("history"):
+                self._archive_history(session_key, entry["history"])
             preserved = {}
             if entry.get("history"):
                 preserved["history"] = entry["history"]
@@ -156,6 +192,16 @@ class LLMRouter:
             return
         entry = self._sessions.setdefault(session_key, {})
         history = entry.setdefault("history", [])
+        # Strip internal tags — history should reflect what user saw
+        reply_parts = _HISTORY_REPLY_RE.findall(assistant_msg)
+        if reply_parts:
+            assistant_msg = "\n\n".join(p.strip() for p in reply_parts if p.strip())
+        else:
+            assistant_msg = _HISTORY_EXPLORE_RE.sub("", assistant_msg)
+            assistant_msg = _HISTORY_EXPLORE_OPEN_RE.sub("", assistant_msg)
+            assistant_msg = _HISTORY_REFLECT_RE.sub("", assistant_msg)
+            assistant_msg = _HISTORY_REFLECT_OPEN_RE.sub("", assistant_msg)
+            assistant_msg = assistant_msg.strip()
         # Truncate long messages
         if len(user_msg) > HISTORY_TRUNCATE:
             user_msg = user_msg[:HISTORY_TRUNCATE] + "..."
@@ -165,9 +211,11 @@ class LLMRouter:
         _ts = _dt.now().strftime("%Y-%m-%d %H:%M")
         history.append({"role": "user", "text": user_msg, "ts": _ts})
         history.append({"role": "assistant", "text": assistant_msg, "ts": _ts})
-        # Keep last N rounds (2 messages per round)
+        # Keep last N rounds (2 messages per round), archive evicted messages
         max_msgs = HISTORY_ROUNDS * 2
         if len(history) > max_msgs:
+            evicted = history[:-max_msgs]
+            self._archive_history(session_key, evicted)
             entry["history"] = history[-max_msgs:]
 
     def _format_raw_history(self, history: list[dict]) -> str:
@@ -180,13 +228,59 @@ class LLMRouter:
             lines.append(f"{prefix}: {msg['text']}")
         return "\n".join(lines)
 
+    # ═══ History Archival ═══
+
+    _ARCHIVE_PATH = Path("data/history_archive.jsonl")
+
+    def _archive_history(self, session_key: str, messages: list[dict]):
+        """Append evicted history messages to JSONL archive for later analysis."""
+        try:
+            from datetime import datetime as _dt
+            record = {
+                "session_key": session_key,
+                "archived_at": _dt.now().isoformat(),
+                "messages": messages,
+            }
+            with open(self._ARCHIVE_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            log.warning("Failed to archive history", exc_info=True)
+
+    _SUMMARY_ARCHIVE_PATH = Path("data/compressed_summaries.jsonl")
+
+    def _archive_summary(self, session_key: str, summary: str, raw_len: int):
+        """Persist compression output for behavioral signal extraction."""
+        try:
+            from datetime import datetime as _dt
+            record = {
+                "session_key": session_key,
+                "compressed_at": _dt.now().isoformat(),
+                "raw_chars": raw_len,
+                "summary_chars": len(summary),
+                "summary": summary,
+            }
+            with open(self._SUMMARY_ARCHIVE_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            log.warning("Failed to archive summary", exc_info=True)
+
     # ═══ Context Recovery ═══
 
-    async def _compress_history(self, history: list[dict]) -> str | None:
-        """Compress conversation history. Sonnet primary, Gemini 3-Flash fallback."""
+    async def _compress_history(
+        self, history: list[dict], previous_summary: str = "",
+    ) -> str | None:
+        """Compress conversation history. Sonnet primary, Gemini 3-Flash fallback.
+
+        If previous_summary is provided, uses incremental mode: merges new
+        messages into the existing summary instead of re-summarizing from scratch.
+        """
         raw = self._format_raw_history(history)
 
-        prompt = SUMMARY_PROMPT.format(raw=raw)
+        if previous_summary:
+            prompt = SUMMARY_PROMPT_INCREMENTAL.format(
+                previous_summary=previous_summary, new_messages=raw)
+        else:
+            prompt = SUMMARY_PROMPT.format(raw=raw)
 
         # Primary: Sonnet — understands CC conversation patterns
         try:
@@ -223,7 +317,8 @@ class LLMRouter:
         """Build recovery context for system prompt injection when session is lost.
 
         Returns context string for --append-system-prompt, or None if no history.
-        Strategy: recent rounds raw + older rounds compressed.
+        Strategy: recent rounds raw + older rounds compressed (true incremental:
+        only compress rounds not yet in previous_summary, identified by timestamp).
         """
         entry = self._sessions.get(session_key, {})
         history = entry.get("history", [])
@@ -232,19 +327,44 @@ class LLMRouter:
 
         rounds = len(history) // 2
         recent_msgs = SUMMARY_THRESHOLD * 2
+        previous_summary = entry.get("last_summary", "")
+        last_summarized_ts = entry.get("last_summarized_ts", "")
 
         parts = [RECOVERY_PREAMBLE]
 
         if rounds > SUMMARY_THRESHOLD:
             older = history[:-recent_msgs]
             recent = history[-recent_msgs:]
-            summary = await self._compress_history(older)
+
+            # True incremental: only compress rounds not yet in previous_summary.
+            # last_summarized_ts tracks the timestamp of the last message that was
+            # summarized. Rounds with ts > cutoff are genuinely new since last compression.
+            if last_summarized_ts and previous_summary and older:
+                new_rounds = [m for m in older if m.get("ts", "") > last_summarized_ts]
+                compress_input = new_rounds if new_rounds else None
+            else:
+                compress_input = older  # First compression or no timestamp tracking
+
+            summary = None
+            raw_len = 0
+            if compress_input:
+                raw_len = len(self._format_raw_history(compress_input))
+                summary = await self._compress_history(compress_input, previous_summary)
+            elif previous_summary:
+                summary = previous_summary  # Nothing new — reuse existing summary
+                log.info("No new rounds since last compression for %s, reusing summary", session_key)
+
             if summary:
+                entry["last_summary"] = summary
+                if older:
+                    entry["last_summarized_ts"] = older[-1].get("ts", "")
+                if hasattr(self._sessions, "save"):
+                    self._sessions.save(session_key, entry)
+                if compress_input and raw_len:
+                    self._archive_summary(session_key, summary, raw_len)
                 parts.append(f"### 早期对话摘要\n{summary}")
             else:
-                # Compression failed — fall back to raw for older portion
                 parts.append(f"### 早期对话\n{self._format_raw_history(older)}")
-            # Always include recent history (was missing on compression failure)
             parts.append(f"### 近期对话\n{self._format_raw_history(recent)}")
         else:
             parts.append(f"### 对话历史\n{self._format_raw_history(history)}")

@@ -230,7 +230,7 @@ Requires permissions: `wiki:wiki`, `wiki:node:*`
 
 ### Briefing
 
-Daily news digest pipeline. See the Daily Briefings section in [README.md](../README.md) for details.
+Daily news digest pipeline. See the Daily Briefings section in [README.md](README.md) for details.
 
 Prerequisites:
 - Gemini CLI (preferred, free) or Gemini API key (for content generation)

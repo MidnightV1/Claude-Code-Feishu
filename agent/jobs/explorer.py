@@ -37,6 +37,38 @@ from agent.platforms.feishu.dispatcher import Dispatcher
 
 log = logging.getLogger("hub.explorer")
 
+
+def _has_l2_content(scores: dict, summary: str) -> bool:
+    """Check if exploration content warrants L2 notification, independent of commits.
+
+    finding_type and notify_level are decoupled: an l1_fix can ALSO contain
+    L2-worthy proposals. This function detects directional content that needs
+    user review, regardless of whether commits were made.
+
+    Requires BOTH high actionability score AND substantive design signals
+    (not just template section headers).
+    """
+    actionability = scores.get("actionability", 0)
+    if actionability < 4.0:
+        return False
+
+    # Design signals — must be substantive, not just template section headers.
+    # "## 推荐行动" alone is a template header; require actual design keywords
+    # in the body text (first 3000 chars).
+    text = summary[:3000]
+    design_keywords = ["方案", "设计", "架构", "迁移", "实施路径",
+                       "## Recommended", "Action Plan"]
+    has_design = any(kw in text for kw in design_keywords)
+
+    # Also check for explicit directional proposals (higher confidence)
+    directional_signals = ["建议.*L2", "需要确认", "需要.*决策", "方向性",
+                           "新依赖", "新功能", "架构变更"]
+    import re
+    has_directional = any(re.search(pat, text) for pat in directional_signals)
+
+    return has_design or has_directional
+
+
 # ── Configuration ──
 
 # Time budget per task (seconds). User decision: "一小时之内尽可能出结论"
@@ -203,6 +235,9 @@ class ExplorerPlugin:
         await self.queue.update(task.id, status="in_progress")
         task_start = time.time()
 
+        # Snapshot git HEAD before exploration — detect commits by subprocess
+        head_before = await self._git_head()
+
         try:
             # Build rich prompt with Goal Tree context
             prompt = self._build_prompt(task, tree, exploration_map)
@@ -246,7 +281,36 @@ class ExplorerPlugin:
             # Mark complete
             await self.queue.complete(task.id, summary)
 
-            # Log to exploration log
+            # Score the exploration output (LLM preferred, rule fallback)
+            from agent.infra.exploration_scoring import score_exploration
+            auto_scores = await score_exploration(
+                title=task.title,
+                summary=summary,
+                duration_seconds=duration,
+                messages_used=max(1, result.input_tokens // 4000),
+                router=self.router,
+                use_llm=True,
+            )
+
+            # Detect commits made by explorer subprocess
+            action_taken, commit_shas = await self._detect_commits(head_before)
+
+            # Auto-classify finding type from scores + action
+            finding_type = self._classify_finding(auto_scores, action_taken, summary)
+
+            # Determine actual notification level — DECOUPLED from finding_type.
+            # An l1_fix can also contain L2-worthy proposals (dual-label).
+            if finding_type == "l2_proposal":
+                notify_level = AutonomyLevel.L2_APPROVE
+            elif _has_l2_content(auto_scores, summary):
+                # l1_fix or other type, but content warrants L2 review
+                notify_level = AutonomyLevel.L2_APPROVE
+                log.info("L2 content detected in %s finding — elevating notify level",
+                         finding_type)
+            else:
+                notify_level = task.autonomy_level
+
+            # Log to exploration log — use actual notify level, not task default
             await append_log(ExplorationLog(
                 task_id=task.id,
                 title=task.title,
@@ -255,18 +319,22 @@ class ExplorerPlugin:
                 priority=task.priority,
                 messages_used=max(1, result.input_tokens // 4000),
                 summary=summary,
-                action_taken="",
-                autonomy_level=task.autonomy_level,
+                action_taken=action_taken,
+                finding_type=finding_type,
+                autonomy_level=notify_level,
+                duration_seconds=duration,
+                auto_scores=auto_scores,
             ))
 
-            log.info("Exploration done: %s (%ds, %d tokens)",
-                     task.title, duration, result.input_tokens + result.output_tokens)
+            log.info("Exploration done: %s (%ds, %d tokens, tier=%s score=%.2f)",
+                     task.title, duration,
+                     result.input_tokens + result.output_tokens,
+                     auto_scores.get("tier", "?"),
+                     auto_scores.get("weighted", 0))
 
             # P1-3: Try to extract memory-worthy facts from exploration output
             await self._maybe_update_memory(task, summary)
-
-            # Notify based on autonomy level — write full content to doc
-            if task.autonomy_level >= AutonomyLevel.L1_NOTIFY:
+            if notify_level >= AutonomyLevel.L1_NOTIFY:
                 from agent.jobs.explorer_v2 import _create_explore_doc
                 doc_url = await _create_explore_doc(
                     task.title, summary, self.workspace
@@ -275,10 +343,14 @@ class ExplorerPlugin:
                 if doc_url:
                     detail += f"\n\n[完整报告]({doc_url})"
                 action = AutonomousAction(
-                    level=task.autonomy_level,
+                    level=notify_level,
                     category=f"exploration:{task.pillar}",
                     summary=task.title,
                     detail=detail,
+                    commit_sha=commit_shas[0] if commit_shas else "",
+                    rollback_cmd=(f"git revert {commit_shas[0]}"
+                                  if commit_shas else ""),
+                    source="explorer",
                 )
                 # Build interactive card with feedback buttons
                 # Use card_dispatcher (main bot) for interactive cards —
@@ -300,6 +372,37 @@ class ExplorerPlugin:
                 result_summary=f"Exception: {e}"
             )
             return None
+
+    @staticmethod
+    async def _git_head() -> str:
+        """Get current git HEAD sha."""
+        import asyncio, subprocess
+        def _run():
+            r = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True, text=True, cwd="."
+            )
+            return r.stdout.strip() if r.returncode == 0 else ""
+        return await asyncio.to_thread(_run)
+
+    @staticmethod
+    async def _detect_commits(head_before: str) -> tuple[str, list[str]]:
+        """Detect commits made since head_before. Returns (action_taken, [shas])."""
+        import asyncio, subprocess
+        if not head_before:
+            return "", []
+        def _run():
+            r = subprocess.run(
+                ["git", "log", "--oneline", f"{head_before}..HEAD"],
+                capture_output=True, text=True, cwd="."
+            )
+            return r.stdout.strip() if r.returncode == 0 else ""
+        log_output = await asyncio.to_thread(_run)
+        if not log_output:
+            return "", []
+        lines = log_output.strip().split("\n")
+        shas = [line.split()[0] for line in lines if line.strip()]
+        return log_output, shas
 
     @staticmethod
     def _build_explore_card(title: str, detail: str, task_id: str) -> str:
@@ -358,17 +461,9 @@ class ExplorerPlugin:
         import re
         import os
 
-        # Auto-discover the memory directory from .claude/projects/
-        projects_dir = os.path.expanduser("~/.claude/projects")
-        memory_dir = None
-        if os.path.isdir(projects_dir):
-            for d in os.listdir(projects_dir):
-                candidate = os.path.join(projects_dir, d, "memory")
-                if os.path.isdir(candidate):
-                    memory_dir = candidate
-                    break
-        if not memory_dir:
-            return
+        memory_dir = os.path.expanduser(
+            "~/.claude/projects/-Users-john-Agent-Space-claude-code-feishu/memory"
+        )
 
         # Look for structured memory suggestions in the output
         # The exploration prompt can include instructions to output these
@@ -544,6 +639,36 @@ class ExplorerPlugin:
         if re.search(r"设计|架构|方案|评估|分析|策略|规划|进化", task.title):
             return "opus"
         return "sonnet"
+
+    @staticmethod
+    def _classify_finding(scores: dict, action_taken: str, summary: str) -> str:
+        """Auto-classify finding type from scores, action, and content.
+
+        Returns one of: l1_fix, l2_proposal, monitoring, diagnostic.
+        finding_type describes WHAT HAPPENED — l1_fix means commits were made.
+        Notification level is computed separately by _has_l2_content().
+        """
+        # If commits were made, primary type is l1_fix
+        if action_taken:
+            return "l1_fix"
+
+        actionability = scores.get("actionability", 0)
+        novelty = scores.get("novelty", 0)
+
+        # High actionability + design/architecture keywords → l2_proposal
+        if actionability >= 4.0 and _has_l2_content(scores, summary):
+            return "l2_proposal"
+
+        # Monitoring patterns (metrics, rates, frequencies)
+        monitoring_signals = any(kw in summary[:2000] for kw in [
+            "频率", "分布", "成功率", "覆盖率", "信噪比",
+            "送达率", "命中率", "使用率", "baseline",
+        ])
+        if monitoring_signals and novelty >= 3.0:
+            return "monitoring"
+
+        # Default: diagnostic (investigation report)
+        return "diagnostic"
 
     @staticmethod
     def _build_exploration_map(logs: list[dict]) -> list[dict]:

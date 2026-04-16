@@ -1,0 +1,5 @@
+{
+  "user_text_len": 4003,
+  "ends_with_ellipsis": true,
+  "assistant_text": "short reply"
+}

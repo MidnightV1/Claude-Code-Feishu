@@ -1,0 +1,24 @@
+[
+  {
+    "block_type": 2,
+    "text": {
+      "elements": [
+        {
+          "text_run": {
+            "content": "参考 "
+          }
+        },
+        {
+          "text_run": {
+            "content": "飞书文档",
+            "text_element_style": {
+              "link": {
+                "url": "https://feishu.cn/docs"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+]

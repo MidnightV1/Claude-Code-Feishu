@@ -1,0 +1,5 @@
+{
+  "total_messages": 30,
+  "first_user_msg": "user_msg_1",
+  "last_assistant_msg": "assistant_msg_15"
+}

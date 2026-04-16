@@ -149,12 +149,16 @@ def _group_errors(errors: list[dict]) -> list[dict]:
 def _parse_json_response(text: str) -> list | dict | None:
     """Parse JSON from LLM response, stripping markdown fences."""
     text = text.strip()
+    if not text:
+        log.warning("LLM returned empty response, skipping parse")
+        return None
     if text.startswith("```"):
         text = text.split("\n", 1)[1] if "\n" in text else text
         if text.endswith("```"):
             text = text[:-3]
     try:
-        return json.loads(text.strip())
+        obj, _ = json.JSONDecoder().raw_decode(text.strip())
+        return obj
     except (json.JSONDecodeError, ValueError) as e:
         log.warning("Failed to parse JSON: %s", e)
         return None
@@ -323,7 +327,7 @@ async def scan_errors(router, dispatcher, config: dict):
     # ── Phase 2: Sonnet analysis with fixability classification ──
     error_summary = json.dumps(grouped, ensure_ascii=False, indent=2)
     prompt = _ANALYSIS_PROMPT.format(date=yesterday, errors=error_summary)
-    llm_config = LLMConfig(provider="claude-cli", model="sonnet", timeout_seconds=120)
+    llm_config = LLMConfig(provider="claude-cli", model="sonnet", timeout_seconds=300)
     result = await router.run(prompt=prompt, llm_config=llm_config)
 
     if result.is_error:
@@ -406,25 +410,64 @@ async def scan_errors(router, dispatcher, config: dict):
             if r["fix_status"] == "fixed":
                 all_fixed_files.extend(r.get("files", []))
         if all_fixed_files:
+            # 72h reentry gate: skip auto-commit if files were recently L1-auto-modified
             try:
-                # Opus review already staged files; just commit
-                summaries = [r["summary"] for r in fixed_results if r["fix_status"] == "fixed"]
-                commit_msg = f"fix(auto): {yesterday} error scan — " + "; ".join(summaries)
-                if len(commit_msg) > 200:
-                    commit_msg = commit_msg[:197] + "..."
-                proc = await asyncio.create_subprocess_exec(
-                    "git", "commit", "-m", commit_msg,
-                    cwd=cwd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
-                if proc.returncode == 0:
-                    log.info("Auto-fix committed: %s", out.decode().strip()[:100])
-                else:
-                    log.warning("Auto-fix commit failed: %s", err.decode()[:200])
+                from agent.infra.autonomy import check_file_reentry
+                reentry = await check_file_reentry(all_fixed_files, hours=72, cwd=cwd)
+                if reentry:
+                    log.warning("72h reentry gate: %s recently auto-modified, skipping commit → 待确认",
+                                [h["file"] for h in reentry[:5]])
+                    await _git_restore(all_fixed_files)
+                    for fields, record_id, item in records:
+                        if item.get("fixability") == "auto_fix" and record_id and record_id != "ok":
+                            await _update_bitable_record(
+                                script, cwd, app_token, table_id, record_id,
+                                {"状态": "待确认（72h重入）"})
+                    all_fixed_files = []  # prevent commit below
             except Exception as e:
-                log.warning("Auto-fix commit error: %s", e)
+                log.debug("Reentry check failed, proceeding: %s", e)
+
+            if all_fixed_files:
+                try:
+                    # Opus review already staged files; just commit
+                    summaries = [r["summary"] for r in fixed_results if r["fix_status"] == "fixed"]
+                    commit_msg = f"fix(auto): {yesterday} error scan — " + "; ".join(summaries)
+                    if len(commit_msg) > 200:
+                        commit_msg = commit_msg[:197] + "..."
+                    proc = await asyncio.create_subprocess_exec(
+                        "git", "commit", "-m", commit_msg,
+                        cwd=cwd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+                    if proc.returncode == 0:
+                        log.info("Auto-fix committed: %s", out.decode().strip()[:100])
+                        # Log to autonomy audit trail
+                        try:
+                            from agent.infra.autonomy import AutonomousAction, log_action
+                            sha_proc = await asyncio.create_subprocess_exec(
+                                "git", "rev-parse", "--short", "HEAD",
+                                cwd=cwd, stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                            )
+                            sha_out, _ = await asyncio.wait_for(sha_proc.communicate(), timeout=5)
+                            commit_sha = sha_out.decode().strip() if sha_proc.returncode == 0 else ""
+                            await log_action(AutonomousAction(
+                                level=1,
+                                category="error_scan:auto_fix",
+                                summary=commit_msg[:120],
+                                detail=f"Files: {', '.join(all_fixed_files[:10])}",
+                                commit_sha=commit_sha,
+                                rollback_cmd=f"git revert {commit_sha}" if commit_sha else "",
+                                source="error_scan",
+                            ))
+                        except Exception as audit_err:
+                            log.warning("Autonomy audit log failed: %s", audit_err)
+                    else:
+                        log.warning("Auto-fix commit failed: %s", err.decode()[:200])
+                except Exception as e:
+                    log.warning("Auto-fix commit error: %s", e)
 
     # Update monitor items status
     for fields, record_id, item in records:

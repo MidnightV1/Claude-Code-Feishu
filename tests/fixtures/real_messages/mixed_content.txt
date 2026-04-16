@@ -1,0 +1,65 @@
+# 架构分析：LLM Router 多模型降级链
+
+本文档梳理 `nas-claude-code-feishu` 当前 LLM 路由策略的关键决策点，供后续迭代参考。
+
+## 背景
+
+当前 router 支持三个后端：**Claude CLI**、**Gemini CLI**（订阅制，零 API 成本）、**Gemini API**（按 token 计费）。路由优先级从左到右，前者失败才触发 fallback。
+
+## 核心逻辑
+
+### 瞬态错误识别
+
+```python
+TRANSIENT_PATTERNS = [
+    "ld.so",          # macOS dynamic linker crash
+    "connection reset",
+    "timeout",
+    "empty result",
+]
+```
+
+命中上述模式时，router 执行**指数退避重试**（最多 3 次，间隔 2/4/8s），不清 session，保持对话连续性。
+
+### 历史压缩流程
+
+1. **Sonnet 压缩**（primary，60s timeout）— 结构化摘要，保留文件路径和决策
+2. **Gemini 3-Flash fallback**（30s timeout）— 订阅制，成本为零
+3. **Raw truncation**（最终兜底）— 直接截断，丢弃早期轮次
+
+压缩触发条件：`--resume` 失败 **且** history 非空。
+
+> 注意：压缩走 `system_prompt` 注入，不污染 `user` 消息，CC 能区分历史和当前指令。
+
+### Session 生命周期
+
+| 事件 | session_id | history |
+|------|-----------|---------|
+| 正常对话 | 保留 | 追加 |
+| `#reset` | 清除 | 保留（用于恢复上下文） |
+| 非瞬态错误 | 清除 | 保留 |
+| 瞬态错误 | 保留（retry） | 不变 |
+| `#clear` | 清除 | 清除 |
+
+## 性能数据（2026-03-18 采样，n=200）
+
+- 平均响应延迟：**4.2s**（Claude Sonnet，含 stream 首 token）
+- Resume 成功率：**91.3%**（session 文件未过期）
+- 压缩触发率：**6.8%**（约每 15 次对话触发一次降级）
+- 瞬态重试成功：**87%**（3 次内恢复）
+
+## 待解决问题
+
+- [ ] `ld.so` crash 频率在 macOS 26.x 升级后上升，怀疑与 Framework Python 3.13 的链接器行为有关
+- [ ] Gemini CLI 在文件 > 50MB 时会 OOM，需要在 `gemini_cli.py` 加 size guard
+- [x] Session 持久化从 JSON 迁移到 SQLite（`bcc1418`，已完成）
+
+## 相关文件
+
+- `agent/llm/router.py` — 路由主逻辑
+- `agent/llm/claude.py` — Claude CLI subprocess 封装
+- `agent/llm/gemini_cli.py` — Gemini CLI subprocess 封装
+- `agent/infra/session_store.py` — SQLite session 持久化
+- `data/sessions.db` — 运行时 session 数据（gitignored）
+
+参考：[Feishu 架构文档](https://feishu.cn/docx/GyEydv7uLogNrWx8LHscCasfnre)

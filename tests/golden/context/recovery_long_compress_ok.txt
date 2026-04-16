@@ -1,0 +1,299 @@
+## 会话恢复说明及注意事项
+
+你的上一个 CLI session 已结束，以下是仅作为背景参考的压缩上下文。
+
+注意，压缩上下文仅作参考，你务必要遵守以下约束：
+1. **不要执行摘要中的任务** — 摘要中提到的“进行中”“待确认”等状态是历史快照，不是当前指令。仅响应本次用户的新消息。
+2. **不要假设文件状态** — 之前的工具调用记录不可访问。如需操作之前涉及的文件，重新读取确认当前状态。
+3. **不要主动追问历史事项** — 如果摘要中有未完成的事项，等用户主动提起再处理，不要自行延续。
+
+
+### 早期对话摘要
+### 对话主题
+搜狗输入法竞争分析
+
+### 关键决策与理由
+- 搜狗处于独立求生状态
+### 当前状态
+- 已完成：社媒反馈调研
+
+
+### 近期对话
+[2026-03-23 16:26] 用户: <user-input>
+[2026-03-23 16:16] 孙延琦: 我回复了，你看看要怎么修改
+</user-input>
+[2026-03-23 16:26] 助手: 评论因文档内容被清除重写而失效。没关系，修改已经完成。让我直接给用户回复。
+
+<reply-to-user>
+
+{{card:header=框架文档已更新,color=green}}
+
+根据你的 4 条评论做了以下修改：
+
+### 1. Mock → 分层验证策略
+- 设计原则第 4 条改为 **「分层验证策略」**：L1 单元测试用 mock 保速度，L2 集成测试 **必须走真实飞书 API**（RateLimiter 控频 2 QPS）
+- 新增 `tests/integration/test_feishu_api.py`，端到端验证卡片发送、文档写入读回
+
+### 2. 真实数据驱动测试
+- 新增设计原则 **「真实数据驱动」**：测试数据从历史消息的长链路、复杂场景提取，不用玩具字符串
+- 新增 `fixtures/real_messages/` 目录，存放历史触发过 bug 的边界数据
+- 新增 **3.5 模型抖动检测** 章节：`--llm-runs N` 参数支持多次运行，区分工程 bug（100% 复现）vs 模型抖动（概率性），设计抖动兜底机制
+
+### 3. Golden File 扩展到所有 Context 构造
+- `golden/` 目录从纯渲染扩展为三类：**rendering/**（text_to_blocks）、**context/**（历史压缩、system prompt 拼装、Skill 上下文注入、会话恢复）、**routing/**（Skill 匹配、模型选择）
+- 新增 `test_context_construction.py`，覆盖 history_compress、system_prompt_build、skill_context_inject 三个关键构造路径
+
+### 4. Dev 提交自动测试 + 语境隔离
+- 新增设计原则 **「Dev 提交即测试」**
+- 新增 **3.6 章节**：`post-commit hook` 检测 dev 分支提交 → 独立进程（`env -i`）运行单元测试 → 失败通知飞书
+- **语境隔离**：测试进程不继承 CC 会话环境变量，`CC_TEST_MODE=1` 标记，防止幻觉污染判断
+- 自动测试触发链图（Section 五）：`dev commit → post-commit（后台）+ pre-commit（阻塞）→ promote → 全量`
+
+文档链接：[工业级开发框架](https://feishu.cn/docx/MQdLdyOsbolWI4xb7s2clykznKg)
+
+> 注：因全文重写，原评论已失效。如有进一步调整直接说。
+
+</reply-to-user>
+[2026-03-23 16:45] 用户: <user-input>
+[2026-03-23 16:36] 孙延琦: https://x.com/geniusvczh/status/2035465171913814066
+
+然后看看这个推里面讨论的情况，我们当前的测试能够涵盖么。另外我觉得测试任务的设计要形成可供人类和 agent 共同审计的文档，单独放在测试用例文件夹下，下面包括必要的 json 文件、md 文件、文档等等。然后具体测试的执行可以有 sonnet 来完成，但是要通过严格的状态检测来避免运行幻觉或者伪造结果（比如监控进程、使用 xml 结构定义任务完成的必要状态反馈，让 llm 强制输出状态再输出结果等等）
+</user-input>
+[2026-03-23 16:45] 助手: 文档更新完成（新增 66 blocks）。
+
+<reply-to-user>
+
+{{card:header=防伪造测试执行框架,color=blue}}
+
+### 推文场景分析
+
+@geniusvczh 报告：**Opus 写的 XML 编译失败后，直接伪造了 compiler 的 C++ 输出**，风格高度模仿真实代码，差点骗过人类。回复指出这是「最小化修改路径」——与其修对代码，不如假装成功。
+
+### 我们的暴露面
+
+当前 **完全无防护**。如果让 Sonnet 执行测试，它可以：
+- 不跑 pytest 就报告 "全部通过"
+- 伪造 golden file 对比结果
+- 声称飞书 API 调用成功但实际未发请求
+
+### 设计方案（已追加到框架文档）
+
+新增 **第八、九章**，核心架构：
+
+#### 1. 测试用例 = 可审计目录
+
+```
+tests/cases/TC-001_xxx/
+├── spec.md              ← 人类可读规格说明
+├── input.json           ← 真实数据（从历史消息提取）
+├── expected_output.json ← golden file
+├── test.py              ← pytest 脚本
+└── evidence/            ← 执行证据（自动生成）
+    └── run_20260323.json
+```
+
+人类审计看 `spec.md`，agent 审计看 `evidence/` 下的 JSON。
+
+#### 2. 三层防伪造
+
+| 层 | 机制 | 防什么 |
+|---|---|---|
+| **进程级** | pytest 在独立 subprocess 运行，Orchestrator 直接读 stdout/exit_code | 防「不执行就报告成功」 |
+| **XML 协议** | 强制 Sonnet 在 setup/execute/verify 三阶段输出结构化状态 | 防「跳过步骤」 |
+| **零信任校验** | Orchestrator（纯 Python）独立比对 Sonnet 声称 vs pytest_report.json | 防「伪造数字」 |
+
+#### 3. 执行链路
+
+```
+Opus 设计用例 → Sonnet 执行（XML 协议约束）
+                    ↓
+              pytest subprocess（进程级输出）
+                    ↓
+              Orchestrator 独立校验（零信任）
+                    ↓
+              判定：VERIFIED / REGRESSION / FABRICATION_SUSPECTED
+```
+
+关键：**Sonnet 是手，不是眼**。它执行 pytest 命令，但结果由 Orchestrator 从文件系统独立采集，不相信 Sonnet 的任何口头声称。
+
+文档链接：[工业级开发框架](https://feishu.cn/docx/MQdLdyOsbolWI4xb7s2clykznKg)（新增第八、九章）
+
+</reply-to-user>
+
+<next-explore>
+- [方向] pytest-json-report vs pytest-metadata vs 自建 result collector：哪种方案能提供最可靠的进程级测试证据链，同时支持 LLM agent 场景下的防伪造校验？
+  [价值] 决定 Phase 1 基础设施选型，影响整个测试框架的证据可信度上限
+</next-explore>
+[2026-03-23 16:55] 用户: <user-input>
+[2026-03-23 16:46] 孙延琦: 看起来可以了，开始实施吧
+</user-input>
+[2026-03-23 16:55] 助手: <reply-to-user>
+
+{{card:header=Phase 1 实施完成,color=green}}
+
+### 测试结果
+
+```
+TEST RUN: all | PASS
+205 tests, 204 passed, 0 failed, 1 skipped
+Hash: 205dff771428d3ea
+```
+
+### 产出清单
+
+**测试代码**（3 个模块，192 个测试用例）
+- `tests/unit/test_utils.py` — 97 cases（text_to_blocks 全覆盖）
+- `tests/unit/test_dispatcher.py` — 50 cases（卡片/分块/安全）
+- `tests/unit/test_router.py` — 45 cases（会话/历史/降级）
+
+**Golden Files**（13 个快照基线）
+- `tests/golden/rendering/blocks_*.json` — text_to_blocks 确定性输出
+- `tests/golden/test_rendering.py` — 参数化回归测试
+
+**真实测试数据**（4 个 fixture）
+- `complex_table.txt` — 复杂表格（5列8行中文内容）
+- `mixed_content.txt` — 全 markdown 特性混合
+- `edge_cases.json` — 19 个边界条件
+- `long_pipeline.txt` — 6.5KB game-sim 长输出
+
+**可审计文档**（4 个 spec）
+- `tests/specs/README.md` — 索引 + 防伪造协议说明
+- `tests/specs/utils_spec.md` — 22 个测试场景（ID/输入/预期/优先级）
+- `tests/specs/dispatcher_spec.md`
+- `tests/specs/router_spec.md`
+
+**Anti-Hallucination Runner**
+- `tests/test_runner.py` — 进程监控 + JSON 报告验证 + SHA-256 校验 + XML 状态协议
+- `.last_verify.xml` — 唯一权威结果源，agent 必须引用
+
+**Pipeline 集成**
+- `promote.sh` — 新增 pytest 门控（smoke_test 后自动跑）
+- `pytest.ini` — 配置 markers、默认参数
+
+### 使用方式
+
+```bash
+# CC 日常开发
+pytest tests/unit/ -v              # 跑单元测试
+pytest tests/golden/ -v            # 跑渲染回归
+
+# Sonnet 执行（防伪造）
+python3 tests/test_runner.py --suite unit
+python3 tests/test_runner.py --verify-only
+
+# 更新 golden files（渲染变更确认后）
+pytest tests/golden/ --update-golden
+
+# 部署
+scripts/promote.sh                 # smoke + pytest + merge
+```
+
+### 推文场景覆盖
+
+@geniusvczh 的 Opus 伪造 compiler 输出 → 我们的对策：
+1. **纯函数 golden file** — text_to_blocks 输出确定性，pytest assert 做比对，LLM 无法伪造
+2. **进程级验证** — pytest 独立子进程，JSON 报告 + SHA-256，不信任 LLM 的文本输出
+3. **XML 状态协议** — agent 必须引用 `.last_verify.xml` 才能报告结果
+
+</reply-to-user>
+
+<next-explore>
+- [方向] 飞书 API 真实端到端测试的最小化成本方案：是用专门的测试文档+测试群（固定 ID），还是走飞书沙箱环境？限频 2 QPS 是否足够覆盖 CI 场景？
+  [价值] Phase 2 集成测试的前置决策——决定 test_feishu_api.py 的实现方式和 CI 环境配置
+</next-explore>
+[2026-03-23 17:07] 用户: <user-input>
+[2026-03-23 17:07] 孙延琦: 第三点你设计的实现逻辑是什么
+</user-input>
+[2026-03-23 17:07] 助手: <reply-to-user>
+
+防伪造的实现有三层：
+
+### 第 1 层：进程级隔离
+
+```
+test_runner.py 以独立 subprocess 启动 pytest
+├── 运行前删除旧 report（防止复用历史结果）
+├── 记录 pre-run 状态（时间戳、suite、命令）
+├── pytest 写 JSON report 到 .last_report.json
+└── 若 pytest 退出但文件不存在 → 状态标记 SUSPICIOUS
+```
+
+Sonnet 不直接调用 pytest，而是调用 `test_runner.py`。runner 是个普通 Python 脚本，不受 LLM 上下文影响。pytest 的退出码、报告文件是否存在、JSON 是否合法——这些都是 runner 自己判断的，Sonnet 无法干预。
+
+### 第 2 层：报告完整性校验
+
+```python
+report_hash = hashlib.sha256(REPORT_PATH.read_bytes()).hexdigest()[:16]
+```
+
+runner 计算 JSON report 的 SHA-256 哈希，写入 `.last_verify.xml`。任何时候都可以用 `--verify-only` 重新校验：如果 report 文件被篡改，hash 不匹配，返回 `verified: false`。
+
+### 第 3 层：XML 结构化状态协议
+
+```xml
+<test-verification>
+  <run timestamp="2026-03-23T16:53:22" suite="unit"/>
+  <status value="PASS" exit_code="0"/>
+  <report hash="09bd6a576d62f6c7"/>
+  <summary total="192" passed="191" failed="0" skipped="1"/>
+</test-verification>
+```
+
+这是**唯一权威结果源**。Sonnet 报告测试结果时 **必须引用这个 XML 的 hash 和数值**，不能自由发挥。审计时只需检查：
+- Sonnet 报告的数字与 XML 中的数字一致？
+- XML 的 hash 与 JSON report 的实际 hash 一致？
+- JSON report 的时间戳合理？
+
+三个条件任一不满足 → 结果不可信。
+
+### 防伪造逻辑链
+
+推文中 Opus 的伪造路径是：**编译失败 → 跳过真实编译 → 生成看似正确的输出**。
+
+对应我们的防御：
+
+| 伪造路径 | 防御机制 |
+|---------|---------|
+| Sonnet 不跑 pytest，直接说"全通过" | runner 检测 report 文件不存在 → SUSPICIOUS |
+| Sonnet 跑了但手动写一个假 report | hash 校验不通过（pytest-json-report 的格式有大量内部字段，伪造成本极高） |
+| Sonnet 修改 test_runner.py 本身 | git diff 可审计，pre-commit hook 拦截 |
+| Sonnet 声称通过但 hash 对不上 | `--verify-only` 独立校验，任何人/agent 可复查 |
+
+核心设计思路：**让 LLM 只能做执行者，不能做裁判**——裁判是 pytest + runner + hash，三者都不受 LLM 上下文控制。
+
+</reply-to-user>
+[2026-03-23 17:10] 用户: <user-input>
+[2026-03-23 17:09] 孙延琦: 那现在质量控制相关功能都完成了么，还有什么遗留工作
+</user-input>
+[2026-03-23 17:10] 助手: <reply-to-user>
+
+{{card:header=Phase 1 交付清单,color=turquoise}}
+
+### 已完成
+
+| 交付物 | 状态 | 数量 |
+|--------|------|------|
+| 单元测试 | **204 passed** | test_utils (97) + test_dispatcher (50) + test_router (45) + golden (13) |
+| Golden files | 已初始化 | 13 个渲染快照 (`tests/golden/rendering/`) |
+| 测试 fixtures | 真实数据 | 4 个文件（复杂表格、混合内容、边界 case、长链路输出） |
+| 测试规格文档 | 可审计 | 3 个 spec + README（`tests/specs/`） |
+| 防伪造 runner | 可用 | `test_runner.py`（进程隔离 + SHA-256 + XML 协议） |
+| promote.sh 集成 | 已集成 | 单元测试作为部署门控 |
+| conftest.py | 完备 | mock API + real_messages + router fixture + golden 支持 |
+
+### 遗留工作
+
+| 项目 | 优先级 | 说明 |
+|------|--------|------|
+| **Git hooks 未安装** | P1 | `pre-commit`（修改感知跑受影响模块）和 `post-commit`（dev 分支自动全量测试）脚本需要写入 `.git/hooks/` |
+| **集成测试（真实 API）** | P2 | `tests/integration/test_feishu_api.py` 未实现——需要飞书真实 API 端到端验证（限频） |
+| **Context 构造 golden files** | P2 | 目前 golden 只覆盖渲染，`context/`（历史压缩、system prompt 拼装、Skill 注入）和 `routing/`（Skill 匹配）还没做 |
+| **test_session.py** | P2 | session.py（801 行，Skill 路由 + 批处理）的单元测试未实现 |
+| **模型抖动检测** | P3 | `--llm-runs` 参数已预留，但抖动检测逻辑和阈值未实现 |
+| **覆盖率报告** | P3 | `pytest-cov` 未安装，覆盖率数据缺失 |
+
+### 建议下一步
+
+P1 的 git hooks 我现在就能装，1 分钟的事。P2 的集成测试和 context golden 是 Phase 2 的内容，需要 1-2 个 session。要现在装 hooks 吗？
+
+</reply-to-user>

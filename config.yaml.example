@@ -1,4 +1,4 @@
-# claude-code-feishu configuration template
+# nas-claude-code-feishu configuration template
 # Copy to config.yaml and fill in your credentials.
 
 feishu:
@@ -12,6 +12,7 @@ feishu:
   docs:
     enabled: false
     default_folder: ""              # Folder for creating new documents
+    collab_space: ""                # Collaboration space folder token (for MADS design docs)
     share_to: []                    # List of open_ids to auto-share new docs
     shared_folders:                 # Folders shared with the bot (for list/search)
       # - name: Work Documents

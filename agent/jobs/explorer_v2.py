@@ -23,7 +23,9 @@ import re
 import time
 from dataclasses import dataclass
 
-from agent.infra.models import LLMConfig
+from agent.infra.autonomy import AutonomousAction
+from agent.infra.autonomy import notify as autonomy_notify
+from agent.infra.models import AutonomyLevel, LLMConfig
 from agent.llm.router import LLMRouter
 from agent.platforms.feishu.dispatcher import Dispatcher
 
@@ -293,6 +295,81 @@ async def _create_explore_doc(title: str, content: str, workspace_dir: str) -> s
     return ""
 
 
+def _classify_finding(summary: str, action_taken: str,
+                      scores: dict | None = None) -> str:
+    """Classify exploration finding type for routing.
+
+    Unified with ExplorerPlugin._classify_finding (explorer.py) —
+    finding_type describes WHAT HAPPENED. Notification level is
+    computed separately (see notify_level computation in run_exploration).
+
+    Returns: "l1_fix" | "l2_proposal" | "monitoring" | "diagnostic"
+    """
+    if action_taken:
+        return "l1_fix"
+
+    s = summary[:3000].lower()
+
+    # L2 proposal: scoring-based (preferred) or content-based
+    from agent.jobs.explorer import _has_l2_content
+    if scores and scores.get("actionability", 0) >= 4.0 and _has_l2_content(scores, summary):
+        return "l2_proposal"
+
+    # Content-only fallback (when scores unavailable)
+    if not scores:
+        has_proposals = ("## 推荐行动" in summary or "推荐行动" in summary[:2000]
+                         or "## recommended" in s)
+        design_signals = any(kw in summary[:2000] for kw in [
+            "方案", "设计", "架构", "迁移", "实施路径",
+        ])
+        if has_proposals and design_signals:
+            return "l2_proposal"
+
+    # Monitoring: confirms existing design or measures baseline
+    monitoring_signals = ["验证通过", "确认", "baseline", "基线",
+                          "working as", "正常运行", "符合预期"]
+    if sum(1 for kw in monitoring_signals if kw in s) >= 2:
+        return "monitoring"
+
+    return "diagnostic"
+
+
+async def _detect_commits(workspace_dir: str, since_ref: str) -> str:
+    """Detect [L1-auto] commits made since a git ref during exploration.
+
+    Returns space-separated 'hash message' strings, or empty string.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "log", f"{since_ref}..HEAD", "--oneline",
+            "--grep=[L1-auto]", "--format=%h %s",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=workspace_dir,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        commits = stdout.decode("utf-8").strip()
+        return commits
+    except Exception as e:
+        log.debug("Commit detection failed: %s", e)
+        return ""
+
+
+async def _get_head_ref(workspace_dir: str) -> str:
+    """Get current HEAD short hash."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "rev-parse", "--short", "HEAD",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=workspace_dir,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        return stdout.decode("utf-8").strip()
+    except Exception:
+        return ""
+
+
 async def run_exploration(
     router: LLMRouter,
     dispatcher: Dispatcher,
@@ -322,13 +399,96 @@ async def run_exploration(
             # they're still in Feishu tasklist and will be picked up next cycle
             break
 
+        # Snapshot HEAD before execution to detect commits made by explorer
+        pre_ref = await _get_head_ref(workspace_dir)
+
         status, summary = await execute_task(task, router, workspace_dir, session_start)
 
         if status == "done":
             await complete_task(task, summary, workspace_dir)
             completed += 1
 
-            # L1 notify for completed explorations
+            # Detect L1-auto commits made during this exploration
+            action_taken = ""
+            reentry_escalated = False
+            if pre_ref:
+                action_taken = await _detect_commits(workspace_dir, pre_ref)
+
+            # 72h reentry gate: if committed files were recently L1-auto-modified, escalate to L2
+            if action_taken:
+                try:
+                    from agent.infra.autonomy import check_file_reentry, get_committed_files
+                    committed_files = await get_committed_files(action_taken, workspace_dir)
+                    reentry_hits = await check_file_reentry(committed_files, hours=72, cwd=workspace_dir)
+                    if reentry_hits:
+                        reentry_escalated = True
+                        log.warning("72h reentry gate: %d file(s) recently auto-modified → L2: %s",
+                                    len(reentry_hits),
+                                    ", ".join(h["file"] for h in reentry_hits[:3]))
+                except Exception as e:
+                    log.debug("Reentry check failed: %s", e)
+
+            # Score and log to exploration_log.jsonl (parity with explorer.py)
+            # Score BEFORE classify so scores inform L2 classification
+            task_duration = int(time.time() - session_start)  # approx
+            auto_scores = {}
+            try:
+                from agent.infra.exploration_scoring import score_exploration
+                from agent.infra.exploration import ExplorationLog, append_log
+                auto_scores = await score_exploration(
+                    title=task.title,
+                    summary=summary,
+                    duration_seconds=task_duration,
+                    messages_used=max(1, len(summary) // 4000),
+                    router=router,
+                    use_llm=True,
+                )
+            except Exception as e:
+                log.warning("Explore scoring failed [%s]: %s",
+                            task.task_id[:8], e)
+
+            # Classify with scores (unified with explorer.py logic)
+            finding_type = _classify_finding(summary, action_taken, auto_scores)
+
+            try:
+                from agent.infra.exploration import ExplorationLog, append_log
+                await append_log(ExplorationLog(
+                    task_id=task.task_id,
+                    title=task.title,
+                    pillar="explore",
+                    source="feishu_task",
+                    priority="P1",
+                    messages_used=max(1, len(summary) // 4000),
+                    summary=summary,
+                    action_taken=action_taken,
+                    finding_type=finding_type,
+                    autonomy_level=(2 if finding_type == "l2_proposal" else 1),
+                    duration_seconds=task_duration,
+                    auto_scores=auto_scores,
+                ))
+                log.info("Explore scored [%s]: tier=%s w=%.2f type=%s",
+                         task.task_id[:8],
+                         auto_scores.get("tier", "?"),
+                         auto_scores.get("weighted", 0),
+                         finding_type)
+            except Exception as e:
+                log.warning("Explore scoring/logging failed [%s]: %s",
+                            task.task_id[:8], e)
+
+            # Notify level — DECOUPLED from finding_type.
+            # An l1_fix can also contain L2-worthy proposals (dual-label).
+            from agent.jobs.explorer import _has_l2_content
+            if reentry_escalated:
+                notify_level = AutonomyLevel.L2_APPROVE
+                log.info("72h reentry gate escalated %s to L2", finding_type)
+            elif finding_type == "l2_proposal":
+                notify_level = AutonomyLevel.L2_APPROVE
+            elif _has_l2_content(auto_scores, summary):
+                notify_level = AutonomyLevel.L2_APPROVE
+                log.info("L2 content detected in %s finding — elevating notify level",
+                         finding_type)
+            else:
+                notify_level = AutonomyLevel.L1_NOTIFY
             if notify_open_id:
                 # Write full content to Feishu doc, send concise card
                 doc_url = await _create_explore_doc(
@@ -341,13 +501,24 @@ async def run_exploration(
                 if doc_url:
                     card_summary += f"\n\n[完整报告]({doc_url})"
                 try:
-                    # Use interactive card with feedback buttons
                     from agent.jobs.explorer import ExplorerPlugin
                     card_json = ExplorerPlugin._build_explore_card(
                         task.title, card_summary, task.task_id
                     )
-                    await dispatcher.send_card_raw_to_user(
-                        notify_open_id, card_json
+                    # Extract first commit sha from action_taken (format: "hash msg\nhash msg")
+                    _first_sha = action_taken.split()[0] if action_taken else ""
+                    action = AutonomousAction(
+                        level=notify_level,
+                        category="exploration:explore",
+                        summary=task.title,
+                        detail=card_summary,
+                        commit_sha=_first_sha,
+                        rollback_cmd=f"git revert {_first_sha}" if _first_sha else "",
+                        source="explorer_v2",
+                    )
+                    await autonomy_notify(
+                        dispatcher, action,
+                        open_id=notify_open_id, card_json=card_json,
                     )
                 except Exception as e:
                     log.warning("Explore notification failed: %s", e)

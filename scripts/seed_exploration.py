@@ -153,10 +153,13 @@ async def seed_from_tasks(queue: ExplorationQueue) -> int:
             pillar="internalize",
             estimated_messages=15,
         )
-        await queue.add(task)
-        existing_titles.add(title)
-        added += 1
-        print(f"  + [P1] {title} (from feishu task)")
+        saved_task = await queue.add(task)
+        existing_titles.add(saved_task.title)
+        if saved_task.id == task.id:
+            added += 1
+            print(f"  + [P1] {title} (from feishu task)")
+        else:
+            print(f"  ~ skipped (duplicate): {title}")
 
     return added
 
@@ -206,10 +209,13 @@ async def seed_from_errors(queue: ExplorationQueue) -> int:
             pillar="internalize",
             estimated_messages=20,
         )
-        await queue.add(task)
-        existing_titles.add(f"[Bug] {title}")
-        added += 1
-        print(f"  + [P0] [Bug] {title} (from error tracker)")
+        saved_task = await queue.add(task)
+        existing_titles.add(saved_task.title)
+        if saved_task.id == task.id:
+            added += 1
+            print(f"  + [P0] [Bug] {title} (from error tracker)")
+        else:
+            print(f"  ~ skipped (duplicate): [Bug] {title}")
 
     return added
 
@@ -229,8 +235,11 @@ async def add_manual(queue: ExplorationQueue, title: str,
         pillar=pillar,
         estimated_messages=15,
     )
-    await queue.add(task)
-    print(f"Added: [P{task.priority}] {title} ({pillar}, L{autonomy})")
+    saved_task = await queue.add(task)
+    if saved_task.id == task.id:
+        print(f"Added: [P{task.priority}] {title} ({pillar}, L{autonomy})")
+    else:
+        print(f"Skipped duplicate: [P{saved_task.priority}] {saved_task.title} ({saved_task.pillar}, L{saved_task.autonomy_level})")
 
 
 async def show_queue(queue: ExplorationQueue) -> None:

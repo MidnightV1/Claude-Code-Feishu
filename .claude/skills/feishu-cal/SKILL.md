@@ -1,11 +1,11 @@
 ---
 name: feishu-cal
-description: Manage Feishu calendar events (日历/日程) — create, list, update, delete events, invite attendees, manage contacts. Use when the user mentions meetings (会议/开会), schedule (日程/排期), calendar (日历), events, appointments, blocking time (约时间), or inviting people. Calendar answers "什么时候在哪做什么" — time-anchored events you need to "be present" for.
+description: Manage events on the bot's own Feishu calendar (日历/日程) — create, list, update, delete events, manage contacts. The bot calendar is independent from the user's; when an event involves the user (会议、约饭、面试等), always add the user as attendee so it syncs to their calendar. Use when the user mentions meetings (会议/开会), schedule (日程/排期), calendar (日历), events, appointments, blocking time (约时间), or asks to note down a scheduled event (记一下/加个日程).
 ---
 
 # Feishu Calendar
 
-Bot 拥有独立日历，用户已订阅为 reader。Bot 创建的日程用户自动可见。涉及用户的事件必须拉用户为 attendee 才能同步到用户日历。
+Bot 拥有独立日历，通过 API 管理日程。用户已订阅该日历（reader），可在飞书日历中查看所有日程。
 
 ## Tool
 
@@ -60,17 +60,26 @@ python3 .claude/skills/feishu-cal/scripts/cal_ctl.py contact remove "张三"
 
 # Learn contacts from recent calendar events
 python3 .claude/skills/feishu-cal/scripts/cal_ctl.py contact sync
-
-# List group chat members (auto-learns into contacts)
-python3 .claude/skills/feishu-cal/scripts/cal_ctl.py chat members <chat_id>
 ```
 
 ## Behavior Notes
 
-- Events are created on bot's calendar; attendees see them on their own calendar
+- **日历归属**：日程创建在 bot 自己的日历上，用户已订阅可直接查看
+- **参会人同步**：涉及用户的日程（会议、约饭、面试等），必须通过 API 添加用户为 attendee，这样用户会收到提醒且日程出现在个人日历中
+- **添加 attendee**：`event create --attendees` 支持；`event update` 不支持 `--attendees`，需直接调 API：
+  ```python
+  api.post(f'/open-apis/calendar/v4/calendars/{cal_id}/events/{event_id}/attendees',
+           body={'attendees': [{'type': 'user', 'user_id': 'ou_xxx'}]},
+           params={'user_id_type': 'open_id'})
+  ```
 - When creating events with attendees, contacts are auto-learned from the API response
 - Use `event list` first to get event IDs for update/delete operations
 - The `--attendees` flag takes comma-separated names that must exist in the contacts store
 - **Shared ContactStore**: Contacts added here are also available in feishu-task and feishu-perm skills (same underlying store)
-- **创建时加参会人** — `event update` 暂不支持 `--attendees`，需要在创建时通过 `--attendees` 一次性指定。后续增减参会人需单独调用 attendees API（待实现）
-- **与 feishu-task 的边界** — 日历管理时间锚点（有开始/结束、需要"在场"的事件），任务管理承诺追踪（有状态流转、需要"做完"的事项）。重叠时：如"周三 14:00 面试候选人"建日历事件，如果还有准备工作（"面试前看简历"）额外建任务
+
+## Setup (已完成)
+
+1. Feishu app permissions: `calendar:calendar`
+2. Calendar ID 配置在 `config.yaml` → `feishu.calendar.calendar_id`
+3. 用户已通过 ACL API 订阅 bot 日历（role: reader）
+4. Contacts store 已初始化（支持 contact sync 从历史日程学习）

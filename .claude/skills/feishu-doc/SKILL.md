@@ -1,17 +1,11 @@
 ---
 name: feishu-doc
-description: Structured communication via Feishu documents (飞书文档/结构化沟通). Use when the user wants to create a document (写个文档/建个文档), write up discussion results, read a Feishu doc link, save content to a Feishu document, review/reply to document comments (评论), or analyze document annotations. Also auto-trigger when output exceeds 1000 chars with 2+ dimensions/topics (超过1000字且涉及多维度时用文档而非聊天刷屏), or when a proposal needs discussion/confirmation (方案讨论用文档).
+description: Create, read, edit, comment on, and analyze Feishu documents (飞书文档). Not just a writing tool — also a structured communication channel. PREFER creating a doc over inline chat when: (1) output contains 2+ key points or structured content (方案/对比/列表/报告), or (2) a plan/proposal needs user review and confirmation (方案讨论/确认). Use when the user wants to create a document (写个文档/建个文档), write up discussion results, read a Feishu doc link, save content to a Feishu document, review/reply to document comments (评论), or analyze document annotations.
 ---
 
 # Feishu Documents
 
-不只是写文档——是结构化沟通工具。持久、可引用、可评论。
-
-**自动触发规则**：
-1. 超过 1000 字以上、涉及 2 个以上问题或维度的反馈 → 使用飞书文档（方便对具体细节讨论和交流）
-2. 项目方案需要讨论确认 → 优先用文档（用户可在文档内评论批注）
-
-**与 feishu-wiki 的边界**：doc 是沟通产物（方案、评审、会议纪要）——有时效性，写完讨论完可能不再更新。wiki 是知识沉淀（规范、指南、FAQ）——持续维护，供反复查阅。
+结构化沟通通道 — 不只是写文档，更是复杂信息的最佳载体。聊天适合快速交互，文档适合需要回顾、讨论、确认的内容。
 
 ## Tool
 
@@ -67,13 +61,25 @@ python3 .claude/skills/feishu-doc/scripts/doc_ctl.py analyze <doc_id_or_url> --c
 
 ## Content Format
 
-The `--content` parameter accepts plain text with markdown-style headings:
-- `# Heading 1` → H1 block
-- `## Heading 2` → H2 block
-- Regular lines → Text blocks
+The `--content` parameter and `append` content accept markdown:
+- `# Heading 1` → H1 block (block_type 3-11)
+- `- item` / `1. item` → bullet/ordered list (block_type 12/13)
+- `` ```lang ``` `` → code block (block_type 14)
+- `> quote` → quote_container (block_type 34, native grey-line blockquote)
+- `| table |` → native table (block_type 31, supports 9+ rows via incremental insert)
+- `---` → divider (block_type 22)
+- `**bold**`, `` `code` ``, `[text](url)` → inline formatting
 - Empty lines are skipped
 
-For complex formatting, create the doc first, then use `append` for additional content.
+### Quote / Quote Container / Callout 使用边界
+
+| 类型 | block_type | 视觉 | 嵌套子块 | 映射 | 场景 |
+|------|-----------|------|---------|------|------|
+| quote | 15 | 灰色竖线 + 缩进 | 不支持 | 无 | 单行引用 |
+| quote_container | 34 | 灰色竖线 | 任意块 | markdown `> ` | 多行引用 |
+| callout | 19 | 彩色背景 + emoji | 任意块 | 无 | 提示/警告框 |
+
+代码中 `> ` markdown 映射到 **quote_container(34)**（非 callout）。降级路径：API 失败 → 纯文本 `▎` 前缀。
 
 ## Comments
 

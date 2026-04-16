@@ -29,7 +29,8 @@ HEARTBEAT_TOKEN_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ACK_MAX_CHARS = 300
-SNAPSHOT_TIMEOUT = 30  # seconds for task_ctl.py snapshot subprocess
+SNAPSHOT_TIMEOUT = 60  # seconds for task_ctl.py snapshot subprocess
+SNAPSHOT_FAIL_THRESHOLD = 3  # consecutive failures before escalating to WARNING
 
 TRIAGE_PROMPT = (
     "当前时间：{current_time}\n\n"
@@ -73,7 +74,7 @@ class HeartbeatMonitor:
         self.triage_llm = LLMConfig(
             provider=triage_cfg.get("provider", "claude-cli"),
             model=triage_cfg.get("model", "sonnet"),
-            timeout_seconds=triage_cfg.get("timeout_seconds", 240),
+            timeout_seconds=max(300, triage_cfg.get("timeout_seconds", 300)),
         )
 
         # Action LLM (Sonnet — full tool access, triggered only on anomaly)
@@ -108,9 +109,13 @@ class HeartbeatMonitor:
         self._idle_checker: callable | None = None
         # Pending notifications per session key — consumed by feishu_bot on next user message
         self._pending_notifications: dict[str, list[str]] = defaultdict(list)
+        # Snapshot failure tracking for escalation
+        self._snapshot_fail_count = 0
         # Notification dedup: hash → timestamp, 30-min window
         self._sent_hashes: dict[str, float] = {}
         self._dedup_window = 1800  # seconds
+        # Sentinel layer (optional, injected via set_sentinel)
+        self._sentinel = None
 
     def set_idle_checker(self, checker: callable):
         """Inject idle-detection callback from bot.
@@ -119,6 +124,10 @@ class HeartbeatMonitor:
         is_idle=True when: no user messages for idle_minutes AND no active CLI tasks.
         """
         self._idle_checker = checker
+
+    def set_sentinel(self, sentinel):
+        """Inject Sentinel orchestrator for idle-time health scans."""
+        self._sentinel = sentinel
 
     async def start(self):
         if not self.enabled:
@@ -245,6 +254,15 @@ class HeartbeatMonitor:
         log.info("System idle for %.0fs (>%dm), triggering explore",
                  idle_secs, self.explore_idle_minutes)
 
+        # Run Sentinel cycle before exploration (if available)
+        if self._sentinel:
+            try:
+                summary = await self._sentinel.run_cycle(trigger="idle")
+                routed = {k: v for k, v in summary.items() if k not in ("total", "signals") and v > 0}
+                log.info("Sentinel cycle: %d signals found, routed: %s", summary.get("total", 0), routed)
+            except Exception as e:
+                log.error("Sentinel idle cycle failed: %s", str(e)[:200])
+
         # Fire-and-forget — explore runs as background task
         self._explore_task = asyncio.create_task(self._run_explore())
 
@@ -355,8 +373,26 @@ class HeartbeatMonitor:
             )
             stdout, _ = await asyncio.wait_for(
                 proc.communicate(), timeout=SNAPSHOT_TIMEOUT)
+            self._snapshot_fail_count = 0
             return stdout.decode("utf-8").strip()
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            self._snapshot_fail_count += 1
+            if self._snapshot_fail_count >= SNAPSHOT_FAIL_THRESHOLD:
+                log.warning("Task snapshot timed out after %ss (consecutive=%d)",
+                            SNAPSHOT_TIMEOUT, self._snapshot_fail_count)
+            else:
+                log.debug("Task snapshot timed out after %ss, skipping", SNAPSHOT_TIMEOUT)
+            return ""
         except Exception as e:
-            log.warning("Task snapshot failed: %s", e)
+            self._snapshot_fail_count += 1
+            if self._snapshot_fail_count >= SNAPSHOT_FAIL_THRESHOLD:
+                log.warning("Task snapshot failed (consecutive=%d): %s: %s",
+                            self._snapshot_fail_count, e.__class__.__name__, e)
+            else:
+                log.debug("Task snapshot failed: %s: %s", e.__class__.__name__, e)
             return ""
 

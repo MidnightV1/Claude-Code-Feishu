@@ -11,6 +11,7 @@ log = logging.getLogger("hub.dispatcher")
 
 MAX_MSG_LEN = 4000  # Feishu card markdown content limit per chunk
 MAX_RETRIES = 3
+MAX_TABLES_PER_CARD = 4  # ErrCode 11310: card table number over limit
 
 # ── Card header directive ──
 # CC can prefix output with {{card:header=...,color=...}} to add a card header.
@@ -64,12 +65,23 @@ T = TypeVar("T")
 
 
 class Dispatcher:
+    _notifier: "Dispatcher | None" = None
+
+    @classmethod
+    def register_notifier(cls, notifier: "Dispatcher") -> None:
+        cls._notifier = notifier
+
+    @classmethod
+    def get_notifier(cls) -> "Dispatcher | None":
+        return cls._notifier
+
     def __init__(self, config: dict):
         self.app_id = config.get("app_id", "")
         self.app_secret = config.get("app_secret", "")
         self.domain = config.get("domain", "https://open.feishu.cn")
         self.delivery_chat_id = config.get("delivery_chat_id", "")
         self._client = None
+        self._api = None  # lazy-init FeishuAPI for file uploads
 
     async def start(self):
         import lark_oapi as lark
@@ -82,6 +94,7 @@ class Dispatcher:
             .app_id(self.app_id) \
             .app_secret(self.app_secret) \
             .domain(lark_domain) \
+            .timeout(30) \
             .build()
         log.info("Feishu dispatcher started (app_id=%s)", self.app_id[:8])
 
@@ -323,8 +336,8 @@ class Dispatcher:
         # Parse card header directive (if present)
         text, header, color = _parse_card_directive(text)
 
-        # Chunk if too long
-        if len(text) > MAX_MSG_LEN:
+        # Chunk if too long or too many tables
+        if len(text) > MAX_MSG_LEN or self._count_tables(text) > MAX_TABLES_PER_CARD:
             return await self._send_chunked(
                 chat_id, text, reply_to, header=header, color=color
             )
@@ -346,6 +359,10 @@ class Dispatcher:
             log.warning("No delivery_chat_id configured, skipping delivery")
             return None
         text, header, color = _parse_card_directive(text)
+        if len(text) > MAX_MSG_LEN or self._count_tables(text) > MAX_TABLES_PER_CARD:
+            return await self._send_chunked(
+                self.delivery_chat_id, text, header=header, color=color
+            )
         return await self.send_card_return_id(
             self.delivery_chat_id, text, header=header, color=color
         )
@@ -359,7 +376,7 @@ class Dispatcher:
             log.error("Secret leak blocked in DM (pattern: %s), message NOT sent", secret)
             return None
         text, header, color = _parse_card_directive(text)
-        if len(text) > MAX_MSG_LEN:
+        if len(text) > MAX_MSG_LEN or self._count_tables(text) > MAX_TABLES_PER_CARD:
             return await self._send_chunked_to_user(open_id, text)
         return await self._send_card_to_user(
             open_id, text, header=header, color=color
@@ -703,16 +720,161 @@ class Dispatcher:
                 await asyncio.sleep(0.5)  # rate limit courtesy
         return first_mid
 
+    # ── Audio message (TTS) ──
+
+    async def send_audio(
+        self,
+        chat_id: str,
+        audio_path: str,
+        reply_to: str | None = None,
+        *,
+        duration_ms: int | None = None,
+    ) -> str | None:
+        """Send an audio file as a Feishu voice message.
+
+        Args:
+            chat_id: Target chat.
+            audio_path: Path to opus audio file on disk.
+            reply_to: Optional message_id to reply to (not used for audio,
+                      but kept for API consistency).
+            duration_ms: Audio duration in milliseconds (optional metadata).
+
+        Returns:
+            message_id on success, None on failure.
+        """
+        self._ensure_client()
+        if not self._api:
+            from agent.platforms.feishu.api import FeishuAPI
+            self._api = FeishuAPI(self.app_id, self.app_secret, self.domain)
+
+        api = self._api
+
+        async def _attempt():
+            return await asyncio.to_thread(
+                api.send_audio_to_chat, audio_path, chat_id,
+                duration_ms=duration_ms,
+            )
+
+        try:
+            mid = await self._with_retry(
+                "send_audio", _attempt,
+                success_check=lambda r: bool(r),
+            )
+            return mid
+        except Exception as e:
+            log.error("send_audio failed: %s", e)
+            return None
+
+    async def send_audio_to_user(
+        self,
+        open_id: str,
+        audio_path: str,
+        *,
+        duration_ms: int | None = None,
+    ) -> str | None:
+        """Send an audio file as a voice message to a user DM."""
+        self._ensure_client()
+        if not self._api:
+            from agent.platforms.feishu.api import FeishuAPI
+            self._api = FeishuAPI(self.app_id, self.app_secret, self.domain)
+
+        api = self._api
+
+        async def _attempt():
+            return await asyncio.to_thread(
+                api.send_audio, audio_path, open_id,
+                receive_id_type="open_id",
+                duration_ms=duration_ms,
+            )
+
+        try:
+            mid = await self._with_retry(
+                "send_audio_to_user", _attempt,
+                success_check=lambda r: bool(r),
+            )
+            return mid
+        except Exception as e:
+            log.error("send_audio_to_user failed: %s", e)
+            return None
+
+    async def synthesize_and_send(
+        self,
+        chat_id: str,
+        text: str,
+        *,
+        voice_id: str | None = None,
+        reply_to: str | None = None,
+    ) -> str | None:
+        """TTS synthesize text and send as audio message. Returns message_id.
+
+        Convenience method that combines Fish.audio TTS with Feishu audio send.
+        Generates opus format for native Feishu voice message rendering.
+        """
+        from agent.llm.tts import synthesize
+
+        try:
+            audio_bytes, audio_path = await synthesize(
+                text, voice_id=voice_id, fmt="opus",
+            )
+            return await self.send_audio(
+                chat_id, audio_path, reply_to=reply_to,
+            )
+        except Exception as e:
+            log.error("synthesize_and_send failed: %s", e)
+            return None
+
+    async def synthesize_and_send_to_user(
+        self,
+        open_id: str,
+        text: str,
+        *,
+        voice_id: str | None = None,
+    ) -> str | None:
+        """TTS synthesize and send as voice DM to a user."""
+        from agent.llm.tts import synthesize
+
+        try:
+            audio_bytes, audio_path = await synthesize(
+                text, voice_id=voice_id, fmt="opus",
+            )
+            return await self.send_audio_to_user(
+                open_id, audio_path,
+            )
+        except Exception as e:
+            log.error("synthesize_and_send_to_user failed: %s", e)
+            return None
+
+    @staticmethod
+    def _count_tables(text: str) -> int:
+        """Count distinct markdown table blocks in text."""
+        count = 0
+        in_table = False
+        for line in text.splitlines():
+            is_table_line = line.strip().startswith("|")
+            if is_table_line and not in_table:
+                in_table = True
+            elif not is_table_line and in_table:
+                in_table = False
+                count += 1
+        if in_table:
+            count += 1
+        return count
+
     @staticmethod
     def _chunk_text(text: str) -> list[str]:
-        """Split text at paragraph boundaries, respecting max length."""
+        """Split text at paragraph boundaries, respecting max length and table count."""
         chunks = []
         current = ""
+        current_tables = 0
         for para in text.split("\n\n"):
-            if len(current) + len(para) + 2 > MAX_MSG_LEN:
+            para_tables = Dispatcher._count_tables(para)
+            too_long = len(current) + len(para) + 2 > MAX_MSG_LEN
+            too_many_tables = current and (current_tables + para_tables > MAX_TABLES_PER_CARD)
+            if too_long or too_many_tables:
                 if current:
                     chunks.append(current.strip())
                     current = ""
+                    current_tables = 0
                 if len(para) > MAX_MSG_LEN:
                     # Force split very long paragraphs
                     while para:
@@ -720,8 +882,10 @@ class Dispatcher:
                         para = para[MAX_MSG_LEN:]
                 else:
                     current = para
+                    current_tables = para_tables
             else:
                 current = current + "\n\n" + para if current else para
+                current_tables += para_tables
         if current.strip():
             chunks.append(current.strip())
         return chunks or [""]

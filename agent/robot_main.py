@@ -184,6 +184,9 @@ async def main():
     except OSError:
         pass
     log.info("%s bot stopped.", bot_name)
+    # Force exit to skip asyncio executor shutdown timeout (300s).
+    # SDK reconnect thread blocks forever; all meaningful cleanup is done above.
+    os._exit(0)
 
 
 if __name__ == "__main__":

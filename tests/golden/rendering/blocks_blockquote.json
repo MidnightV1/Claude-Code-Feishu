@@ -1,0 +1,18 @@
+[
+  {
+    "_quote": [
+      {
+        "block_type": 2,
+        "text": {
+          "elements": [
+            {
+              "text_run": {
+                "content": "这是引用内容"
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }
+]

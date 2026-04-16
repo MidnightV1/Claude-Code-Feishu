@@ -5,11 +5,11 @@
 
 English | [中文](README.zh-CN.md)
 
-Give Claude Code a Feishu/Lark messaging interface — with calendar, documents, tasks, wiki, daily briefings, and autonomous health monitoring.
+Give Claude Code a Feishu/Lark messaging interface — with autonomous development pipelines, quality assurance, 25 modular skills, and multi-LLM orchestration.
 
 ## What is this
 
-A lightweight Python service that connects Claude Code CLI to Feishu (Lark) via WebSocket. Users chat with Claude in Feishu DMs or group chats, and Claude has full tool access (file I/O, shell, web search) through the CLI subprocess.
+A Python service that connects Claude Code CLI to Feishu (Lark) via WebSocket. Users chat with Claude in Feishu DMs or group chats, and Claude has full tool access (file I/O, shell, web search) through the CLI subprocess.
 
 **Not a wrapper.** The bot runs an actual Claude Code CLI session per user, with persistent conversation context, tool use, and all Claude Code capabilities.
 
@@ -18,9 +18,12 @@ A lightweight Python service that connects Claude Code CLI to Feishu (Lark) via 
 There are many Feishu/Lark AI bots out there — most wrap an LLM API for basic chat. This project takes a different approach:
 
 - **Claude Code CLI native** — Not an API wrapper. Each user gets a real `claude -p` subprocess with full tool access: file I/O, shell, code editing, web search, sub-agents. The bot is Claude Code, not a chatbot that calls Claude.
-- **Deep Feishu integration** — 7 purpose-built Skills (calendar, documents, tasks, wiki, daily briefings, heartbeat monitoring, document co-pilot). Not just message forwarding — Claude can create calendar events, write Feishu docs, manage tasks, and browse your wiki directly.
-- **Self-evolving daily briefings** — Automated news pipeline with keyword evolution: after each run, the LLM identifies coverage gaps and improves the search keywords. The briefing gets smarter over time without manual tuning.
-- **Multi-LLM routing with fallback chains** — Claude CLI for chat, Gemini CLI for document analysis, Gemini API for multimodal. Each capability has a degradation path (e.g. PDF: Gemini CLI → Gemini API → Claude Read).
+- **Autonomous development pipeline (MADS)** — Multi-Agent Development System with diagnosis, contract negotiation, fix, QA, and merge stages. Complexity routing (L1–L5) sends simple bugs to Sonnet and architectural changes to Opus. Scope guards prevent drift; git worktree isolation enables parallel tickets.
+- **Automated quality assurance (MAQS)** — Multi-Agent Quality System discovers bugs from error logs, creates tickets, and feeds them into the MADS pipeline. Stale ticket recovery and QA verdict loops close the feedback cycle.
+- **Deep Feishu integration** — 25 purpose-built Skills covering calendar, documents, tasks, wiki, bitable, drive, boards, sheets, permissions, and more. Not just message forwarding — Claude can create calendar events, write Feishu docs, manage tasks, and browse your wiki directly.
+- **Self-evolving daily briefings** — Automated news pipeline with keyword evolution: after each run, the LLM identifies coverage gaps and improves search keywords. The briefing gets smarter over time without manual tuning.
+- **Sentinel** — Autonomous entropy control with health pulse, code quality, and doc audit scanners. Signal aggregation detects degradation before users notice.
+- **Multi-LLM routing with fallback chains** — Claude CLI for chat, Gemini CLI for web search and document analysis, Gemini API for multimodal. Each capability has a degradation path (e.g. PDF: Gemini CLI → Gemini API → Claude Read).
 - **Session continuity** — `--resume` preserves full CLI context; on failure, Sonnet compresses history into structured summaries for seamless recovery.
 - **Self-hosted on minimal hardware** — Designed for any always-on machine (home server, mini PC, cloud VM). Single Python process, no Docker/Redis/database required.
 
@@ -31,6 +34,8 @@ Feishu WebSocket ──> FeishuBot ──> LLMRouter ─┬─> claude -p       
                         │              │       ├─> gemini cli       (gemini-cli)
                         │              │       └─> google-genai     (gemini-api)
                         ├──> CronScheduler (per-job model routing)
+                        ├──> LoopExecutor (MADS ticket lifecycle)
+                        ├──> Sentinel (health / code / doc scanners)
                         └──> HeartbeatMonitor (two-layer triage → action)
                                   │
                            Dispatcher ──> Feishu Card JSON 2.0
@@ -42,25 +47,54 @@ Key components:
 |-----------|------|
 | `feishu_bot.py` | WebSocket event handler, debounce batching, multimodal input |
 | `llm_router.py` | Session management, resume-or-fallback, history compression |
-| `dispatcher.py` | Feishu card rendering, chunking, retry, real-time updates |
-| `claude_cli.py` | Claude CLI wrapper with streaming TodoWrite progress |
-| `scheduler.py` | In-process cron scheduler (croniter + asyncio) |
+| `dispatcher.py` | Feishu card rendering, chunking, secret scanning, retry |
+| `claude_cli.py` | Claude CLI wrapper with streaming, idle-based timeout |
+| `loop_executor.py` | MADS ticket orchestration with priority queue and preemption |
+| `worker.py` | Concurrent workers with git worktree isolation |
+| `sentinel/` | Autonomous scanners: health pulse, code quality, doc audit |
+| `scheduler.py` | In-process cron scheduler with hot-reload (SIGUSR1) |
 | `heartbeat.py` | System health monitoring via LLM judgment |
 
 ## Features
 
+### Core
 - **Chat** — Full Claude Code conversations via Feishu DM or group @mention
 - **Multimodal** — Image understanding (native Claude vision), PDF/file analysis (Gemini CLI → API → Claude fallback)
-- **Calendar** — Create, list, update, delete Feishu calendar events; contact management
-- **Documents** — Create, read, search, comment on Feishu documents; ownership transfer
-- **Tasks** — Feishu task CRUD with assignees, due dates, and heartbeat deadline monitoring
-- **Wiki** — Browse wiki spaces, create/move/read/write wiki pages
-- **Daily Briefings** — Automated multi-domain news digest (see below)
-- **Document Co-pilot** — Deep document analysis via Gemini CLI without polluting chat context
+- **TTS** — Text-to-speech via Fish.audio S2-Pro, delivered as Feishu voice messages
 - **Progress Tracking** — Real-time TodoWrite progress on thinking cards for complex tasks
-- **Cron Jobs** — Scheduled tasks with hot-reload (no restart needed)
-- **Heartbeat** — Periodic health checks with two-layer LLM triage and DM alerts
 - **Session Continuity** — `--resume` first, fallback to compressed history injection
+
+### Development Pipeline (MADS)
+- **Diagnosis** — Opus-driven root cause analysis with codebase exploration
+- **Contract** — Scope negotiation with affected files, acceptance criteria, complexity routing
+- **Fix** — Sonnet implementation with scope guards (Hardgate) preventing drift
+- **QA** — Automated test verification with reject → retry loops (max 3 rounds)
+- **Merge** — Merge queue with rebase-on-conflict recovery
+- **Design** — Opus design documents for composite tasks (L4+)
+- **Decompose** — Split complex fixes into atomic, independently testable work items
+
+### Quality Assurance (MAQS)
+- **Error Tracker** — Aggregates runtime errors for automated bug discovery
+- **Auto-ticketing** — Discovers bugs from error logs, creates MADS tickets
+- **Stale Recovery** — Detects and recovers abandoned tickets
+
+### Autonomous Operations
+- **Sentinel** — Health pulse, code quality, and doc audit scanners with signal aggregation
+- **Heartbeat** — Periodic health checks with two-layer LLM triage and DM alerts
+- **Exploration** — Discover research directions from conversations, tasks, and errors
+- **Cron Jobs** — Scheduled tasks with hot-reload (no restart needed)
+- **Daily Briefings** — Automated multi-domain news digest (see below)
+
+### Feishu Integration
+- **Calendar** — Create, list, update, delete events; contact management
+- **Documents** — Create, read, search, comment, ownership transfer; block tree traversal
+- **Tasks** — CRUD with assignees, due dates, heartbeat deadline monitoring
+- **Wiki** — Browse spaces, create/move/read/write pages
+- **Bitable** — Multidimensional table CRUD, record query/filter
+- **Drive** — File/folder management, search, send media to chats
+- **Boards** — Whiteboard creation, flowchart drawing, node reading
+- **Sheets** — Spreadsheet read/write, worksheet management
+- **Permissions** — Document sharing, collaborator CRUD, public links
 
 ## Daily Briefings
 
@@ -83,13 +117,14 @@ Each domain is a folder under `~/briefing/domains/<name>/` with `sources.yaml` (
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 - A Feishu (Lark) custom app with Bot capability and WebSocket enabled
 - Google AI Studio API key (for Gemini — multimodal, heartbeat, briefings)
-- (Optional) Gemini CLI for document analysis co-pilot
+- (Optional) Gemini CLI for web search and document analysis
+- (Optional) Fish.audio API key for TTS voice messages
 
 ## Quick Start
 
 ```bash
 # Clone
-git clone <repo-url> && cd claude-code-lark
+git clone https://github.com/MidnightV1/claude-code-lark.git && cd claude-code-lark
 
 # Install dependencies
 pip install -r requirements.txt
@@ -135,17 +170,52 @@ This separation keeps notification delivery independent of chat sessions. A sing
 
 ## Skills
 
-Skills are modular capabilities in `.claude/skills/`. Each has a `SKILL.md` with usage docs and a setup guide.
+Skills are modular capabilities in `.claude/skills/`. Each has a `SKILL.md` with usage docs and a setup guide. 25 skills included:
 
-| Skill | Purpose | Key Config |
-|-------|---------|------------|
-| `hub-ops` | Cron jobs, service status, hot-reload | (built-in) |
-| `briefing` | Daily news briefing pipeline | Gemini API key, domain configs |
-| `feishu-cal` | Calendar event CRUD, contacts | `feishu.calendar.calendar_id` |
-| `feishu-doc` | Document CRUD, search, comments | `feishu.docs.shared_folders` |
-| `feishu-task` | Task management, deadline monitoring | `feishu.tasks.tasklist_guid` |
-| `feishu-wiki` | Wiki space and page management | (add bot to wiki space) |
-| `gemini-doc` | Document analysis co-pilot | Gemini CLI installed |
+### Feishu Platform
+| Skill | Purpose |
+|-------|---------|
+| `feishu-cal` | Calendar event CRUD, contacts |
+| `feishu-doc` | Document CRUD, search, comments, block tree read |
+| `feishu-task` | Task management, deadline monitoring |
+| `feishu-wiki` | Wiki space and page management |
+| `feishu-bitable` | Multidimensional table CRUD, record query/filter |
+| `feishu-drive` | Cloud file/folder management, search, media send |
+| `feishu-board` | Board/whiteboard creation, flowchart drawing |
+| `feishu-sheet` | Spreadsheet read/write, worksheet management |
+| `feishu-perm` | Document permission management, sharing |
+
+### Development & Quality
+| Skill | Purpose |
+|-------|---------|
+| `dev-pipeline` | Unified MADS/MAQS entry point: ticket creation, status, stage control |
+| `sentinel` | Autonomous health/code/doc scanners, signal aggregation |
+| `visual-qa` | CDP screenshot, accessibility tree, five-dimension scoring |
+| `codex` | OpenAI Codex CLI integration for code review and task handoff |
+| `skill-creator` | Skill development framework: create, test, evaluate, iterate |
+
+### Search & Intelligence
+| Skill | Purpose |
+|-------|---------|
+| `gemini` | Web search, URL reading, file analysis, summarization (zero API cost) |
+| `brave-web-search` | Brave Web Search for English-language sources |
+| `brave-news-search` | Brave News Search with freshness filtering |
+| `arxiv-tracker` | ArXiv paper tracking with keyword pre-filter + LLM evaluation |
+
+### Operations & Utilities
+| Skill | Purpose |
+|-------|---------|
+| `hub-ops` | Cron jobs, service status, hot-reload |
+| `briefing` | Daily news briefing pipeline management |
+| `weather` | Weather queries with location persistence |
+| `plan-review` | CEO/Founder-mode plan review (4 scope modes) |
+
+### Social Media
+| Skill | Purpose |
+|-------|---------|
+| `twitter-cli` | Twitter/X read, search, post, bookmarks |
+| `xiaohongshu-cli` | Xiaohongshu/RED notes, trending, posting |
+| `bilibili-cli` | Bilibili videos, trending, subtitles, AI summary |
 
 Each skill is opt-in — activate only what you need.
 

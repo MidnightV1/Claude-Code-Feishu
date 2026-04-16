@@ -254,7 +254,13 @@ def cmd_node_move(args, api, cfg):
 
 
 def cmd_node_read(args, api, cfg):
-    """Read wiki node content (via docx raw_content API)."""
+    """Read wiki node content via block tree traversal (supports images)."""
+    import os
+    doc_scripts = Path(__file__).resolve().parents[2] / "feishu-doc" / "scripts"
+    if str(doc_scripts) not in sys.path:
+        sys.path.insert(0, str(doc_scripts))
+    from doc_ctl import _list_blocks, _walk_blocks
+
     token = _extract_token(args.token)
     node = _get_node(api, token)
     if not node:
@@ -269,12 +275,27 @@ def cmd_node_read(args, api, cfg):
               file=sys.stderr)
         sys.exit(1)
 
-    resp = api.get(f"/open-apis/docx/v1/documents/{obj_token}/raw_content")
-    if resp.get("code") != 0:
-        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
-        sys.exit(1)
+    blocks = _list_blocks(api, obj_token)
+    if not blocks:
+        print("(empty document)")
+        return
 
-    print(resp["data"]["content"])
+    block_map = {b["block_id"]: b for b in blocks}
+
+    img_dir = os.path.join(os.environ.get("TMPDIR", "/tmp"), "feishu_doc_images", obj_token)
+    if any(b.get("block_type") == 27 for b in blocks):
+        os.makedirs(img_dir, exist_ok=True)
+
+    root = block_map.get(obj_token)
+    if not root:
+        resp = api.get(f"/open-apis/docx/v1/documents/{obj_token}/raw_content")
+        if resp.get("code") == 0:
+            print(resp["data"]["content"])
+        return
+
+    lines: list[str] = []
+    _walk_blocks(root, block_map, api, img_dir, lines)
+    print("\n".join(lines))
 
 
 def cmd_node_write(args, api, cfg):

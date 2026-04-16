@@ -82,6 +82,25 @@ def _icon(category: str) -> str:
     return _TOOL_ICONS.get(category, _FALLBACK_ICON)
 
 
+def _summarize_tool_input(name: str, inp: dict) -> str:
+    """One-line summary of tool input for persistent logging."""
+    if name == "Bash":
+        return (inp.get("command") or "")[:120]
+    if name in ("Read", "Write"):
+        return inp.get("file_path", "")
+    if name == "Edit":
+        return f"{inp.get('file_path', '')} ({len(inp.get('old_string', ''))}→{len(inp.get('new_string', ''))} chars)"
+    if name == "Grep":
+        return f"/{inp.get('pattern', '')}/ in {inp.get('path', '.')}"
+    if name == "Glob":
+        return inp.get("pattern", "")
+    if name == "Agent":
+        return (inp.get("description") or inp.get("prompt", ""))[:80]
+    if name == "Skill":
+        return f"{inp.get('skill', '')} {inp.get('args', '')}"
+    return str(inp)[:120] if inp else ""
+
+
 def _make_tool_label(tool_name: str, tool_input: dict) -> str:
     """Map a tool_use event to a personality-driven progress label."""
     if tool_name == "Read":
@@ -128,7 +147,9 @@ def _make_tool_label(tool_name: str, tool_input: dict) -> str:
         return f"{i} {verb}「{query[:20]}」" if query else f"{i} {verb}"
 
     if tool_name == "Skill":
-        return f"{_icon('Skill')} {_pick_verb('Skill')}"
+        skill = tool_input.get("skill", "")
+        verb = _pick_verb("Skill")
+        return f"{_icon('Skill')} {verb} {skill}" if skill else f"{_icon('Skill')} {verb}"
 
     if tool_name == "TodoWrite":
         return f"{_icon('TodoWrite')} {_pick_verb('TodoWrite')}"
@@ -290,13 +311,14 @@ class ClaudeCli:
             text = ""
             tagged_text = ""  # primary: tagged reply from assistant events
             explore_text = ""  # capture <next-explore> hints
+            reflect_text = ""  # capture <next-reflect> hints
             new_session_id = None
             cost = 0.0
 
             hard_deadline = time.monotonic() + hard_cap
 
             async def _read_stream():
-                nonlocal text, new_session_id, cost, tagged_text, explore_text
+                nonlocal text, new_session_id, cost, tagged_text, explore_text, reflect_text
                 while True:
                     remaining = hard_deadline - time.monotonic()
                     if remaining <= 0:
@@ -342,19 +364,17 @@ class ClaudeCli:
                         has_reply_close = "</reply-to-user>" in full_turn
                         has_reply = has_reply_open and has_reply_close
                         has_explore = "<next-explore>" in full_turn and "</next-explore>" in full_turn
+                        has_reflect = "<next-reflect>" in full_turn and "</next-reflect>" in full_turn
                         if has_reply:
                             tagged_text = full_turn  # last tagged turn wins
                         elif has_reply_open:
-                            # Opening tag present but closing tag missing — context
-                            # truncation.  Still capture it; session layer handles
-                            # incomplete tag extraction.
-                            tagged_text = full_turn
-                            log.warning("Partial reply-to-user tag in assistant turn "
-                                        "(%d text blocks, %d chars) — capturing anyway",
-                                        sum(1 for b in content if b.get("type") == "text"),
-                                        len(full_turn))
+                            # Opening tag present but closing tag missing — auto-close
+                            # so session layer's _REPLY_TAG_RE can extract normally.
+                            tagged_text = full_turn + "</reply-to-user>"
                         if has_explore:
                             explore_text = full_turn  # capture explore hints
+                        if has_reflect:
+                            reflect_text = full_turn  # capture reflect hints
 
                         # Check for tool_use in content blocks
                         for block in content:
@@ -362,6 +382,9 @@ class ClaudeCli:
                                 continue
                             name = block.get("name", "")
                             inp = block.get("input", {})
+                            # Persistent tool call log (survives cron/chat alike)
+                            _tool_summary = _summarize_tool_input(name, inp)
+                            log.info("tool_use: %s %s", name, _tool_summary)
                             # TodoWrite → forward full todo list
                             if name == "TodoWrite" and on_todo:
                                 try:
@@ -391,7 +414,7 @@ class ClaudeCli:
                                     pass
 
                     elif evt_type == "result":
-                        text = obj.get("result", "")
+                        text = obj.get("result") or ""
                         new_session_id = obj.get("session_id")
                         cost = obj.get("total_cost_usd") or obj.get("cost_usd") or 0.0
                         # Diagnostic: log result event tag presence + text length
@@ -422,11 +445,12 @@ class ClaudeCli:
             _final_open = "<reply-to-user>" in text
             _final_close = "</reply-to-user>" in text
             if _final_open and not _final_close:
-                log.warning(
-                    "Unclosed <reply-to-user> in final text | "
+                log.info(
+                    "Auto-closed <reply-to-user> in final text | "
                     "len=%d | tagged_text=%s | tail=%.100r",
                     len(text), bool(tagged_text), text[-200:],
                 )
+                text += "</reply-to-user>"
 
             duration = int((time.monotonic() - start) * 1000)
 
@@ -489,4 +513,5 @@ class ClaudeCli:
             duration_ms=duration,
             cost_usd=cost,
             explore_hints=explore_text,
+            reflect_hints=reflect_text,
         )

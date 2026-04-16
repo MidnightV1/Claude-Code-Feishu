@@ -32,6 +32,8 @@ from agent.jobs.briefing import BriefingPlugin
 from agent.jobs.arxiv import ArxivPlugin
 from agent.jobs.explorer import ExplorerPlugin
 from agent.jobs.planner import PlannerPlugin
+from agent.jobs.worker import WorkerManager
+from agent.jobs.loop_executor import LoopExecutor
 
 
 def setup_logging(config: dict):
@@ -119,6 +121,8 @@ async def main():
 
     # Logging
     setup_logging(cfg.get("logging", {}))
+    from agent.infra.error_tracker import ErrorTrackerHandler
+    logging.getLogger().addHandler(ErrorTrackerHandler())
     log = logging.getLogger("hub.main")
     log.info("claude-code-feishu starting...")
 
@@ -165,23 +169,80 @@ async def main():
     else:
         notifier = primary_dispatcher  # fallback: use main bot
         log.warning("No notify config, notifications will go through main bot")
+    Dispatcher.register_notifier(notifier)
 
     workspace_dir = os.path.expanduser(
         llm_cfg.get("claude-cli", {}).get("workspace_dir", ".")
     )
 
-    scheduler = CronScheduler(cfg.get("scheduler", {}), router, notifier)
-    await scheduler.start()
+    # Per-bot dispatchers for cron notification routing
+    all_bots = normalize_bot_configs(cfg)
+    bot_dispatchers: dict[str, tuple[Dispatcher, str]] = {}
+    for bcfg in all_bots:
+        if bcfg.get("standalone") and bcfg.get("notify_open_id"):
+            name = bcfg.get("name", "")
+            d = Dispatcher(bcfg)
+            await d.start()
+            bot_dispatchers[name] = (d, bcfg["notify_open_id"])
+            log.info("Bot dispatcher '%s' ready (notify_open_id=%s)",
+                     name, bcfg["notify_open_id"][:12])
+
+    scheduler = CronScheduler(cfg.get("scheduler", {}), router, notifier,
+                              bot_dispatchers=bot_dispatchers)
+    # NOTE: scheduler.start() is deferred until after all handlers are registered
+    # to prevent _run_missed_jobs_bg() from hitting "Unknown handler" race condition
 
     hb_cfg = cfg.get("heartbeat", {})
     hb = HeartbeatMonitor(hb_cfg, router, primary_dispatcher, workspace_dir,
                           notify_open_id=hb_cfg.get("notify_open_id", ""))
     await hb.start()
 
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, stop.set)
+        except NotImplementedError:
+            pass
+
+    # Sentinel: autonomous entropy control (scanners → orchestrator → heartbeat)
+    sentinel_cfg = cfg.get("sentinel", {})
+    if sentinel_cfg.get("enabled", True):
+        from agent.jobs.sentinel.store import SentinelStore
+        from agent.jobs.sentinel.orchestrator import SentinelOrchestrator
+        from agent.jobs.sentinel.scanners.code_scanner import CodeScanner
+        from agent.jobs.sentinel.scanners.doc_auditor import DocAuditor
+        from agent.jobs.sentinel.scanners.health_pulse import HealthPulse
+
+        sentinel_store = SentinelStore()
+        scanners = [
+            CodeScanner(),
+            DocAuditor(),
+            HealthPulse(),
+        ]
+        sentinel = SentinelOrchestrator(
+            scanners=scanners,
+            store=sentinel_store,
+            dispatcher=notifier,
+            user_dispatcher=primary_dispatcher,
+            workspace_dir=workspace_dir,
+            config={**sentinel_cfg, "maqs": cfg.get("maqs", {})},
+            notify_open_id=sentinel_cfg.get("notify_open_id", "") or hb_cfg.get("notify_open_id", ""),
+        )
+        hb.set_sentinel(sentinel)
+        log.info("Sentinel initialized with %d scanners: %s", len(scanners), ", ".join(s.name for s in scanners))
+
+        async def _sentinel_handler(**kwargs):
+            summary = await sentinel.run_cycle(trigger="cron")
+            log.info("Sentinel cron cycle: %s", summary)
+            return summary
+        scheduler.register_handler("sentinel", _sentinel_handler)
+
     default_llm_cfg = llm_cfg.get("default", {})
     default_llm = LLMConfig(
         provider=default_llm_cfg.get("provider", "claude-cli"),
         model=default_llm_cfg.get("model", "opus"),
+        effort=default_llm_cfg.get("effort"),
     )
 
     file_store = FileStore(base_dir="data/files")
@@ -236,6 +297,7 @@ async def main():
             bot_llm = LLMConfig(
                 provider=bot_cfg.get("default_provider", default_llm.provider),
                 model=bot_cfg.get("default_model", default_llm.model),
+                effort=bot_cfg.get("default_effort", default_llm.effort),
                 env=bot_env,
                 workspace_dir=bot_workspace,
                 setting_sources=bot_cfg.get("setting_sources"),
@@ -270,11 +332,14 @@ async def main():
 
             # Autonomous explorer
             explorer_cfg = cfg.get("explorer", {})
+            # Fallback to heartbeat notify_open_id — same user receives both
+            explorer_open_id = (explorer_cfg.get("notify_open_id", "")
+                                or hb_cfg.get("notify_open_id", ""))
             explorer = ExplorerPlugin(
                 router=router,
                 dispatcher=notifier,
                 budget=explorer_cfg.get("budget", 50),
-                open_id=explorer_cfg.get("notify_open_id", ""),
+                open_id=explorer_open_id,
                 card_dispatcher=primary_dispatcher,
             )
             register_plugin(explorer.descriptor(), bot=bot, scheduler=scheduler)
@@ -291,7 +356,42 @@ async def main():
             if _error_cfg.get("enabled", False):
                 async def _error_scan_handler(**kwargs):
                     await scan_errors(router, notifier, _error_cfg)
+                    return True
                 scheduler.register_handler("error_scan", _error_scan_handler)
+
+            # MAQS quality pipeline handler
+            from agent.jobs.maqs import run_maqs_pipeline
+            _maqs_cfg = cfg.get("maqs", {})
+            if _maqs_cfg.get("enabled", False):
+                async def _maqs_handler(**kwargs):
+                    await run_maqs_pipeline(router, notifier, _maqs_cfg)
+                    return True
+                scheduler.register_handler("maqs_quality", _maqs_handler)
+
+                # MADS composite pipeline handler (shares MAQS bitable config)
+                from agent.jobs.mads.pipeline import run_mads_pipeline
+                async def _mads_handler(**kwargs):
+                    await run_mads_pipeline(router, notifier, _maqs_cfg)
+                    return True
+                scheduler.register_handler("mads_pipeline", _mads_handler)
+
+            # MADS outcome tracker (daily fix survival / recurrence / test manipulation)
+            from agent.jobs.mads_outcomes import run_mads_outcome_check
+            async def _mads_outcome_handler(**kwargs):
+                return await run_mads_outcome_check(notifier=notifier)
+            scheduler.register_handler("mads_outcomes", _mads_outcome_handler)
+
+            # Behavior signal digest (weekly aggregation + L1 notification)
+            from agent.jobs.behavior_signals import run_behavior_signal_digest
+            async def _behavior_signal_handler(**kwargs):
+                return await run_behavior_signal_digest(notifier=notifier)
+            scheduler.register_handler("behavior_signals", _behavior_signal_handler)
+
+            # Response quality proxy metrics (weekly, depends on P0-α)
+            from agent.jobs.response_quality import run_response_quality_check
+            async def _response_quality_handler(**kwargs):
+                return await run_response_quality_check()
+            scheduler.register_handler("response_quality", _response_quality_handler)
 
         await bot.start()
         bots.append(bot)
@@ -299,7 +399,16 @@ async def main():
         # Wire idle checker: primary bot → heartbeat explore layer
         if bot_cfg["name"] == primary_cfg["name"]:
             hb.set_idle_checker(bot.check_idle)
+            # Hub 3.0: Loop Executor for async ticket processing
+            if _maqs_cfg.get("enabled", False):
+                worker_mgr = WorkerManager(router)
+                loop_executor = LoopExecutor(worker_mgr, config=_maqs_cfg)
+                bot.on_dev_signal = loop_executor.enqueue
+                log.info("LoopExecutor wired to bot '%s' via on_dev_signal", bot.name)
         log.info("Bot '%s' started (app_id=%s)", bot.name, bot_cfg["app_id"][:8])
+
+    # Start scheduler after all handlers are registered (prevents missed-job race)
+    await scheduler.start()
 
     log.info("All services started (%d bot(s)). Waiting for events...", len(bots))
 
@@ -324,15 +433,6 @@ async def main():
     except Exception as e:
         log.warning("Failed to send startup notification: %s", e)
 
-    # Wait for shutdown signal
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        try:
-            loop.add_signal_handler(sig, stop.set)
-        except NotImplementedError:
-            pass
-
     # SIGUSR1 → hot-reload scheduler jobs
     try:
         def _on_sigusr1():
@@ -350,9 +450,16 @@ async def main():
     # Graceful shutdown
     log.info("Shutting down...")
     try:
-        await notifier.send_to_delivery_target("{{card:header=服务关闭中,color=orange}}\n**claude-code-feishu 正在关闭...**")
+        await asyncio.wait_for(
+            notifier.send_to_delivery_target("{{card:header=服务关闭中,color=orange}}\n**claude-code-feishu 正在关闭...**"),
+            timeout=5,
+        )
     except Exception:
         pass
+    # Stop scheduler first — running jobs use dispatchers, so scheduler must
+    # finish before dispatchers are torn down (prevents "Dispatcher not started")
+    await scheduler.stop()
+    await hb.stop()
     stopped_dispatchers = set()
     for bot in bots:
         await bot.stop()
@@ -360,8 +467,6 @@ async def main():
         if id(d) not in stopped_dispatchers:
             await d.stop()
             stopped_dispatchers.add(id(d))
-    await hb.stop()
-    await scheduler.stop()
     if id(notifier) not in stopped_dispatchers:
         await notifier.stop()
         stopped_dispatchers.add(id(notifier))
@@ -371,6 +476,9 @@ async def main():
     except OSError:
         pass
     log.info("Shutdown complete.")
+    # Force exit to skip asyncio executor shutdown timeout (300s).
+    # SDK reconnect thread blocks forever; all meaningful cleanup is done above.
+    os._exit(0)
 
 
 if __name__ == "__main__":

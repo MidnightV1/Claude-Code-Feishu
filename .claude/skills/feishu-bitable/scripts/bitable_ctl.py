@@ -49,11 +49,12 @@ def _list_tables(api: FeishuAPI, app_token: str) -> list[dict]:
         if resp.get("code") != 0:
             print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
             sys.exit(1)
-        for t in resp.get("data", {}).get("items", []):
+        data = resp.get("data") or {}
+        for t in data.get("items") or []:
             tables.append(t)
-        if not resp.get("data", {}).get("has_more"):
+        if not data.get("has_more"):
             break
-        page_token = resp["data"].get("page_token")
+        page_token = data.get("page_token")
     return tables
 
 
@@ -70,11 +71,12 @@ def _list_fields(api: FeishuAPI, app_token: str, table_id: str) -> list[dict]:
         if resp.get("code") != 0:
             print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
             sys.exit(1)
-        for f in resp.get("data", {}).get("items", []):
+        data = resp.get("data") or {}
+        for f in data.get("items") or []:
             fields.append(f)
-        if not resp.get("data", {}).get("has_more"):
+        if not data.get("has_more"):
             break
-        page_token = resp["data"].get("page_token")
+        page_token = data.get("page_token")
     return fields
 
 
@@ -95,14 +97,15 @@ def _list_records(api: FeishuAPI, app_token: str, table_id: str,
         if resp.get("code") != 0:
             print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
             sys.exit(1)
-        for r in resp.get("data", {}).get("items", []):
+        data = resp.get("data") or {}
+        for r in data.get("items") or []:
             records.append(r)
             remaining -= 1
             if remaining <= 0:
                 return records
-        if not resp.get("data", {}).get("has_more"):
+        if not data.get("has_more"):
             break
-        page_token = resp["data"].get("page_token")
+        page_token = data.get("page_token")
     return records
 
 
@@ -207,7 +210,21 @@ def cmd_record_list(args, api):
 
     records = _list_records(api, app_token, table_id, filter_expr, limit)
     if not records:
-        print("No records found.")
+        if getattr(args, "json", False):
+            print("[]")
+        else:
+            print("No records found.")
+        return
+
+    if getattr(args, "json", False):
+        # Machine-readable JSON output for programmatic use
+        out = []
+        for r in records:
+            out.append({
+                "record_id": r.get("record_id", ""),
+                "fields": r.get("fields", {}),
+            })
+        print(json.dumps(out, ensure_ascii=False))
         return
 
     print(f"{len(records)} record(s):")
@@ -323,6 +340,7 @@ def main():
     rl.add_argument("table_id")
     rl.add_argument("--filter", help="Filter formula")
     rl.add_argument("--limit", type=int, default=20, help="Max records (default 20)")
+    rl.add_argument("--json", action="store_true", help="Output as JSON array")
 
     rg = rec_sub.add_parser("get")
     rg.add_argument("app_token")

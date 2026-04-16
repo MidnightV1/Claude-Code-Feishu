@@ -4,6 +4,11 @@ data/
 __pycache__/
 *.pyc
 
+# Python packaging artifacts
+*.egg-info/
+dist/
+build/
+
 # Temp files
 *.tmp
 *.swp
@@ -16,7 +21,19 @@ Thumbs.db
 # Reference docs (not source code)
 飞书消息卡片*
 .playwright-mcp/
-test_*.py
-get_chat_id.py
+/test_*.py
+/get_chat_id.py
 
 .gemini/
+
+# Worktrees
+.worktrees/
+
+# Test artifacts
+.coverage
+tests/.last_report.json
+tests/.last_verify.xml
+tests/format_error_rate.json
+
+# Screenshots
+screenshot_*.png

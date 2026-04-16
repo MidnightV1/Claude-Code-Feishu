@@ -16,8 +16,9 @@ from agent.infra.store import load_json, save_json
 
 log = logging.getLogger("hub.autonomy")
 
-# Persistent log of autonomous actions
-ACTION_LOG_PATH = "data/autonomy_log.jsonl"
+# Persistent log of autonomous actions (override via AUTONOMY_LOG_PATH env var)
+import os as _os
+ACTION_LOG_PATH = _os.environ.get("AUTONOMY_LOG_PATH", "data/autonomy_log.jsonl")
 
 
 @dataclass
@@ -29,6 +30,7 @@ class AutonomousAction:
     detail: str = ""                    # optional longer description
     commit_sha: str = ""                # if code was changed
     rollback_cmd: str = ""              # how to undo (for L1)
+    source: str = ""                    # subsystem: "explorer", "maqs", "error_scan", etc.
     timestamp: float = field(default_factory=time.time)
 
 
@@ -45,6 +47,7 @@ async def log_action(action: AutonomousAction) -> None:
         "detail": action.detail,
         "commit_sha": action.commit_sha,
         "rollback_cmd": action.rollback_cmd,
+        "source": action.source,
     }
     line = json.dumps(entry, ensure_ascii=False)
 
@@ -98,12 +101,27 @@ async def notify(
 
     if level == AutonomyLevel.L2_APPROVE:
         # L2 creates a feishu doc for approval — handled by caller
-        # Here we just send a pointer notification
-        text = _format_l2_notification(action)
+        # Programmatic Feishu task for followup (7-day deadline)
+        await _create_l2_task(action.summary)
         log.info("[L2] approval needed: %s", action.summary)
-        if open_id:
-            return await dispatcher.send_to_user(open_id, text)
-        return await dispatcher.send_to_delivery_target(text)
+        # Use interactive card if provided (same as L1)
+        if card_json:
+            if open_id:
+                msg_id = await dispatcher.send_card_raw_to_user(open_id, card_json)
+            else:
+                msg_id = await dispatcher.send_card_raw_to_delivery(card_json)
+        else:
+            text = _format_l2_notification(action)
+            if open_id:
+                msg_id = await dispatcher.send_to_user(open_id, text)
+            else:
+                msg_id = await dispatcher.send_to_delivery_target(text)
+        if msg_id:
+            log.info("[L2] delivered: %s (msg=%s)", action.summary[:60], msg_id)
+        else:
+            log.warning("[L2] delivery FAILED: %s (open_id=%s, has_card=%s)",
+                        action.summary[:60], bool(open_id), bool(card_json))
+        return msg_id
 
     if level == AutonomyLevel.L3_DISCUSS:
         # L3 is real-time discussion — just log, actual discussion happens in chat
@@ -111,6 +129,40 @@ async def notify(
         return None
 
     return None
+
+
+async def _create_l2_task(summary: str) -> str:
+    """Create a Feishu task for L2 approval tracking (7-day deadline)."""
+    import asyncio
+    import sys
+
+    _project_root = _os.path.normpath(
+        _os.path.join(_os.path.dirname(__file__), "..", "..")
+    )
+    script = _os.path.join(
+        _project_root, ".claude", "skills", "feishu-task", "scripts", "task_ctl.py"
+    )
+    title = f"[L2] {summary[:80]}"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, script, "create", title, "--due", "+7d",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode != 0:
+            log.warning("L2 task creation failed: %s", stderr.decode()[:200])
+            return ""
+        guid = ""
+        for line in stdout.decode().splitlines():
+            if line.strip().startswith("(") and line.strip().endswith(")"):
+                guid = line.strip().strip("()")
+                break
+        log.info("[L2] Feishu task created: %s (guid=%s)", title, guid[:8] if guid else "?")
+        return guid
+    except Exception as e:
+        log.warning("L2 task creation error: %s", e)
+        return ""
 
 
 def _format_l1_notification(action: AutonomousAction) -> str:
@@ -145,12 +197,14 @@ def _format_l2_notification(action: AutonomousAction) -> str:
 async def get_recent_actions(
     hours: float = 24,
     level: AutonomyLevel | None = None,
+    source: str | None = None,
 ) -> list[dict]:
     """Read recent actions from the log.
 
     Args:
         hours: Look back this many hours.
         level: Filter by level (None = all).
+        source: Filter by source subsystem (None = all).
 
     Returns:
         List of action dicts, newest first.
@@ -169,8 +223,11 @@ async def get_recent_actions(
                 try:
                     entry = json.loads(line)
                     if entry["ts"] >= cutoff:
-                        if level is None or entry["level"] == level.value:
-                            actions.append(entry)
+                        if level is not None and entry["level"] != level.value:
+                            continue
+                        if source is not None and entry.get("source") != source:
+                            continue
+                        actions.append(entry)
                 except (json.JSONDecodeError, KeyError):
                     continue
     except FileNotFoundError:
@@ -178,3 +235,71 @@ async def get_recent_actions(
 
     actions.sort(key=lambda x: x["ts"], reverse=True)
     return actions
+
+
+async def check_file_reentry(
+    files: list[str],
+    hours: float = 72,
+    cwd: str | None = None,
+) -> list[dict]:
+    """Check if files were recently modified by [L1-auto] commits.
+
+    Returns list of {file, prior_commit} dicts for files with recent L1-auto changes.
+    Callers should escalate to L2 when this returns non-empty.
+    """
+    import asyncio
+    from datetime import datetime, timedelta
+
+    if not files:
+        return []
+
+    if cwd is None:
+        cwd = _os.path.normpath(_os.path.join(_os.path.dirname(__file__), "..", ".."))
+
+    since = (datetime.now() - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S")
+    matches = []
+
+    for f in files:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "log", f"--since={since}", "--oneline",
+                "--grep=[L1-auto]", "--", f,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            if proc.returncode == 0 and stdout.strip():
+                for line in stdout.decode().strip().split("\n"):
+                    if line.strip():
+                        matches.append({"file": f, "prior_commit": line.strip()})
+        except Exception as e:
+            log.debug("Reentry check failed for %s: %s", f, e)
+
+    return matches
+
+
+async def get_committed_files(action_taken: str, cwd: str) -> list[str]:
+    """Extract modified file paths from action_taken string ('hash msg\\nhash msg')."""
+    import asyncio
+
+    files: set[str] = set()
+    for line in action_taken.strip().split("\n"):
+        if not line.strip():
+            continue
+        sha = line.split()[0]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "diff-tree", "--no-commit-id", "--name-only", "-r", sha,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            if proc.returncode == 0:
+                for f in stdout.decode().strip().split("\n"):
+                    if f.strip():
+                        files.add(f.strip())
+        except Exception:
+            pass
+    return list(files)

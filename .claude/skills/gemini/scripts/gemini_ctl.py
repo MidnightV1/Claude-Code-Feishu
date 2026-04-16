@@ -19,7 +19,17 @@ import sys
 
 GEMINI_PATH = shutil.which("gemini") or os.path.expanduser("~/.npm-global/bin/gemini")
 
-TIMEOUTS = {"search": 120, "web": 120, "analyze": 300, "summarize": 300}
+# ── Model defaults ─────────────────────────────────────────
+# search/web: fast model for tool-heavy tasks
+# analyze/summarize: pro model for deeper reasoning
+MODEL_DEFAULTS = {
+    "search": "gemini-3-flash-preview",
+    "web": "gemini-3-flash-preview",
+    "analyze": "gemini-3.1-pro-preview",
+    "summarize": "gemini-3.1-pro-preview",
+}
+
+TIMEOUTS = {"search": 180, "web": 120, "analyze": 300, "summarize": 300}
 
 # ── Prompt templates ────────────────────────────────────────
 
@@ -69,6 +79,15 @@ Structure: key takeaways first, then supporting details.\
 
 # ── Core runner ─────────────────────────────────────────────
 
+
+def _sanitize_at_path(file_path: str) -> str:
+    """Prepare file path for Gemini @ref: relative + escape spaces."""
+    try:
+        path = os.path.relpath(file_path)
+    except ValueError:
+        path = file_path
+    return path.replace(" ", "\\ ")
+
 def _run_gemini(prompt: str, file_path: str | None = None,
                 model: str | None = None, timeout: int = 120) -> str:
     """Run Gemini CLI via stdin pipe. Returns output text."""
@@ -80,7 +99,7 @@ def _run_gemini(prompt: str, file_path: str | None = None,
         print(f"ERROR: File not found: {file_path}", file=sys.stderr)
         sys.exit(1)
 
-    full_prompt = f"{prompt} @{file_path}" if file_path else prompt
+    full_prompt = f"{prompt} @{_sanitize_at_path(file_path)}" if file_path else prompt
     args = [GEMINI_PATH]
     if model:
         args.extend(["--model", model])
@@ -107,25 +126,33 @@ def _run_gemini(prompt: str, file_path: str | None = None,
 
 # ── Commands ────────────────────────────────────────────────
 
+def _resolve_model(args_model: str | None, command: str) -> str | None:
+    """Resolve model: explicit --model > per-command default."""
+    return args_model or MODEL_DEFAULTS.get(command)
+
+
 def cmd_search(args):
     lang_map = {"zh": "Chinese", "en": "English", "auto": "same language as the query"}
     lang = lang_map.get(args.lang, "same language as the query")
     prompt = SEARCH_PROMPT.format(query=args.query, lang=lang)
     timeout = args.timeout or TIMEOUTS["search"]
-    print(_run_gemini(prompt, model=args.model, timeout=timeout))
+    model = _resolve_model(args.model, "search")
+    print(_run_gemini(prompt, model=model, timeout=timeout))
 
 
 def cmd_web(args):
     instruction = args.prompt or "summarize and extract key information"
     prompt = WEB_PROMPT.format(url=args.url, instruction=instruction)
     timeout = args.timeout or TIMEOUTS["web"]
-    print(_run_gemini(prompt, model=args.model, timeout=timeout))
+    model = _resolve_model(args.model, "web")
+    print(_run_gemini(prompt, model=model, timeout=timeout))
 
 
 def cmd_analyze(args):
     prompt = args.prompt or ANALYZE_PROMPT
     timeout = args.timeout or TIMEOUTS["analyze"]
-    print(_run_gemini(prompt, file_path=args.file_path, model=args.model,
+    model = _resolve_model(args.model, "analyze")
+    print(_run_gemini(prompt, file_path=args.file_path, model=model,
                       timeout=timeout))
 
 
@@ -136,14 +163,15 @@ def cmd_summarize(args):
 
     is_url = target.startswith("http://") or target.startswith("https://")
     timeout = args.timeout or TIMEOUTS["summarize"]
+    model = _resolve_model(args.model, "summarize")
 
     if is_url:
         prompt = SUMMARIZE_PROMPT_URL.format(url=target, focus=focus,
                                              max_chars=max_chars)
-        print(_run_gemini(prompt, model=args.model, timeout=timeout))
+        print(_run_gemini(prompt, model=model, timeout=timeout))
     else:
         prompt = SUMMARIZE_PROMPT_FILE.format(focus=focus, max_chars=max_chars)
-        print(_run_gemini(prompt, file_path=target, model=args.model,
+        print(_run_gemini(prompt, file_path=target, model=model,
                           timeout=timeout))
 
 

@@ -1,0 +1,142 @@
+[
+  {
+    "phenomenon": "心跳监控在 WebSocket 断线时没有触发告警",
+    "expected_type": "bug",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "bug-atomic"
+  },
+  {
+    "phenomenon": "日报 collector 报错 KeyError: 'content'",
+    "expected_type": "bug",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "bug-atomic"
+  },
+  {
+    "phenomenon": "session 压缩后丢失工具调用记录，导致 CC 重复读取文件",
+    "expected_type": "bug",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "bug-atomic"
+  },
+  {
+    "phenomenon": "Sentinel 扫描 crash 了，error: TypeError in health_pulse.py",
+    "expected_type": "bug",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "bug-atomic"
+  },
+  {
+    "phenomenon": "帮我加一个日报域，追踪 AI 硬件新闻",
+    "expected_type": "feature",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "feature-atomic"
+  },
+  {
+    "phenomenon": "在日报里添加一个按关键词过滤的功能",
+    "expected_type": "feature",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "feature-atomic"
+  },
+  {
+    "phenomenon": "帮我做一个统一的 MADS/MAQS 管理界面，支持工单查看和手动触发",
+    "expected_type": "feature",
+    "expected_complexity": "composite",
+    "expected_pipeline": "MADS",
+    "category": "feature-composite"
+  },
+  {
+    "phenomenon": "重新设计日报系统架构，支持多语言摘要和跨域关联分析",
+    "expected_type": "feature",
+    "expected_complexity": "composite",
+    "expected_pipeline": "MADS",
+    "category": "feature-composite"
+  },
+  {
+    "phenomenon": "设计一个统一的通知框架，整合飞书消息、邮件和 webhook",
+    "expected_type": "feature",
+    "expected_complexity": "composite",
+    "expected_pipeline": "MADS",
+    "category": "feature-composite"
+  },
+  {
+    "phenomenon": "重构 session.py，把 LLM 路由逻辑拆分到独立模块",
+    "expected_type": "refactor",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "refactor-atomic"
+  },
+  {
+    "phenomenon": "整理清理 data/ 目录下过期的 JSON 缓存文件",
+    "expected_type": "refactor",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "refactor-atomic"
+  },
+  {
+    "phenomenon": "重构整个 agent/jobs/ 模块架构，统一任务调度接口",
+    "expected_type": "refactor",
+    "expected_complexity": "composite",
+    "expected_pipeline": "MADS",
+    "category": "refactor-composite"
+  },
+  {
+    "phenomenon": "帮我写一个新的 skill，用来管理读书笔记",
+    "expected_type": "skill",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "skill"
+  },
+  {
+    "phenomenon": "调整心跳检测的超时阈值配置从 90s 改为 120s",
+    "expected_type": "config",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "config"
+  },
+  {
+    "phenomenon": "dispatcher 发送消息失败，error code 230011",
+    "expected_type": "bug",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "bug-atomic"
+  },
+  {
+    "phenomenon": "帮我实现一个跨多个模块的用户画像系统，需要设计数据模型和采集链路",
+    "expected_type": "feature",
+    "expected_complexity": "composite",
+    "expected_pipeline": "MADS",
+    "category": "feature-composite"
+  },
+  {
+    "phenomenon": "优化 bitable_query 的查询性能，加缓存",
+    "expected_type": "refactor",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "refactor-atomic"
+  },
+  {
+    "phenomenon": "git push 到 NAS 失败了，connection refused",
+    "expected_type": "bug",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "bug-atomic"
+  },
+  {
+    "phenomenon": "帮我加一个功能，在每条消息处理完成后自动保存对话摘要",
+    "expected_type": "feature",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "feature-atomic"
+  },
+  {
+    "phenomenon": "简化 bot.py 中的 monkey-patch 代码，提取到独立模块",
+    "expected_type": "refactor",
+    "expected_complexity": "atomic",
+    "expected_pipeline": "MAQS",
+    "category": "refactor-atomic"
+  }
+]

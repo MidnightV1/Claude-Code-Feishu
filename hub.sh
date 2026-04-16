@@ -4,7 +4,7 @@
 
 HUB_DIR="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="${BRIEFING_PYTHON:-python3}"
-SCREEN_NAME="claude-hub"
+SCREEN_NAME="claude-code-feishu"
 WATCHDOG_SCREEN="hub-watchdog"
 WATCHDOG_LOG="$HUB_DIR/data/watchdog.log"
 WATCHDOG_INTERVAL=300  # 5 minutes

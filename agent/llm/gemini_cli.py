@@ -4,7 +4,9 @@
 Pipe mode constraints (v0.31.0):
 - --output-format json hangs → parse plain text stdout
 - No session persistence → each invocation is stateless
-- @/path/to/file syntax injects local files (cheap, no upload)
+- @path syntax injects local files (cheap, no upload)
+  - paths resolved relative to cwd (Gemini workspace)
+  - spaces must be backslash-escaped (regex splits on whitespace)
 """
 
 import asyncio
@@ -104,14 +106,23 @@ class GeminiCli:
 
         text = stdout.decode("utf-8", errors="replace").strip()
 
-        if not text and proc.returncode != 0:
+        if proc.returncode != 0:
             err = stderr.decode("utf-8", errors="replace")[:500] if stderr else ""
             return LLMResult(
-                text=f"[Exit {proc.returncode}: {err}]",
+                text=f"[Exit {proc.returncode}: {text or err}]",
                 duration_ms=duration, is_error=True,
             )
 
         return LLMResult(text=text or "", duration_ms=duration)
+
+    @staticmethod
+    def _sanitize_at_path(file_path: str) -> str:
+        """Prepare file path for Gemini @ref: relative + escape spaces."""
+        try:
+            path = os.path.relpath(file_path)
+        except ValueError:
+            path = file_path
+        return path.replace(" ", "\\ ")
 
     async def run_with_file(
         self,
@@ -121,7 +132,7 @@ class GeminiCli:
         timeout_seconds: int | None = None,
     ) -> LLMResult:
         """Run prompt with @file_path attachment via stdin pipe."""
-        full_prompt = f"{prompt} @{file_path}"
+        full_prompt = f"{prompt} @{self._sanitize_at_path(file_path)}"
         return await self.run(
             full_prompt, model=model, timeout_seconds=timeout_seconds,
         )

@@ -15,7 +15,6 @@ from dataclasses import replace
 from agent.infra.models import LLMConfig, llm_config_from_dict
 from agent.infra.store import save_json_sync
 from agent.platforms.feishu.dispatcher import Dispatcher
-
 log = logging.getLogger("hub.feishu_bot")
 
 # Skill prefixes: one-shot model override with optional system prompt.
@@ -33,6 +32,11 @@ SKILL_ROUTES = {
         "厘清本质问题，给出有洞察的结论和可执行建议。"
     )),
 }
+
+# Skills that trigger max effort (deep reasoning tasks).
+_MAX_EFFORT_RE = re.compile(
+    r"投资|板块|基金|仓位|加仓|减仓|博弈|推演|对抗|策略分析|方案审查|学者画像|论文分析"
+)
 
 
 # ── Thinking card status word pools ──
@@ -79,6 +83,8 @@ _REPLY_OPEN_RE = re.compile(r'<reply-to-user>\s*', re.DOTALL)
 _EXPLORE_TAG_RE = re.compile(r'<next-explore>(.*)</next-explore>', re.DOTALL)
 # Fallback for unclosed explore tags
 _EXPLORE_OPEN_RE = re.compile(r'<next-explore>.*', re.DOTALL)
+_REFLECT_TAG_RE = re.compile(r'<next-reflect>(.*)</next-reflect>', re.DOTALL)
+_REFLECT_OPEN_RE = re.compile(r'<next-reflect>.*', re.DOTALL)
 
 
 class SessionMixin:
@@ -263,9 +269,10 @@ class SessionMixin:
                     return f"💭 {label} ({ts})"
                 return f"💭 {label}"
 
-            async def _on_todo(todos: list[dict]):
+            async def _on_todo(todos):
                 _todos.clear()
-                _todos.extend(todos)
+                if isinstance(todos, list):
+                    _todos.extend(t for t in todos if isinstance(t, dict))
                 _last_activity[0] = time.monotonic()
                 if thinking_msg_id:
                     await self.dispatcher.update_card_raw(thinking_msg_id, _render_card())
@@ -387,26 +394,23 @@ class SessionMixin:
             else:
                 reply_text = None
 
-            # ── Strip internal tags before sending to user ──
-            # Always remove <next-explore> content — defense in depth even if
-            # reply-to-user extraction fails.  Handle unclosed tags too
-            # (context truncation can cut off closing tags).
-            if reply_text:
-                reply_text = _EXPLORE_TAG_RE.sub("", reply_text)
-                reply_text = _EXPLORE_OPEN_RE.sub("", reply_text)
-                reply_text = reply_text.strip()
-
             # ── Reply-to-user whitelist filter ──
             # Tagged content is already prioritized at CLI layer (claude.py scans
             # assistant events). Here we just extract the tagged portion.
             # No retry nudge needed — if tags are missing, it means the model
             # genuinely didn't produce them (not a race condition).
+            # NOTE: extraction happens BEFORE internal tag stripping, because
+            # <next-explore>/<next-reflect> are outside <reply-to-user> tags —
+            # extracting first naturally excludes them without regex that could
+            # misfire on literal tag mentions inside the reply content.
+            _reply_extracted = False
             if reply_text:
                 tagged = _REPLY_TAG_RE.findall(reply_text)
                 if tagged:
                     filtered = "\n\n".join(t.strip() for t in tagged if t.strip())
                     if filtered:
                         reply_text = filtered
+                        _reply_extracted = True
                         # Re-append footer (was mixed into pre-filter text)
                         if footer:
                             reply_text += footer
@@ -425,15 +429,37 @@ class SessionMixin:
                     reply_text = _REPLY_OPEN_RE.sub("", reply_text).strip()
                     # Also strip a dangling </reply-to-user> if partially present
                     reply_text = reply_text.replace("</reply-to-user>", "").strip()
+                    _reply_extracted = True
                     if footer:
                         reply_text += footer
-                elif llm_config.provider == "claude-cli":
-                    # Tags genuinely missing (model didn't use them).
-                    # Log for monitoring but send raw text as-is — no retry.
+                elif llm_config.provider == "claude-cli" and not result.is_error:
+                    # Tags genuinely missing from LLM output (model didn't use them).
+                    # Don't log for error-path replies (timeout/env errors) — those are
+                    # user-friendly hardcoded strings, not semantic breaks.
                     log.info(
                         "reply-to-user tags absent (session=%s), sending raw output",
                         session_key,
                     )
+
+            # ── Strip internal tags (defense in depth) ──
+            # Only when reply-to-user extraction FAILED — if extraction
+            # succeeded, <next-explore>/<next-reflect> are already excluded
+            # (they live outside <reply-to-user>). Stripping on extracted
+            # content would misfire on literal tag mentions in reply text.
+            if reply_text and not _reply_extracted:
+                reply_text = _EXPLORE_TAG_RE.sub("", reply_text)
+                reply_text = _EXPLORE_OPEN_RE.sub("", reply_text)
+                reply_text = _REFLECT_TAG_RE.sub("", reply_text)
+                reply_text = _REFLECT_OPEN_RE.sub("", reply_text)
+                reply_text = reply_text.strip()
+
+            # Hub 3.0: detect dev signals in LLM output
+            if reply_text and self.on_dev_signal and "<dev_signal>" in reply_text:
+                _m = re.search(r"<dev_signal>(.*?)</dev_signal>", reply_text, re.DOTALL)
+                if _m:
+                    _signal_text = _m.group(1).strip()
+                    asyncio.create_task(self._handle_dev_signal(_signal_text))
+                    reply_text = re.sub(r"<dev_signal>.*?</dev_signal>", "", reply_text, flags=re.DOTALL).strip()
 
             # Delete thinking card, then send final reply as new message (with sound)
             if batch.received_at:
@@ -457,12 +483,22 @@ class SessionMixin:
                     # MessageStore: mark completed with response_id
                     if _ms and _batch_mids:
                         _ms.update_state(_batch_mids, "completed", response_id=reply_mid)
-                elif _ms and _batch_mids:
-                    _ms.update_state(_batch_mids, "completed")
+                else:
+                    # Delivery failed (all retries exhausted) — mark as failed so the
+                    # semantic-break rate metric stays accurate. The Dispatcher already
+                    # logs the underlying network error via error_tracker.
+                    log.error("send_text returned None — response generated but not delivered "
+                              "(chat=%s)", batch.chat_id)
+                    if _ms and _batch_mids:
+                        _ms.update_state(_batch_mids, "failed")
 
             # ── Explore hints: async task creation (non-blocking) ──
             if result and result.explore_hints:
                 asyncio.create_task(self._process_explore_hints(result.explore_hints))
+
+            # ── Reflect hints: async memory persistence (non-blocking) ──
+            if result and result.reflect_hints:
+                asyncio.create_task(self._process_reflect_hints(result.reflect_hints))
         except asyncio.CancelledError:
             log.info("Flush cancelled for %s during setup (user recalled)", key)
             if thinking_msg_id:
@@ -494,6 +530,16 @@ class SessionMixin:
                 excess = len(self._msg_to_key) - _MSG_KEY_MAP_MAX
                 for k in list(self._msg_to_key)[:excess]:
                     self._msg_to_key.pop(k, None)
+
+    # ═══ Dev Signal Routing ═══
+
+    async def _handle_dev_signal(self, signal_text: str):
+        """Route detected dev signal to MAQS pipeline via callback."""
+        try:
+            if self.on_dev_signal:
+                await self.on_dev_signal(signal_text)
+        except Exception as e:
+            log.warning("Dev signal handler failed: %s", e)
 
     # ═══ Explore Hints Processing ═══
 
@@ -604,11 +650,192 @@ class SessionMixin:
         except Exception as e:
             log.error("Explore hints processing error: %s", e, exc_info=True)
 
+    # ═══ Reflect Hints Processing ═══
+
+    async def _process_reflect_hints(self, raw_text: str):
+        """Extract <next-reflect> content and persist as memory.
+
+        Pipeline: extract → Sonnet evaluate (novelty + generalizability) →
+        write memory file → update MEMORY.md index.
+        feedback type: auto-persist (L1). soul/cognition type: notify user (L2).
+        """
+        try:
+            match = _REFLECT_TAG_RE.search(raw_text)
+            if not match:
+                return
+            hints_text = match.group(1).strip()
+            if not hints_text:
+                return
+
+            log.info("Reflect hints captured: %s", hints_text[:200])
+
+            # Load existing MEMORY.md to check for duplicates
+            from pathlib import Path as _Path
+            import os as _os
+            _proj = _Path(__file__).resolve().parent.parent.parent.parent
+            _home = _Path(_os.path.expanduser("~"))
+            _proj_slug = str(_proj).replace("/", "-").lstrip("-")
+            memory_dir = _home / ".claude" / "projects" / f"-{_proj_slug}" / "memory"
+            memory_index = memory_dir / "MEMORY.md"
+            existing_index = ""
+            if memory_index.exists():
+                existing_index = memory_index.read_text()
+
+            eval_prompt = (
+                "你是反思评估专家。评估以下从互动中提炼的模式/原则是否值得持久化为记忆。\n\n"
+                f"## 现有记忆索引\n```\n{existing_index[:2000]}\n```\n\n"
+                f"## 候选反思\n{hints_text}\n\n"
+                "## 评估标准（全部满足才通过）\n"
+                "1. **新颖性**：现有记忆中没有覆盖相同或近似的知识\n"
+                "2. **可泛化**：不是特定任务细节，而是跨场景适用的模式\n"
+                "3. **行为指导性**：记住它会具体改变未来的行为\n\n"
+                "## 输出格式\n"
+                "通过的输出 JSON：\n"
+                '```json\n{"pass": true, "type": "feedback|soul|cognition", '
+                '"filename": "简短英文文件名.md", "title": "简短标题", '
+                '"description": "一行描述，用于未来检索", '
+                '"content": "记忆正文内容（对于 feedback 类型，包含 Why 和 How to apply）"}\n```\n'
+                "不通过的输出：\n"
+                '```json\n{"pass": false, "reason": "不通过的原因"}\n```\n'
+                "只输出 JSON。"
+            )
+            eval_config = LLMConfig(
+                provider="claude-cli", model="sonnet",
+            )
+            eval_result = await self.router.run(
+                prompt=eval_prompt, llm_config=eval_config,
+            )
+            if eval_result.is_error or not eval_result.text.strip():
+                log.warning("Reflect hint evaluation failed: %s", eval_result.text[:100])
+                return
+
+            # Parse JSON
+            import json as _json
+            import re as _re
+            text = eval_result.text.strip()
+            if "```" in text:
+                json_match = _re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, _re.DOTALL)
+                if json_match:
+                    text = json_match.group(1).strip()
+
+            result = None
+            try:
+                result = _json.loads(text)
+            except _json.JSONDecodeError:
+                # LLM may append text after JSON; extract first complete JSON object
+                json_match = _re.search(r'\{.*\}', text, _re.DOTALL)
+                if json_match:
+                    try:
+                        result = _json.loads(json_match.group(0))
+                    except _json.JSONDecodeError:
+                        pass
+                if result is None:
+                    # JSON truncated at 'content' field — extract key fields via regex
+                    _pass = _re.search(r'"pass"\s*:\s*(true|false)', text)
+                    _type = _re.search(r'"type"\s*:\s*"([^"]+)"', text)
+                    _fname = _re.search(r'"filename"\s*:\s*"([^"]+)"', text)
+                    _title = _re.search(r'"title"\s*:\s*"([^"]+)"', text)
+                    _desc = _re.search(r'"description"\s*:\s*"([^"]+)"', text)
+                    _content_partial = _re.search(r'"content"\s*:\s*"((?:[^"\\]|\\.)*)', text, _re.DOTALL)
+                    _t = _type.group(1) if _type else "feedback"
+                    if _pass and _pass.group(1) == 'true':
+                        _partial = _content_partial.group(1) if _content_partial else ""
+                        log.warning("Reflect eval JSON truncated (type: %s), partial content recovered (%d chars): %s", _t, len(_partial), text)
+                        result = {
+                            "pass": True,
+                            "type": _t,
+                            "filename": _fname.group(1) if _fname else "reflect_unnamed.md",
+                            "title": _title.group(1) if _title else "Unnamed reflection",
+                            "description": _desc.group(1) if _desc else "",
+                            "content": _partial,
+                        }
+                    elif _pass is None and _type and _title:
+                        # pass field itself truncated but key fields present — assume pass:true
+                        _partial = _content_partial.group(1) if _content_partial else ""
+                        log.warning("Reflect eval JSON truncated before pass field (type: %s), partial content recovered (%d chars): %s", _t, len(_partial), text)
+                        result = {
+                            "pass": True,
+                            "type": _t,
+                            "filename": _fname.group(1) if _fname else "reflect_unnamed.md",
+                            "title": _title.group(1) if _title else "Unnamed reflection",
+                            "description": _desc.group(1) if _desc else "",
+                            "content": _partial,
+                        }
+                    else:
+                        log.warning("Reflect eval returned non-JSON (type: %s): %s", _t, text)
+                        return
+
+            if not result.get("pass"):
+                log.info("Reflect hint rejected: %s", result.get("reason", "unknown"))
+                return
+
+            mem_type = result.get("type", "feedback")
+            filename = result.get("filename", "reflect_unnamed.md")
+            title = result.get("title", "Unnamed reflection")
+            description = result.get("description", "")
+            content = result.get("content", "")
+
+            # soul/cognition require L2 confirmation — notify user, don't auto-persist
+            if mem_type in ("soul", "cognition"):
+                log.info("Reflect hint requires L2 confirmation (type=%s): %s", mem_type, title)
+                try:
+                    from agent.platforms.feishu.dispatcher import Dispatcher
+                    notifier = Dispatcher.get_notifier()
+                    if notifier:
+                        await notifier.send_to_delivery_target(
+                            f"**反思信号 [{mem_type}]**\n\n"
+                            f"**{title}**\n{description}\n\n"
+                            f"内容：\n{content}\n\n"
+                            f"_需要确认后写入 {'CLAUDE.md' if mem_type == 'soul' else 'COGNITION.md'}_"
+                        )
+                except Exception as e:
+                    log.warning("Failed to notify reflect hint: %s", e)
+                return
+
+            # feedback type: auto-persist as memory file (L1)
+            if not filename.startswith("feedback_"):
+                filename = f"feedback_{filename}"
+            filepath = memory_dir / filename
+
+            memory_content = (
+                f"---\n"
+                f"name: {title}\n"
+                f"description: {description}\n"
+                f"type: feedback\n"
+                f"---\n\n"
+                f"{content}\n"
+            )
+            filepath.write_text(memory_content)
+            log.info("Reflect memory written: %s", filepath)
+
+            # Update MEMORY.md index
+            index_line = f"- [{title}]({filename}) — {description}"
+            if filename not in existing_index:
+                # Append under Feedback section
+                if "## Feedback" in existing_index:
+                    updated = existing_index.replace(
+                        "## Feedback",
+                        f"## Feedback\n{index_line}",
+                        1,
+                    )
+                else:
+                    updated = existing_index.rstrip() + f"\n\n## Feedback\n{index_line}\n"
+                memory_index.write_text(updated)
+                log.info("MEMORY.md index updated with: %s", title)
+
+        except Exception as e:
+            log.error("Reflect hints processing error: %s", e, exc_info=True)
+
     # ═══ Skill & Command Router ═══
 
     def _resolve_skill(self, text: str, session_key: str) -> tuple[LLMConfig, str]:
         """Check skill prefix in any paragraph (supports batched text+media)."""
         prompt = text
+
+        effort = self.default_llm.effort
+        if effort != "max" and _MAX_EFFORT_RE.search(text):
+            effort = "max"
+            log.info("Effort escalated to max (keyword match)")
 
         for para in text.split("\n\n"):
             first_word = para.strip().split(None, 1)[0].lower() if para.strip() else ""
@@ -618,19 +845,23 @@ class SessionMixin:
                 prompt = text.replace(para, rest, 1).strip()
                 log.info("Skill '%s' → %s/%s", first_word, provider, model)
                 return LLMConfig(
-                    provider=provider, model=model, system_prompt=sys_prompt
+                    provider=provider, model=model, system_prompt=sys_prompt,
+                    effort=effort,
                 ), prompt
 
         session_llm = self.router.get_session_llm(session_key)
         if session_llm:
-            return llm_config_from_dict(session_llm), prompt
+            cfg = llm_config_from_dict(session_llm)
+            if not cfg.effort:
+                cfg = replace(cfg, effort=effort)
+            return cfg, prompt
         return LLMConfig(
             provider=self.default_llm.provider,
             model=self.default_llm.model,
+            effort=effort,
             env=self.default_llm.env,
             workspace_dir=self.default_llm.workspace_dir,
             setting_sources=self.default_llm.setting_sources,
-            # timeout_seconds=None → idle-based timeout for chat
         ), prompt
 
     # ═══ Reply Cache ═══

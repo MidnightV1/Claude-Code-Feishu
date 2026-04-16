@@ -1,0 +1,27 @@
+[
+  {
+    "block_type": 2,
+    "text": {
+      "elements": [
+        {
+          "text_run": {
+            "content": "这是 "
+          }
+        },
+        {
+          "text_run": {
+            "content": "加粗",
+            "text_element_style": {
+              "bold": true
+            }
+          }
+        },
+        {
+          "text_run": {
+            "content": " 文本"
+          }
+        }
+      ]
+    }
+  }
+]

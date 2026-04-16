@@ -11,7 +11,7 @@ settings:
   # 飞书文档归档文件夹 token（论文日报）
   feishu_folder: "QCnFfPWEIlKDrfd6pVgcXQIdnUf"
   # 分享给用户
-  share_to: "<your_feishu_user_id>"
+  share_to: ""  # Feishu user open_id to share reports with
   # 评分权重（v2: 新增 collaboration 维度）
   weights:
     novelty: 0.25

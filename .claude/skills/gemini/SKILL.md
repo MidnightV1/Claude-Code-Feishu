@@ -77,8 +77,19 @@ Each invocation is independent (no session persistence in pipe mode). The script
 | `--prompt TEXT` | analyze, web, summarize | (varies) | Custom instruction |
 | `--lang zh\|en\|auto` | search | auto | Output language preference |
 | `--max-chars N` | summarize | 1500 | Target output length |
-| `--model MODEL` | all | (default) | Override Gemini model |
+| `--model MODEL` | all | (per-command) | Override Gemini model |
 | `--timeout N` | all | varies | Timeout in seconds |
+
+### Model Defaults
+
+| Command | Default Model | Rationale |
+|---------|--------------|-----------|
+| search | `gemini-3-flash-preview` | Fast, tool-heavy search tasks |
+| web | `gemini-3-flash-preview` | URL fetching + extraction |
+| analyze | `gemini-3.1-pro-preview` | Deep reasoning for document analysis |
+| summarize | `gemini-3.1-pro-preview` | Quality synthesis for long content |
+
+Override with `--model` flag when needed. All models use subscription (zero API cost).
 
 ## File Locations
 

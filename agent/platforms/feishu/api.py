@@ -147,15 +147,63 @@ class FeishuAPI:
         kwargs: dict = {"headers": self._headers(), "params": params, "timeout": 15}
         if body is not None:
             kwargs["json"] = body
-        r = fn(f"{self.domain}{path}", **kwargs)
-        self._raise_for_status(r)
-        data = r.json()
-        if self._check_token_expired(data):
-            kwargs["headers"] = self._headers()
-            r = fn(f"{self.domain}{path}", **kwargs)
+        url = f"{self.domain}{path}"
+        backoff = 1.0
+        for attempt in range(4):
+            try:
+                r = fn(url, **kwargs)
+            except (ConnectionError, requests.ConnectionError) as e:
+                if attempt >= 3:
+                    raise
+                log.warning("Connection error on %s %s, retrying in %.2fs (%d/3): %s",
+                            method.upper(), path, backoff, attempt + 1, e)
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            if r.status_code == 429:
+                if attempt >= 3:
+                    self._raise_for_status(r)
+                retry_after = r.headers.get("Retry-After", "")
+                try:
+                    delay = max(float(retry_after), backoff) if retry_after else backoff
+                except ValueError:
+                    delay = backoff
+                log.warning("Rate limited on %s %s, retrying in %.2fs (%d/3)",
+                            method.upper(), path, delay, attempt + 1)
+                time.sleep(delay)
+                backoff *= 2
+                continue
             self._raise_for_status(r)
             data = r.json()
-        return data
+            if self._check_token_expired(data):
+                kwargs["headers"] = self._headers()
+                try:
+                    r = fn(url, **kwargs)
+                except (ConnectionError, requests.ConnectionError) as e:
+                    if attempt >= 3:
+                        raise
+                    log.warning("Connection error on %s %s after token refresh, retrying in %.2fs (%d/3): %s",
+                                method.upper(), path, backoff, attempt + 1, e)
+                    time.sleep(backoff)
+                    backoff *= 2
+                    continue
+                if r.status_code == 429:
+                    if attempt >= 3:
+                        self._raise_for_status(r)
+                    retry_after = r.headers.get("Retry-After", "")
+                    try:
+                        delay = max(float(retry_after), backoff) if retry_after else backoff
+                    except ValueError:
+                        delay = backoff
+                    log.warning("Rate limited on %s %s after token refresh, retrying in %.2fs (%d/3)",
+                                method.upper(), path, delay, attempt + 1)
+                    time.sleep(delay)
+                    backoff *= 2
+                    continue
+                self._raise_for_status(r)
+                data = r.json()
+            return data
+        return {}
 
     def get(self, path: str, params: dict | None = None) -> dict:
         return self._request("get", path, params=params)
@@ -301,6 +349,53 @@ class FeishuAPI:
         if send_resp.get("code") != 0:
             raise RuntimeError(f"File send failed: {send_resp.get('msg')}")
         return send_resp.get("data", {}).get("message_id", "")
+
+    def send_audio(self, file_path: str, receive_id: str,
+                   receive_id_type: str = "open_id", *,
+                   duration_ms: int | None = None) -> str:
+        """Upload an opus audio file and send it as a voice message. Returns message_id.
+
+        Feishu audio messages require opus format. The file is uploaded via
+        /im/v1/files with file_type=opus, then sent as msg_type=audio.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+        p = _Path(file_path)
+
+        resp = self.upload(
+            "/open-apis/im/v1/files", file_path,
+            form_data={"file_type": "opus", "file_name": p.name},
+            field_name="file",
+            timeout=60,
+        )
+        if resp.get("code") != 0:
+            raise RuntimeError(f"Audio upload failed: {resp.get('msg')}")
+        file_key = resp["data"]["file_key"]
+
+        content = {"file_key": file_key}
+        if duration_ms:
+            content["duration"] = duration_ms
+
+        send_resp = self.post(
+            "/open-apis/im/v1/messages",
+            body={
+                "receive_id": receive_id,
+                "msg_type": "audio",
+                "content": _json.dumps(content),
+            },
+            params={"receive_id_type": receive_id_type},
+        )
+        if send_resp.get("code") != 0:
+            raise RuntimeError(f"Audio send failed: {send_resp.get('msg')}")
+        return send_resp.get("data", {}).get("message_id", "")
+
+    def send_audio_to_chat(self, file_path: str, chat_id: str, *,
+                           duration_ms: int | None = None) -> str:
+        """Send audio to a group chat. Convenience wrapper."""
+        return self.send_audio(
+            file_path, chat_id, receive_id_type="chat_id",
+            duration_ms=duration_ms,
+        )
 
 
 class ContactStore:

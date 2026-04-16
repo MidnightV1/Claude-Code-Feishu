@@ -1,0 +1,17 @@
+[
+  {
+    "block_type": 14,
+    "code": {
+      "style": {
+        "language": 49
+      },
+      "elements": [
+        {
+          "text_run": {
+            "content": "def hello():\n    print(\"world\")"
+          }
+        }
+      ]
+    }
+  }
+]

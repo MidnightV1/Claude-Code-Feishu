@@ -108,7 +108,8 @@ def cmd_create(args, api, cfg):
 
     # Write initial content
     if args.content:
-        count = _append_md(api, doc_id, args.content)
+        content = _resolve_content(args.content)
+        count = _append_md(api, doc_id, content)
         if count:
             print(f"  Content written ({count} blocks)")
 
@@ -138,21 +139,179 @@ def cmd_create(args, api, cfg):
     print(f"  URL: {doc_domain}/docx/{doc_id}")
 
 
+_BLOCK_TEXT_KEYS = {
+    2: "text",
+    3: "heading1", 4: "heading2", 5: "heading3", 6: "heading4",
+    7: "heading5", 8: "heading6", 9: "heading7", 10: "heading8", 11: "heading9",
+    12: "bullet", 13: "ordered", 14: "code", 17: "todo",
+}
+
+
+def _get_elements_text(block: dict) -> str:
+    """Extract plain text from any block that has an elements array."""
+    bt = block.get("block_type", 0)
+    key = _BLOCK_TEXT_KEYS.get(bt)
+    if not key:
+        return ""
+    content = block.get(key, {})
+    if not content:
+        return ""
+    parts = []
+    for el in content.get("elements", []):
+        tr = el.get("text_run", {})
+        if tr:
+            parts.append(tr.get("content", ""))
+    return "".join(parts).strip()
+
+
+def _download_doc_image(api, token: str, img_dir) -> str:
+    """Download a document image by its file_token. Returns local path or error."""
+    from pathlib import Path as _P
+    dest = _P(img_dir) / f"{token}.png"
+    if dest.exists():
+        return str(dest)
+    try:
+        resp = api.download(f"/open-apis/drive/v1/medias/{token}/download")
+        dest.write_bytes(resp.content)
+        return str(dest)
+    except Exception as e:
+        return f"(image download failed: {e})"
+
+
+def _render_block_line(block: dict, api, img_dir, list_depth: int) -> str | None:
+    """Render a single block to text. Returns None for container-only blocks."""
+    bt = block.get("block_type", 0)
+
+    if bt == 1:  # Page root
+        return None
+
+    # Headings
+    if 3 <= bt <= 11:
+        level = bt - 2
+        return f"{'#' * level} {_get_elements_text(block)}"
+
+    # Plain text
+    if bt == 2:
+        return _get_elements_text(block)
+
+    # Bullet list
+    if bt == 12:
+        indent = "  " * list_depth
+        return f"{indent}- {_get_elements_text(block)}"
+
+    # Ordered list
+    if bt == 13:
+        indent = "  " * list_depth
+        return f"{indent}1. {_get_elements_text(block)}"
+
+    # Code block
+    if bt == 14:
+        text = _get_elements_text(block)
+        return f"```\n{text}\n```"
+
+    # Todo
+    if bt == 17:
+        done = block.get("todo", {}).get("style", {}).get("done", False)
+        mark = "[x]" if done else "[ ]"
+        indent = "  " * list_depth
+        return f"{indent}- {mark} {_get_elements_text(block)}"
+
+    # Callout
+    if bt == 19:
+        return "> [callout]"
+
+    # Divider
+    if bt == 22:
+        return "---"
+
+    # Grid / grid column
+    if bt in (24, 25):
+        return None
+
+    # Image
+    if bt == 27:
+        img_data = block.get("image", {})
+        token = img_data.get("token", "")
+        w, h = img_data.get("width", 0), img_data.get("height", 0)
+        if token:
+            path = _download_doc_image(api, token, img_dir)
+            size = f" | {w}x{h}" if w and h else ""
+            return f"[image: {path}{size}]"
+        return "[image: (no token)]"
+
+    # Video
+    if bt == 28:
+        return "[video]"
+
+    # File attachment
+    if bt == 29:
+        name = block.get("file", {}).get("name", "unknown")
+        return f"[file: {name}]"
+
+    # Table / table cell
+    if bt in (31, 32):
+        return None
+
+    # Quote container
+    if bt in (15, 34):
+        return None
+
+    return None
+
+
+def _walk_blocks(block: dict, block_map: dict, api, img_dir,
+                 lines: list[str], list_depth: int = 0):
+    """Depth-first walk of the block tree, accumulating rendered lines."""
+    bt = block.get("block_type", 0)
+
+    line = _render_block_line(block, api, img_dir, list_depth)
+    if line is not None:
+        lines.append(line)
+
+    children_ids = block.get("children", [])
+    if not children_ids:
+        return
+
+    child_list_depth = list_depth
+    if bt in (12, 13, 17):
+        child_list_depth = list_depth + 1
+
+    for cid in children_ids:
+        child = block_map.get(cid)
+        if child:
+            _walk_blocks(child, block_map, api, img_dir, lines, child_list_depth)
+
+
 def cmd_read(args, api, cfg):
     doc_id = _extract_doc_id(args.doc_id)
 
-    resp = api.get(f"/open-apis/docx/v1/documents/{doc_id}/raw_content")
-    if resp.get("code") != 0:
-        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
-        sys.exit(1)
+    blocks = _list_blocks(api, doc_id)
+    if not blocks:
+        print("(empty document)")
+        return
 
-    content = resp["data"]["content"]
-    print(content)
+    block_map = {b["block_id"]: b for b in blocks}
+
+    img_dir = os.path.join(os.environ.get("TMPDIR", "/tmp"), "feishu_doc_images", doc_id)
+    if any(b.get("block_type") == 27 for b in blocks):
+        os.makedirs(img_dir, exist_ok=True)
+
+    root = block_map.get(doc_id)
+    if not root:
+        resp = api.get(f"/open-apis/docx/v1/documents/{doc_id}/raw_content")
+        if resp.get("code") == 0:
+            print(resp["data"]["content"])
+        return
+
+    lines: list[str] = []
+    _walk_blocks(root, block_map, api, img_dir, lines)
+    print("\n".join(lines))
 
 
 def cmd_append(args, api, cfg):
     doc_id = _extract_doc_id(args.doc_id)
-    count = _append_md(api, doc_id, args.content)
+    content = _resolve_content(args.content)
+    count = _append_md(api, doc_id, content)
     if count == 0:
         print("Nothing to append.")
         return
@@ -214,6 +373,9 @@ def _insert_blocks(api, doc_id: str, blocks: list[dict], index: int,
     if not blocks:
         return
     for i in range(0, len(blocks), batch_size):
+        if i > 0:
+            import time
+            time.sleep(0.1)
         batch = blocks[i:i + batch_size]
         resp = api.post(
             f"/open-apis/docx/v1/documents/{doc_id}/blocks/{doc_id}/children",
@@ -285,16 +447,33 @@ def cmd_update(args, api, cfg):
 
     # Count direct children (not nested blocks like table cells)
     child_count = _count_direct_children(api, doc_id)
+
+    # Backup current content for rollback on write failure
+    backup = None
     if child_count > 0:
+        r = api.get(f"/open-apis/docx/v1/documents/{doc_id}/raw_content")
+        if r.get("code") == 0:
+            backup = r["data"]["content"]
         _delete_blocks(api, doc_id, 0, child_count)
         print(f"Deleted {child_count} existing blocks")
 
     content = _resolve_content(args.content)
-    new_blocks = _text_to_blocks(content)
-    if new_blocks:
-        _insert_blocks(api, doc_id, new_blocks, 0)
-        print(f"Inserted {len(new_blocks)} new blocks")
+    count = 0
+    try:
+        count = _append_md(api, doc_id, content)
+    except Exception as e:
+        print(f"ERROR writing new content: {e}", file=sys.stderr)
+        if backup:
+            print("Attempting to restore previous content...", file=sys.stderr)
+            try:
+                _append_md(api, doc_id, backup)
+                print("Restored previous content.", file=sys.stderr)
+            except Exception:
+                print("Restore also failed — document may be empty.", file=sys.stderr)
+        sys.exit(1)
 
+    if count:
+        print(f"Inserted {count} blocks")
     print(f"Updated {doc_id}")
 
 
@@ -336,17 +515,24 @@ def cmd_replace(args, api, cfg):
             section_end = i
             break
 
-    # Delete the section (heading + body)
+    # Write first, then delete (atomic-safe: failure leaves original intact)
+    # Insert new content after the section to preserve original on failure
+    insert_index = section_end
+    try:
+        count = _append_md(api, doc_id, args.content, index=insert_index)
+    except Exception as e:
+        print(f"ERROR writing new content: {e}", file=sys.stderr)
+        print(f"Section '{section}' was NOT modified (write failed before delete).",
+              file=sys.stderr)
+        sys.exit(1)
+
+    if count:
+        print(f"Inserted {count} blocks")
+
+    # Delete old section only after successful write
     delete_count = section_end - heading_idx
     _delete_blocks(api, doc_id, heading_idx, section_end)
-    print(f"Deleted section '{section}' ({delete_count} blocks)")
-
-    # Insert new content at the same position
-    new_blocks = _text_to_blocks(args.content)
-    if new_blocks:
-        _insert_blocks(api, doc_id, new_blocks, heading_idx)
-        print(f"Inserted {len(new_blocks)} new blocks")
-
+    print(f"Deleted old section '{section}' ({delete_count} blocks)")
     print(f"Replaced section in {doc_id}")
 
 
@@ -603,7 +789,11 @@ def _list_folder(api, folder_token: str, max_pages: int = 10) -> list[dict]:
                   "order_by": "EditedTime", "direction": "DESC"}
         if page_token:
             params["page_token"] = page_token
-        resp = api.get("/open-apis/drive/v1/files", params=params)
+        try:
+            resp = api.get("/open-apis/drive/v1/files", params=params)
+        except Exception as exc:
+            print(f"ERROR listing folder {folder_token}: {exc}", file=sys.stderr)
+            break
         if resp.get("code") != 0:
             print(f"ERROR listing folder {folder_token}: {resp.get('msg')}",
                   file=sys.stderr)
@@ -679,6 +869,44 @@ def cmd_transfer_owner(args, api, cfg):
     print(f"Ownership of {doc_id} transferred to {args.open_id}")
 
 
+def cmd_native_search(args, api, cfg):
+    """Full-text search via Feishu native search API.
+
+    Output (TSV): <docs_token>\\t<title>\\t<latest_modify_time_epoch>
+    """
+    body = {
+        "search_key": args.keyword,
+        "count": args.limit or 20,
+        "owner_ids": [],
+        "docs_types": [],
+    }
+    resp = api.post("/open-apis/suite/docs-api/search/object", body)
+    if resp.get("code") != 0:
+        print(f"ERROR: {resp.get('msg')}", file=sys.stderr)
+        sys.exit(1)
+
+    results = resp.get("data", {}).get("docs_entities", [])
+    if not results:
+        return
+
+    tokens = [r["docs_token"] for r in results if r.get("docs_token")]
+    metas_by_token: dict = {}
+    if tokens:
+        meta_resp = api.post(
+            "/open-apis/drive/v1/metas/batch_query",
+            {"request_docs": [{"doc_token": t, "doc_type": "docx"} for t in tokens]},
+        )
+        if meta_resp.get("code") == 0:
+            for m in meta_resp.get("data", {}).get("metas", []):
+                metas_by_token[m.get("doc_token", "")] = m
+
+    for r in results:
+        token = r.get("docs_token", "")
+        title = r.get("title", "(unnamed)")
+        mtime = metas_by_token.get(token, {}).get("latest_modify_time", "")
+        print(f"{token}\t{title}\t{mtime}")
+
+
 def cmd_search(args, api, cfg):
     """Search files by keyword in name across all configured folders."""
     keyword = args.keyword.lower()
@@ -739,6 +967,10 @@ def main():
     to.add_argument("--file-type", dest="file_type", default="docx",
                     help="File type (docx, doc, sheet, etc.)")
 
+    ns = sub.add_parser("native-search")
+    ns.add_argument("keyword", help="Full-text search keyword (Feishu native search API)")
+    ns.add_argument("--limit", type=int, default=20)
+
     sr = sub.add_parser("search")
     sr.add_argument("keyword", help="Search keyword (matches file name)")
     sr.add_argument("--folder", help="Limit search to a specific folder token")
@@ -789,6 +1021,7 @@ def main():
         "replace": cmd_replace,
         "transfer_owner": cmd_transfer_owner,
         "list": cmd_list,
+        "native-search": cmd_native_search,
         "search": cmd_search,
         "comments": cmd_comments,
         "reply": cmd_reply,

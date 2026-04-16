@@ -37,17 +37,27 @@ class SessionStore:
                 updated_at REAL
             );
         """)
+        self._migrate_add_last_summary()
         self._conn.commit()
+
+    def _migrate_add_last_summary(self):
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(sessions)")}
+        if "last_summary" not in cols:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN last_summary TEXT")
+            log.info("Migrated sessions table: added last_summary column")
+        if "last_summarized_ts" not in cols:
+            self._conn.execute("ALTER TABLE sessions ADD COLUMN last_summarized_ts TEXT")
+            log.info("Migrated sessions table: added last_summarized_ts column")
 
     def load_all(self) -> dict:
         """Load all sessions into memory dict. Called once at startup."""
         sessions = {}
         with self._lock:
             rows = self._conn.execute(
-                "SELECT session_key, session_id, llm_config, history, updated_at "
+                "SELECT session_key, session_id, llm_config, history, updated_at, last_summary, last_summarized_ts "
                 "FROM sessions"
             ).fetchall()
-        for key, sid, llm_json, hist_json, updated in rows:
+        for key, sid, llm_json, hist_json, updated, last_summary, last_summarized_ts in rows:
             entry = {}
             if sid:
                 entry["session_id"] = sid
@@ -63,6 +73,10 @@ class SessionStore:
                     pass
             if updated:
                 entry["updated_at"] = updated
+            if last_summary:
+                entry["last_summary"] = last_summary
+            if last_summarized_ts:
+                entry["last_summarized_ts"] = last_summarized_ts
             if entry:
                 sessions[key] = entry
         log.info("Loaded %d sessions from SQLite", len(sessions))
@@ -74,16 +88,20 @@ class SessionStore:
         llm = json.dumps(entry["llm_config"], ensure_ascii=False) if entry.get("llm_config") else None
         hist = json.dumps(entry["history"], ensure_ascii=False) if entry.get("history") else None
         updated = entry.get("updated_at")
+        last_summary = entry.get("last_summary")
+        last_summarized_ts = entry.get("last_summarized_ts")
         with self._lock:
             self._conn.execute(
-                "INSERT INTO sessions (session_key, session_id, llm_config, history, updated_at) "
-                "VALUES (?, ?, ?, ?, ?) "
+                "INSERT INTO sessions (session_key, session_id, llm_config, history, updated_at, last_summary, last_summarized_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(session_key) DO UPDATE SET "
                 "  session_id=excluded.session_id, "
                 "  llm_config=excluded.llm_config, "
                 "  history=excluded.history, "
-                "  updated_at=excluded.updated_at",
-                (session_key, sid, llm, hist, updated),
+                "  updated_at=excluded.updated_at, "
+                "  last_summary=excluded.last_summary, "
+                "  last_summarized_ts=excluded.last_summarized_ts",
+                (session_key, sid, llm, hist, updated, last_summary, last_summarized_ts),
             )
             self._conn.commit()
 
@@ -103,11 +121,13 @@ class SessionStore:
                 llm = json.dumps(entry["llm_config"], ensure_ascii=False) if entry.get("llm_config") else None
                 hist = json.dumps(entry["history"], ensure_ascii=False) if entry.get("history") else None
                 updated = entry.get("updated_at")
+                last_summary = entry.get("last_summary")
+                last_summarized_ts = entry.get("last_summarized_ts")
                 self._conn.execute(
                     "INSERT OR REPLACE INTO sessions "
-                    "(session_key, session_id, llm_config, history, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (key, sid, llm, hist, updated),
+                    "(session_key, session_id, llm_config, history, updated_at, last_summary, last_summarized_ts) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (key, sid, llm, hist, updated, last_summary, last_summarized_ts),
                 )
             self._conn.commit()
         log.info("Bulk saved %d sessions to SQLite", len(sessions))

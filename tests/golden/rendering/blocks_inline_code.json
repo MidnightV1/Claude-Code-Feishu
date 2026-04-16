@@ -1,0 +1,27 @@
+[
+  {
+    "block_type": 2,
+    "text": {
+      "elements": [
+        {
+          "text_run": {
+            "content": "使用 "
+          }
+        },
+        {
+          "text_run": {
+            "content": "text_to_blocks",
+            "text_element_style": {
+              "inline_code": true
+            }
+          }
+        },
+        {
+          "text_run": {
+            "content": " 函数"
+          }
+        }
+      ]
+    }
+  }
+]

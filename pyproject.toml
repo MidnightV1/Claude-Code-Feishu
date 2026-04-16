@@ -1,0 +1,20 @@
+[project]
+name = "feishu-cli"
+version = "0.1.0"
+description = "Feishu Open Platform CLI tools — doc, task, sheet, wiki"
+requires-python = ">=3.11"
+dependencies = [
+    "requests",
+    "pyyaml",
+]
+
+[project.scripts]
+feishu-sheet = "feishu_cli.sheet:main_cli"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["feishu_cli*"]

@@ -1,0 +1,14 @@
+[
+  {
+    "block_type": 2,
+    "text": {
+      "elements": [
+        {
+          "text_run": {
+            "content": "简单文本测试"
+          }
+        }
+      ]
+    }
+  }
+]

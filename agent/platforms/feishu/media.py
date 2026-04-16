@@ -279,7 +279,7 @@ class MediaMixin:
         # Tier 1: Gemini CLI (subscription, no per-token cost)
         if self.router.gemini_cli.available:
             result = await self.router.gemini_cli.run_with_file(
-                prompt, file_path, timeout_seconds=120,
+                prompt, file_path, timeout_seconds=600,
             )
             if not result.is_error and result.text.strip():
                 summary = result.text.strip()

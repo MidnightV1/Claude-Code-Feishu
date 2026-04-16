@@ -1,0 +1,41 @@
+[
+  {
+    "block_type": 12,
+    "bullet": {
+      "elements": [
+        {
+          "text_run": {
+            "content": "第一项"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "block_type": 12,
+    "bullet": {
+      "elements": [
+        {
+          "text_run": {
+            "content": "第二项"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "block_type": 12,
+    "bullet": {
+      "elements": [
+        {
+          "text_run": {
+            "content": "粗体项",
+            "text_element_style": {
+              "bold": true
+            }
+          }
+        }
+      ]
+    }
+  }
+]

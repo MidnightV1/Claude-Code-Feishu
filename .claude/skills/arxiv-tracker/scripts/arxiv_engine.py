@@ -27,6 +27,10 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
+class _RateLimitError(Exception):
+    pass
+
+
 class ArxivEngine:
     """ArXiv paper tracking engine."""
 
@@ -37,7 +41,32 @@ class ArxivEngine:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         (self.data_dir / "output").mkdir(exist_ok=True)
         self.db_path = self.data_dir / "history.db"
+        self._rate_limit_path = self.data_dir / "rate_limit.json"
         self._init_db()
+
+    def _check_rate_limit(self):
+        if not self._rate_limit_path.exists():
+            return
+        state = json.loads(self._rate_limit_path.read_text())
+        blocked_until = state.get("blocked_until", 0)
+        if time.time() < blocked_until:
+            remaining = int(blocked_until - time.time())
+            raise _RateLimitError(f"rate limit backoff: {remaining}s remaining")
+
+    def _set_rate_limit_backoff(self):
+        state = {}
+        if self._rate_limit_path.exists():
+            state = json.loads(self._rate_limit_path.read_text())
+        backoff = max(state.get("backoff_seconds", 0) * 2, 60)
+        backoff = min(backoff, 3600)
+        state["backoff_seconds"] = backoff
+        state["blocked_until"] = time.time() + backoff
+        self._rate_limit_path.write_text(json.dumps(state))
+        log.warning("arXiv 429 rate limit hit, backoff %ds", backoff)
+
+    def _clear_rate_limit(self):
+        if self._rate_limit_path.exists():
+            self._rate_limit_path.write_text(json.dumps({"backoff_seconds": 0}))
 
     # ── DB ────────────────────────────────────────────────────
 
@@ -111,11 +140,9 @@ class ArxivEngine:
     async def _fetch_papers(
         self, target_date: datetime.date, categories: set
     ) -> list[dict]:
-        """Fetch papers from arXiv API. Grabs recent 3 days, dedup filters later.
+        """Fetch papers from arXiv API. Grabs recent 3 days, dedup filters later."""
+        self._check_rate_limit()
 
-        Uses rate limiting (3s delay, page_size=100) to avoid 429.
-        On 429, returns whatever was fetched so far rather than failing.
-        """
         import arxiv
 
         cat_query = " OR ".join(f"cat:{c}" for c in sorted(categories))
@@ -130,7 +157,7 @@ class ArxivEngine:
         papers: list[dict] = []
 
         def _fetch():
-            client = arxiv.Client(page_size=100, delay_seconds=3.0, num_retries=5)
+            client = arxiv.Client(page_size=100, delay_seconds=3.0, num_retries=0)
             try:
                 for result in client.results(search):
                     pub_date = result.published.date()
@@ -150,15 +177,16 @@ class ArxivEngine:
                         }
                     )
             except Exception as e:
-                # On 429 or other errors, return what we have so far
+                if "429" in str(e):
+                    self._set_rate_limit_backoff()
+                    raise _RateLimitError(str(e)) from e
                 if papers:
-                    log.warning(
-                        "arXiv fetch interrupted after %d papers: %s", len(papers), e
-                    )
+                    log.warning("arXiv fetch interrupted after %d papers: %s", len(papers), e)
                 else:
                     raise
 
         await asyncio.to_thread(_fetch)
+        self._clear_rate_limit()
         log.info("Fetched %d papers from arXiv (cutoff %s)", len(papers), cutoff)
         return papers
 
@@ -714,7 +742,7 @@ class ArxivEngine:
 
         # Parallel execution
         gemini_task = gemini.run(prompt=prompt, model=gemini_model, timeout_seconds=300)
-        opus_task = claude.run(prompt=prompt, model="claude-opus-4-6", timeout_seconds=300)
+        opus_task = claude.run(prompt=prompt, model="opus", timeout_seconds=300)
 
         gemini_result, opus_result = await asyncio.gather(
             gemini_task, opus_task, return_exceptions=True
@@ -772,7 +800,7 @@ class ArxivEngine:
         claude = ClaudeCli(config={"workspace_dir": str(_REPO_ROOT)})
 
         gemini_task = gemini.run(prompt=gemini_prompt, model=gemini_model, timeout_seconds=300)
-        opus_task = claude.run(prompt=opus_prompt, model="claude-opus-4-6", timeout_seconds=300)
+        opus_task = claude.run(prompt=opus_prompt, model="opus", timeout_seconds=300)
 
         gemini_result, opus_result = await asyncio.gather(
             gemini_task, opus_task, return_exceptions=True
@@ -815,7 +843,7 @@ class ArxivEngine:
 
         claude = ClaudeCli(config={"workspace_dir": str(_REPO_ROOT)})
         result = await claude.run(
-            prompt=prompt, model="claude-opus-4-6", timeout_seconds=300
+            prompt=prompt, model="opus", timeout_seconds=300
         )
 
         if isinstance(result, Exception) or result.is_error:
@@ -1029,6 +1057,10 @@ class ArxivEngine:
         # Stage 0: Fetch
         try:
             papers = await self._fetch_papers(target_date, all_categories)
+        except _RateLimitError as e:
+            log.warning("Fetch skipped: %s", e)
+            return {"date": date_str, "status": "skipped", "reason": str(e),
+                    "elapsed_s": round(time.time() - start, 1)}
         except Exception as e:
             log.error("Fetch failed: %s", e)
             return {"date": date_str, "status": "error", "reason": f"fetch failed: {e}",
