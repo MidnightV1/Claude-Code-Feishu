@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claude-hub</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Replace with your Python path: which python3 -->
+        <string>/usr/local/bin/python3</string>
+        <string>-m</string>
+        <string>agent.main</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <!-- Replace with your claude-hub directory path -->
+    <string>/Users/YOUR_USERNAME/claude-hub</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <!-- Adjust PATH to include your Homebrew and local bin directories -->
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>PYTHONPATH</key>
+        <!-- Should match WorkingDirectory -->
+        <string>/Users/YOUR_USERNAME/claude-hub</string>
+        <key>HUB_CHILD</key>
+        <string>1</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <!-- Replace with your preferred log path -->
+    <string>/Users/YOUR_USERNAME/claude-hub/data/hub.stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/YOUR_USERNAME/claude-hub/data/hub.stderr.log</string>
+</dict>
+</plist>

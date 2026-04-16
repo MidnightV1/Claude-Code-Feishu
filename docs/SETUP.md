@@ -126,7 +126,29 @@ Set `scheduler.enabled: false` and `heartbeat.enabled: false` for first boot (en
 
 ---
 
-## Phase 5 — First Boot
+## Phase 5 — Auto-Start (macOS launchd)
+
+To run the hub as a persistent service that starts on boot:
+
+```bash
+# Copy and customize the plist template
+cp docs/com.claude-hub.plist.template ~/Library/LaunchAgents/com.claude-hub.plist
+
+# Edit the plist — replace all YOUR_USERNAME and verify paths:
+#   - Python path: run `which python3` to find yours
+#   - Working directory: your clone location
+#   - PATH: include directories for python3, claude, node/npm
+```
+
+Then load the service:
+```bash
+launchctl load ~/Library/LaunchAgents/com.claude-hub.plist
+launchctl list | grep claude-hub   # verify it's running
+```
+
+Alternatively, run manually for testing:
+
+## Phase 5b — First Boot (manual)
 
 ```bash
 ./hub.sh start
