@@ -838,15 +838,8 @@ async def qa_review(router, diagnosis: str, golden_data: str = "",
 
 async def _notify(dispatcher, color: str, message: str, open_id: str = "",
                   dm_color: str = "", dm_message: str = ""):
-    """MAQS notification — delivery chat + optional user DM with separate styling."""
+    """MAQS notification — delivery chat only (notifier bot)."""
     await _notify_mads(dispatcher, color, message, header="MAQS")
-    if open_id:
-        _dc = dm_color or color
-        _dm = dm_message or message
-        try:
-            await dispatcher.send_to_user(open_id, f"{{card:header=MAQS,color={_dc}}}\n{_dm}")
-        except Exception as e:
-            log.warning("MAQS DM notification failed: %s", e)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1133,8 +1126,8 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
                     await _bitable_add(app_token, table_id, {
                         "title": f"[Discovery] {disc[:80]}",
                         "phenomenon": disc,
-                        "source": f"discovered during fix of {ticket_id}",
-                        "source_ticket": record_id[:8],
+                        "source": "maqs_discovery",
+                        "source_ref": f"discovered during fix of {ticket_id} ({record_id[:8]})",
                         "severity": "P2",
                         "status": "open",
                         "type": "bug",

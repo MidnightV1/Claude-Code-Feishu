@@ -666,9 +666,35 @@ class FeishuBot(MediaMixin, SessionMixin):
         except Exception as e:
             log.warning("Could not fetch bot open_id: %s", e)
 
+    def flush_all_sync(self):
+        """Best-effort flush of all in-memory state before shutdown."""
+        # 1. Reply cache — direct sync write, skip call_later
+        self._flush_reply_cache()
+
+        # 2. Pending debounce batches — log and discard (can't process without event loop)
+        if self._pending:
+            keys = list(self._pending.keys())
+            log.warning("Shutdown: discarding %d pending batch(es): %s", len(keys), keys)
+            for key in keys:
+                batch = self._pending.pop(key, None)
+                if batch and batch.timer and not batch.timer.done():
+                    batch.timer.cancel()
+
+        # 3. Thinking/queued cards — best-effort delete via synchronous HTTP
+        for label, card_dict in [("thinking", self._thinking_cards), ("queued", self._queued_cards)]:
+            if card_dict:
+                log.info("Shutdown: cleaning %d %s card(s)", len(card_dict), label)
+                for key, msg_id in list(card_dict.items()):
+                    try:
+                        self._feishu_api.delete(f"/open-apis/im/v1/messages/{msg_id}")
+                    except Exception:
+                        pass
+                card_dict.clear()
+
     async def stop(self):
         log.info("Feishu bot stopping")
         self._shutting_down = True  # signal watchdog to stand down
+        self.flush_all_sync()
         if hasattr(self, '_health_task') and self._health_task:
             self._health_task.cancel()
             self._health_task = None

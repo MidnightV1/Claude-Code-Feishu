@@ -49,13 +49,13 @@ This is a **security gate** — false negatives mean secret leakage to users.
 
 | ID | Pattern | Example | Expected |
 |----|---------|---------|----------|
-| S01 | Anthropic key | `sk-ant-api03-abc...xyz` (full-length fake key) | not None |
-| S02 | OpenAI key | `sk-abc...12345` (full-length fake key) | not None |
-| S03 | GitHub PAT | `ghp_abc...ABCDE` (full-length fake token) | not None |
-| S04 | GitHub OAuth | `gho_abc...rst` (full-length fake token) | not None |
-| S05 | Slack bot token | `xoxb-123...klmn` (full-length fake token) | not None |
-| S06 | Slack app token | `xoxa-123...klmn` (full-length fake token) | not None |
-| S07 | Google API key | `AIzaSyAbc...123456` (full-length fake key) | not None |
+| S01 | Anthropic key | `sk-ant-api03-abcdefghijklmnopqrstuvwxyz…` | not None |
+| S02 | OpenAI key | `sk-abcdefghijklmnopqrstuvwxyz12345` | not None |
+| S03 | GitHub PAT | `ghp_abcdefghij1234567890ABCDE` | not None |
+| S04 | GitHub OAuth | `gho_abcdefghijklmnopqrst` | not None |
+| S05 | Slack bot token | `xoxb-1234567890x-abcdefghijklmn` | not None |
+| S06 | Slack app token | `xoxa-1234567890x-abcdefghijklmn` | not None |
+| S07 | Google API key | `AIzaSyAbcdefghijklmnopqrstuvwxyz123456` | not None |
 | S08 | RSA private key header | `-----BEGIN RSA PRIVATE KEY-----` | not None |
 | S09 | EC private key header | `-----BEGIN EC PRIVATE KEY-----` | not None |
 | S10 | AWS access key | `AKIAIOSFODNN7EXAMPLE` | not None |

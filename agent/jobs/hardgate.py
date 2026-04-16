@@ -176,12 +176,11 @@ class Hardgate:
             return {"ok": False, "output": str(e)}
 
     async def _run_pytest(self, workdir: str | None = None) -> dict:
-        """Run tests/test_runner.py --suite unit."""
-        import os
-        script = os.path.join(PROJECT_ROOT, "tests", "test_runner.py")
+        """Run pytest on unit tests (tests/unit/)."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, script, "--suite", "unit",
+                sys.executable, "-m", "pytest", "tests/unit/",
+                "-x", "--tb=short", "-q",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=workdir or PROJECT_ROOT,

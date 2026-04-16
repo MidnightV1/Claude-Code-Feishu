@@ -133,13 +133,38 @@ class LLMRouter:
         """Full dict save — only used for bulk operations (e.g. shutdown)."""
         self._store.save_all(self._sessions)
 
+    def close(self):
+        """Close underlying SQLite connection (triggers WAL checkpoint)."""
+        self._store.close()
+
     async def save_session(self, session_key: str):
-        """Per-key atomic save to SQLite."""
+        """Per-key atomic save to SQLite, with 3-attempt exponential backoff (1s/2s/4s)."""
         entry = self._sessions.get(session_key)
-        if entry is not None:
-            await asyncio.to_thread(self._store.save, session_key, entry)
-        else:
-            await asyncio.to_thread(self._store.delete, session_key)
+        last_exc = None
+        for attempt in range(4):  # 1 original + 3 retries
+            try:
+                if entry is not None:
+                    await asyncio.to_thread(self._store.save, session_key, entry)
+                else:
+                    await asyncio.to_thread(self._store.delete, session_key)
+                return
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 3:
+                    delay = 2 ** attempt  # 1s, 2s, 4s
+                    log.warning(
+                        "Failed to persist session (attempt %d/4), retrying in %ds: %s",
+                        attempt + 1, delay, session_key, exc_info=True,
+                    )
+                    await asyncio.sleep(delay)
+        history_len = len(entry.get("history", [])) if entry else 0
+        log.error(
+            "Failed to persist session after 4 attempts: session_key=%s session_id=%s history_len=%d",
+            session_key,
+            (entry or {}).get("session_id", "none"),
+            history_len,
+            exc_info=last_exc,
+        )
 
     def get_session_id(self, session_key: str) -> str | None:
         """Get session_id for resume. No TTL — always try resume, let CLI handle failures."""
@@ -477,10 +502,7 @@ class LLMRouter:
                 return result
             if not result.is_error:
                 self._save_result(session_key, result, prompt)
-                try:
-                    await self.save_session(session_key)
-                except Exception:
-                    log.warning("Failed to persist session", exc_info=True)
+                await self.save_session(session_key)
                 return result
             # Resume failed — fall through to fresh session with recovery context
             log.warning("Resume failed for %s: %s", session_key, result.text[:LOG_PREVIEW_LEN])
@@ -525,8 +547,5 @@ class LLMRouter:
 
         self._save_result(session_key, result, prompt)
         if session_key:
-            try:
-                await self.save_session(session_key)
-            except Exception:
-                log.warning("Failed to persist session", exc_info=True)
+            await self.save_session(session_key)
         return result

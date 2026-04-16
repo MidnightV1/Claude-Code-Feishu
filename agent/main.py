@@ -471,6 +471,7 @@ async def main():
         await notifier.stop()
         stopped_dispatchers.add(id(notifier))
     await router.save_sessions()
+    router.close()
     try:
         os.remove(pid_path)
     except OSError:

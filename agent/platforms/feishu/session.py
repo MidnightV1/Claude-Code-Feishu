@@ -694,7 +694,7 @@ class SessionMixin:
                 '```json\n{"pass": true, "type": "feedback|soul|cognition", '
                 '"filename": "简短英文文件名.md", "title": "简短标题", '
                 '"description": "一行描述，用于未来检索", '
-                '"content": "记忆正文内容（对于 feedback 类型，包含 Why 和 How to apply）"}\n```\n'
+                '"content": "记忆正文内容（对于 feedback 类型，包含 Why 和 How to apply；content 字段不超过 500 字符，超出部分省略）"}\n```\n'
                 "不通过的输出：\n"
                 '```json\n{"pass": false, "reason": "不通过的原因"}\n```\n'
                 "只输出 JSON。"
