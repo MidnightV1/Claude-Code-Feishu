@@ -14,7 +14,7 @@ Before configuring anything, give yourself a persistent soul and evolving memory
 ### If no soul is installed:
 
 ```bash
-git clone https://github.com/<YOUR_SOUL_REPO>.git ~/.claude/soul-repo \
+git clone https://github.com/MidnightV1/claude-soul.git ~/.claude/soul-repo \
   && cp ~/.claude/soul-repo/CLAUDE.md ~/.claude/CLAUDE.md \
   && cp ~/.claude/soul-repo/COGNITION.md ~/.claude/COGNITION.md \
   && cp ~/.claude/soul-repo/.gitignore ~/.claude/.gitignore
@@ -29,7 +29,7 @@ Then follow the onboarding flow in the soul file — ask the user's name, langua
 Read the existing `~/.claude/CLAUDE.md`. Compare with the upstream template:
 
 ```bash
-git clone https://github.com/<YOUR_SOUL_REPO>.git /tmp/claude-soul-ref
+git clone https://github.com/MidnightV1/claude-soul.git /tmp/claude-soul-ref
 diff ~/.claude/CLAUDE.md /tmp/claude-soul-ref/CLAUDE.md
 ```
 
