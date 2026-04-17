@@ -32,6 +32,12 @@ _NOISE_PATTERNS = [
     "RequestsDependencyWarning",
     "Startup notification",
     "Rate limited:",
+    "You've hit your limit",
+    "you hit your limit",
+    "hit your limit",
+    "rate limit",
+    "rate-limit",
+    "overloaded",
 ]
 
 # ── Analysis prompt ──
@@ -117,7 +123,8 @@ def _parse_log_errors(log_path: str, date_str: str) -> list[dict]:
                 ts, source, level, message = m.groups()
                 if not ts.startswith(date_str):
                     continue
-                if any(n in message for n in _NOISE_PATTERNS):
+                message_lower = message.lower()
+                if any(n.lower() in message_lower for n in _NOISE_PATTERNS):
                     continue
                 errors.append({
                     "timestamp": ts,

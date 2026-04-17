@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from agent.infra.store import (
     delete_json_key,
     _get_file_lock,
     _file_locks,
+    LockPool,
 )
 
 
@@ -129,6 +131,55 @@ class TestGetFileLock:
         # One more access triggers sweep, dict should shrink
         _get_file_lock("/tmp/trigger.json")
         assert len(_file_locks) < 52
+
+
+class TestLockPool:
+    def test_threading_lock_factory_returns_same_lock_for_same_key(self):
+        pool = LockPool(threading.Lock, max_size=2)
+        l1 = pool.get("a")
+        l2 = pool.get("a")
+        assert isinstance(l1, type(threading.Lock()))
+        assert l1 is l2
+        assert len(pool) == 1
+
+    def test_asyncio_lock_factory_returns_lock(self):
+        pool = LockPool(asyncio.Lock, max_size=2)
+        lock = pool.get("a")
+        assert isinstance(lock, asyncio.Lock)
+        assert len(pool) == 1
+
+    def test_sweep_skips_locked_entry(self):
+        pool = LockPool(threading.Lock, max_size=1)
+        held = pool.get("x")
+        held.acquire()
+        try:
+            pool.get("y")
+            pool.get("z")
+            assert "x" in pool._locks
+        finally:
+            held.release()
+
+    def test_sweep_skips_current_key(self):
+        pool = LockPool(threading.Lock, max_size=1)
+        pool.get("x")
+        current = pool.get("y")
+        assert pool.get("y") is current
+        assert "y" in pool._locks
+
+    def test_clear_resets_pool(self):
+        pool = LockPool(threading.Lock, max_size=2)
+        pool.get("a")
+        pool.get("b")
+        pool.clear()
+        assert len(pool) == 0
+
+    def test_gold_standard_max_size_two(self):
+        pool = LockPool(threading.Lock, max_size=2)
+        pool.get("a")
+        pool.get("b")
+        pool.get("c")
+        assert len(pool) <= 3
+        assert pool.get("a") is not None
 
 
 # ── update_json_key / delete_json_key ────────────────────────────────────────

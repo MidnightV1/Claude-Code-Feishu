@@ -6,6 +6,15 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.22.1] — 2026-04-18
+
+- Isolate personal cron config from open-source sync (config/jobs.yaml excluded)
+- Provide config/jobs.example.yaml template for open-source deployments
+- Fix merge_forward expansion via single GET (previous two-step approach failed)
+- Pull-driven gates for explore/reflect (signal-triggered, reduces token waste)
+
+---
+
 ## [0.22.0] — 2026-04-16
 
 MADS pipeline hardgate fix (100% QA false-reject resolved), session save retry with exponential backoff, cross-app notification routing, MAQS discovery field fix, TTS integration (Fish.audio S2-Pro), MADS workflow steps with TodoWrite, feishu-sheet CLI Phase 1, 72h reentry gate for L1 auto-fixes, exploration adoption tracking, Sentinel cross-app routing fix, briefing pipeline status stuck fix, Garmin migration to python-garminconnect, 4 MADS composite design documents, 20+ L1-auto bug fixes

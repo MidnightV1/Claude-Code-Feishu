@@ -9,9 +9,9 @@ settings:
   # 评估模型
   model: "3.1-Pro"
   # 飞书文档归档文件夹 token（论文日报）
-  feishu_folder: "QCnFfPWEIlKDrfd6pVgcXQIdnUf"
+  feishu_folder: ""  # your feishu folder token
   # 分享给用户
-  share_to: ""  # your feishu open_id
+  share_to: ""  # your feishu user open_id
   # 评分权重（v2: 新增 collaboration 维度）
   weights:
     novelty: 0.25

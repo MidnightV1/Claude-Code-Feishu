@@ -36,6 +36,8 @@ class SessionStore:
                 history TEXT,
                 updated_at REAL
             );
+            CREATE INDEX IF NOT EXISTS idx_sessions_updated_at
+            ON sessions(updated_at);
         """)
         self._migrate_add_last_summary()
         self._conn.commit()
@@ -49,6 +51,30 @@ class SessionStore:
             self._conn.execute("ALTER TABLE sessions ADD COLUMN last_summarized_ts TEXT")
             log.info("Migrated sessions table: added last_summarized_ts column")
 
+    @staticmethod
+    def _row_to_entry(row: tuple) -> tuple[str, dict]:
+        key, sid, llm_json, hist_json, updated, last_summary, last_summarized_ts = row
+        entry = {}
+        if sid:
+            entry["session_id"] = sid
+        if llm_json:
+            try:
+                entry["llm_config"] = json.loads(llm_json)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if hist_json:
+            try:
+                entry["history"] = json.loads(hist_json)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        if updated:
+            entry["updated_at"] = updated
+        if last_summary:
+            entry["last_summary"] = last_summary
+        if last_summarized_ts:
+            entry["last_summarized_ts"] = last_summarized_ts
+        return key, entry
+
     def load_all(self) -> dict:
         """Load all sessions into memory dict. Called once at startup."""
         sessions = {}
@@ -57,30 +83,46 @@ class SessionStore:
                 "SELECT session_key, session_id, llm_config, history, updated_at, last_summary, last_summarized_ts "
                 "FROM sessions"
             ).fetchall()
-        for key, sid, llm_json, hist_json, updated, last_summary, last_summarized_ts in rows:
-            entry = {}
-            if sid:
-                entry["session_id"] = sid
-            if llm_json:
-                try:
-                    entry["llm_config"] = json.loads(llm_json)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            if hist_json:
-                try:
-                    entry["history"] = json.loads(hist_json)
-                except (json.JSONDecodeError, TypeError):
-                    pass
-            if updated:
-                entry["updated_at"] = updated
-            if last_summary:
-                entry["last_summary"] = last_summary
-            if last_summarized_ts:
-                entry["last_summarized_ts"] = last_summarized_ts
+        for row in rows:
+            key, entry = self._row_to_entry(row)
             if entry:
                 sessions[key] = entry
         log.info("Loaded %d sessions from SQLite", len(sessions))
         return sessions
+
+    def load_recent(self, since_ts: float, limit: int = 100) -> dict:
+        sessions = {}
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT session_key, session_id, llm_config, history, updated_at, last_summary, last_summarized_ts "
+                "FROM sessions WHERE updated_at >= ? ORDER BY updated_at DESC LIMIT ?",
+                (since_ts, limit),
+            ).fetchall()
+        for row in rows:
+            key, entry = self._row_to_entry(row)
+            if entry:
+                sessions[key] = entry
+        return sessions
+
+    def load_one(self, session_key: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT session_key, session_id, llm_config, history, updated_at, last_summary, last_summarized_ts "
+                "FROM sessions WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()
+        if not row:
+            return None
+        _, entry = self._row_to_entry(row)
+        return entry or None
+
+    def exists(self, session_key: str) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM sessions WHERE session_key = ? LIMIT 1",
+                (session_key,),
+            ).fetchone()
+        return row is not None
 
     def save(self, session_key: str, entry: dict):
         """Upsert a single session entry."""

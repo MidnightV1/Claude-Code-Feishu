@@ -6,6 +6,7 @@ import signal
 import sys
 import os
 import logging
+import threading
 import warnings
 import yaml
 
@@ -276,6 +277,7 @@ async def main():
     message_store.cleanup()
 
     # Create bot instances — one per feishu app
+    loop_executor: "LoopExecutor | None" = None
     bots: list[FeishuBot] = []
     for bot_cfg in bot_configs:
         # Per-bot default model + env override
@@ -447,6 +449,19 @@ async def main():
     except KeyboardInterrupt:
         pass
 
+    # Shutdown watchdog: if cleanup hangs past 30s, force-exit instead of
+    # becoming a zombie waiting for launchd SIGKILL. Uses a daemon thread so
+    # it is independent of the event loop (which may itself be blocked by
+    # synchronous calls like flush_all_sync or disk I/O).
+    def _shutdown_watchdog(timeout_s: int = 30) -> None:
+        import time
+        time.sleep(timeout_s)
+        log.error("Shutdown watchdog: cleanup exceeded %ds, forcing exit", timeout_s)
+        os._exit(1)
+
+    _wd = threading.Thread(target=_shutdown_watchdog, daemon=True, name="shutdown-watchdog")
+    _wd.start()
+
     # Graceful shutdown
     log.info("Shutting down...")
     try:
@@ -472,15 +487,25 @@ async def main():
         stopped_dispatchers.add(id(notifier))
     await router.save_sessions()
     router.close()
+    message_store.close()
+    if loop_executor is not None:
+        await loop_executor.shutdown()
     try:
         os.remove(pid_path)
     except OSError:
         pass
     log.info("Shutdown complete.")
-    # Force exit to skip asyncio executor shutdown timeout (300s).
-    # SDK reconnect thread blocks forever; all meaningful cleanup is done above.
-    os._exit(0)
+    # Attempt clean Python shutdown first; os._exit(0) in __main__ guards
+    # against SDK non-daemon reconnect threads that block sys.exit forever.
+    sys.exit(0)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (SystemExit, KeyboardInterrupt):
+        pass
+    finally:
+        # SDK non-daemon threads may survive asyncio shutdown; force-kill
+        # the process after all meaningful cleanup in main() is done.
+        os._exit(0)

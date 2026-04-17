@@ -13,6 +13,8 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 SEED_FILE = PROJECT_ROOT / "config" / "jobs.yaml"
+if not SEED_FILE.exists():
+    SEED_FILE = PROJECT_ROOT / "config" / "jobs.example.yaml"
 MAIN_FILE = PROJECT_ROOT / "agent" / "main.py"
 
 

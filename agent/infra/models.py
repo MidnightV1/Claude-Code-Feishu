@@ -250,6 +250,36 @@ def ticket_workflow_from_dict(d: dict) -> TicketWorkflow:
     return TicketWorkflow(**{k: v for k, v in d.items() if k in TicketWorkflow.__dataclass_fields__})
 
 
+@dataclass
+class TicketContext:
+    record_id: str = ""
+    ticket: dict = field(default_factory=dict)
+    ticket_id: str = ""
+    severity: str = ""
+    ticket_type: str = "bug"
+    diagnosis: str = ""
+    workflow: Optional[TicketWorkflow] = None
+    contract_text: str = ""
+    contract_track: str = ""
+    complexity: str = ""
+    wt_path: Optional[str] = None
+    branch: Optional[str] = None
+    card_mid: Optional[str] = None
+    golden_data: str = ""
+    fix_report: str = ""
+    commit_hash: str = ""
+    notify_open_id: str = ""
+
+
+def ticket_context_from_dict(d: dict) -> TicketContext:
+    if d is None:
+        return TicketContext()
+    d = dict(d)
+    if "workflow" in d and isinstance(d["workflow"], dict):
+        d["workflow"] = ticket_workflow_from_dict(d["workflow"])
+    return TicketContext(**{k: v for k, v in d.items() if k in TicketContext.__dataclass_fields__})
+
+
 # ═══ Loop Execution ═══
 
 class LoopPhase(IntEnum):

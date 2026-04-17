@@ -24,11 +24,44 @@ def test_direct_merge_success():
 
     result = _run(run())
     assert result is True
-    # Should have: checkout dev, merge, then cleanup
+    # Should have: status check, checkout dev, merge, then cleanup
     calls = [c.args for c in mock_git.call_args_list]
-    assert ("checkout", "dev") == calls[0]
-    assert calls[1][0] == "merge"
+    assert ("status", "--porcelain") == calls[0]
+    assert ("checkout", "dev") == calls[1]
+    assert calls[2][0] == "merge"
     mock_remove.assert_called_once()
+
+
+# ── Dirty main repo refuses merge before touching dev ─────────────────────
+
+
+def test_dirty_main_repo_refuses_merge():
+    """When main repo has uncommitted changes, refuse merge (return False)
+    before running checkout. This prevents a misleading 'would be
+    overwritten' error from triggering branch cleanup paths."""
+    from agent.jobs.mads.helpers import worktree_merge_to_dev
+
+    seen = []
+
+    async def mock_git(*args, timeout=30):
+        seen.append(args)
+        if args[:2] == ("status", "--porcelain"):
+            return (0, " M agent/foo.py\n", "")
+        return (0, "", "")
+
+    mock_remove = AsyncMock()
+
+    async def run():
+        with patch("agent.jobs.mads.helpers.git", mock_git), \
+             patch("agent.jobs.mads.helpers.worktree_remove", mock_remove):
+            return await worktree_merge_to_dev("/tmp/wt", "fix/MAQS-abc")
+
+    result = _run(run())
+    assert result is False
+    # Only the status check should have run — no checkout, no merge
+    cmds = [a[0] for a in seen]
+    assert cmds == ["status"]
+    mock_remove.assert_not_called()
 
 
 # ── Direct merge fails, rebase succeeds, retry merge succeeds ──────────────

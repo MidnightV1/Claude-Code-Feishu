@@ -259,9 +259,9 @@ def parse_contract_verdict(text: str, round_num: int = 1) -> tuple[str, str]:
 
     Returns (verdict, feedback) where verdict is "ACCEPT" or "REVISE".
 
-    Fallback strategy (prevents infinite spin from format failures):
-      - Round 1: parse failure → REVISE (give model a chance to correct)
-      - Round 2+: parse failure → ACCEPT (don't block on format issues)
+    Fail-closed: parse failure always returns REVISE regardless of round_num.
+    Unresolved rounds exhaust max_rounds → negotiate_contract returns None →
+    upstream escalation path triggers normally.
     """
     m = re.search(
         r"<contract_verdict>\s*"
@@ -275,21 +275,13 @@ def parse_contract_verdict(text: str, round_num: int = 1) -> tuple[str, str]:
         feedback = m.group(2).strip()
         return verdict, feedback
 
-    # Parse failure — use round-based fallback
-    if round_num >= 2:
-        log.warning(
-            "Contract review missing <contract_verdict> at round %d — "
-            "defaulting to ACCEPT (fallback: format issue should not block)",
-            round_num,
-        )
-        return "ACCEPT", ""
-    else:
-        log.warning(
-            "Contract review missing <contract_verdict> at round %d — "
-            "defaulting to REVISE",
-            round_num,
-        )
-        return "REVISE", ""
+    # Parse failure — fail-closed: always REVISE to prevent silent bad contracts
+    log.warning(
+        "Contract review missing <contract_verdict> at round %d — "
+        "defaulting to REVISE (fail-closed)",
+        round_num,
+    )
+    return "REVISE", ""
 
 
 # ══════════════════════════════════════════════════════════════════════

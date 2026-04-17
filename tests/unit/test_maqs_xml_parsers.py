@@ -192,6 +192,15 @@ def test_parse_experience_summary_truncates_at_200():
     assert len(result) == 200
 
 
+# ── _is_garbage_diagnosis ────────────────────────────────────────────────
+
+def test_is_garbage_diagnosis_rejects_claude_limit_banner():
+    from agent.jobs.maqs import _is_garbage_diagnosis
+
+    assert _is_garbage_diagnosis("You've hit your limit · resets 7pm (Asia/Shanghai)") is True
+    assert _is_garbage_diagnosis("You've hit your limit · resets 12am (Asia/Shanghai)") is True
+
+
 # ── _parse_control_signal ─────────────────────────────────────────────────
 
 from agent.jobs.maqs import _parse_control_signal
@@ -276,3 +285,72 @@ def test_parse_qa_verdict_returns_str_not_tuple():
     result = parse_qa_verdict("<qa_verdict><result>PASS</result></qa_verdict>")
     assert isinstance(result, str)
     assert result == "PASS"
+
+
+# ── parse_contract_verdict ────────────────────────────────────────────────
+
+class TestParseContractVerdict:
+    def _parse(self, text, round_num=1):
+        from agent.jobs.mads.contract import parse_contract_verdict
+        return parse_contract_verdict(text, round_num=round_num)
+
+    def test_accept_parsed_correctly(self):
+        text = """\
+<contract_verdict>
+<result>ACCEPT</result>
+<feedback>Looks good</feedback>
+</contract_verdict>"""
+        verdict, feedback = self._parse(text)
+        assert verdict == "ACCEPT"
+        assert feedback == "Looks good"
+
+    def test_revise_parsed_correctly(self):
+        text = """\
+<contract_verdict>
+<result>REVISE</result>
+<feedback>Missing scope guard</feedback>
+</contract_verdict>"""
+        verdict, feedback = self._parse(text)
+        assert verdict == "REVISE"
+        assert feedback == "Missing scope guard"
+
+    def test_empty_string_returns_revise_round1(self):
+        """Empty output → fail-closed REVISE at round 1."""
+        verdict, feedback = self._parse("", round_num=1)
+        assert verdict == "REVISE"
+        assert feedback == ""
+
+    def test_empty_string_returns_revise_round2(self):
+        """Empty output → fail-closed REVISE at round 2 (no more ACCEPT fallback)."""
+        verdict, feedback = self._parse("", round_num=2)
+        assert verdict == "REVISE"
+        assert feedback == ""
+
+    def test_empty_string_returns_revise_round3(self):
+        """Empty output → fail-closed REVISE at round 3."""
+        verdict, feedback = self._parse("", round_num=3)
+        assert verdict == "REVISE"
+        assert feedback == ""
+
+    def test_plain_text_error_returns_revise(self):
+        """Plain text error message with no XML → REVISE."""
+        verdict, feedback = self._parse(
+            "An error occurred while processing your request.", round_num=2
+        )
+        assert verdict == "REVISE"
+        assert feedback == ""
+
+    def test_truncated_xml_returns_revise(self):
+        """Truncated XML (partial contract_verdict block) → REVISE."""
+        verdict, feedback = self._parse(
+            "<contract_verdict><result>ACCE", round_num=1
+        )
+        assert verdict == "REVISE"
+
+    def test_generic_llm_error_returns_revise_all_rounds(self):
+        """Generic LLM error banner → REVISE across all rounds."""
+        error_msg = "You've hit your limit · resets 12am (Asia/Shanghai)"
+        for rn in (1, 2, 3):
+            verdict, feedback = self._parse(error_msg, round_num=rn)
+            assert verdict == "REVISE", f"Expected REVISE at round {rn}"
+            assert feedback == ""

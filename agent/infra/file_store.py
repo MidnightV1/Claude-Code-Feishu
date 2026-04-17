@@ -12,6 +12,7 @@ import shutil
 import logging
 import threading
 from datetime import datetime
+from agent.infra.store import LockPool
 
 log = logging.getLogger("hub.file_store")
 
@@ -20,20 +21,7 @@ class FileStore:
     def __init__(self, base_dir: str = "data/files"):
         self.base_dir = os.path.expanduser(base_dir)
         os.makedirs(self.base_dir, exist_ok=True)
-        self._meta_locks: dict[str, threading.Lock] = {}
-        self._locks_guard = threading.Lock()
-
-    def _get_meta_lock(self, session_key: str) -> threading.Lock:
-        with self._locks_guard:
-            if session_key not in self._meta_locks:
-                self._meta_locks[session_key] = threading.Lock()
-            # Sweep unlocked entries when dict grows large
-            if len(self._meta_locks) > 50:
-                for k in list(self._meta_locks):
-                    lk = self._meta_locks.get(k)
-                    if lk and not lk.locked() and k != session_key:
-                        del self._meta_locks[k]
-            return self._meta_locks[session_key]
+        self._meta_locks = LockPool(threading.Lock)
 
     def _session_dir(self, session_key: str) -> str:
         safe_key = session_key.replace("..", "_").replace(":", "__").replace("/", "_").replace("\\", "_")
@@ -96,7 +84,7 @@ class FileStore:
         src_hash = self._file_md5(src_path)
         session_dir = self._session_dir(session_key)
 
-        with self._get_meta_lock(session_key):
+        with self._meta_locks.get(session_key):
             meta = self._load_meta(session_key)
             # Content-hash dedup
             for entry in meta:
@@ -137,7 +125,7 @@ class FileStore:
 
     def update_analysis(self, session_key: str, filename: str, analysis: str):
         """Update analysis result for a stored file."""
-        with self._get_meta_lock(session_key):
+        with self._meta_locks.get(session_key):
             meta = self._load_meta(session_key)
             for entry in meta:
                 if entry["filename"] == filename:

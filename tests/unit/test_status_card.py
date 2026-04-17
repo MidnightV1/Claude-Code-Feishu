@@ -246,7 +246,7 @@ async def test_mads_passes_card_mid_to_maqs():
     with patch("agent.jobs.mads.pipeline.send_status_card", side_effect=fake_send_card), \
          patch("agent.jobs.mads.pipeline.update_status_card", side_effect=fake_update_card), \
          patch("agent.jobs.mads.pipeline.bitable_update", new_callable=AsyncMock), \
-         patch("agent.jobs.maqs.diagnose_ticket", new_callable=AsyncMock, return_value="diagnosis ok"), \
+         patch("agent.jobs.maqs.diagnose_ticket", new_callable=AsyncMock, return_value="<diagnosis_meta>\n<affected-files>\n- agent/foo.py\n</affected-files>\n</diagnosis_meta>\nDiagnosis passes garbage check."), \
          patch("agent.jobs.mads.pipeline.negotiate_contract", new_callable=AsyncMock, return_value={"contract": "ok"}), \
          patch("agent.jobs.maqs.process_ticket", side_effect=fake_process_ticket), \
          patch("agent.jobs.mads.pipeline.notify", new_callable=AsyncMock), \

@@ -13,6 +13,7 @@ import signal
 import sys
 import os
 import logging
+import threading
 import warnings
 
 warnings.filterwarnings("ignore", message="urllib3.*doesn't match a supported version")
@@ -173,6 +174,19 @@ async def main():
             pass
 
     await stop.wait()
+
+    # Shutdown watchdog: if cleanup hangs past 30s, force-exit instead of
+    # becoming a zombie waiting for launchd SIGKILL. Uses a daemon thread so
+    # it is independent of the event loop (which may itself be blocked by
+    # synchronous calls like flush_all_sync or disk I/O).
+    def _shutdown_watchdog(timeout_s: int = 30) -> None:
+        import time
+        time.sleep(timeout_s)
+        log.error("Shutdown watchdog: cleanup exceeded %ds, forcing exit", timeout_s)
+        os._exit(1)
+
+    _wd = threading.Thread(target=_shutdown_watchdog, daemon=True, name="shutdown-watchdog")
+    _wd.start()
 
     log.info("Shutting down %s bot...", bot_name)
     await bot.stop()

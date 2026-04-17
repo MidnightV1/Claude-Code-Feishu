@@ -235,4 +235,4 @@ PLAN.md                          # Architecture design document
 ./hub.sh start | stop | restart | status | watchdog
 ```
 
-For auto-start on macOS, use the launchd plist template at `docs/com.claude-hub.plist.template`. Copy to `~/Library/LaunchAgents/com.claude-hub.plist` and customize paths before loading. See `docs/SETUP.md` Phase 5 for details.
+For auto-start on macOS, use the launchd plist template at `docs/com.claude-code-feishu.plist.template`. Copy to `~/Library/LaunchAgents/com.claude-code-feishu.plist` and customize paths before loading. See `docs/SETUP.md` Phase 5 for details.

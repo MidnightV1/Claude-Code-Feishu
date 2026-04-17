@@ -15,6 +15,32 @@ from agent.infra.models import LLMResult
 
 log = logging.getLogger("hub.claude_cli")
 
+
+_LIMIT_BANNER_PATTERNS = (
+    "you've hit your limit",
+    "you hit your limit",
+    "hit your limit",
+    "rate limit",
+    "rate-limit",
+    "overloaded",
+)
+
+
+def _looks_like_limit_banner(text: str) -> bool:
+    """Detect Claude CLI rate-limit / overload banners so the router can retry.
+
+    Only called when tagged_text is empty — i.e. the response has no
+    <reply-to-user> structure. Real banners are always unstructured short text.
+    """
+    if not text:
+        return False
+    normalized = " ".join(text.lower().split())
+    if any(p in normalized for p in _LIMIT_BANNER_PATTERNS):
+        return True
+    if "resets" in normalized and ("limit" in normalized or "rate" in normalized):
+        return True
+    return False
+
 # ── Personality-driven status words ──
 # Inspired by Claude Code's 239 hidden spinner states.
 # Each tool type maps to a pool of fun verbs; one is picked at random.
@@ -506,6 +532,42 @@ class ClaudeCli:
                 )
             log.warning("Claude CLI returned empty result (session=%s, model=%s)", session_id, model)
             return LLMResult(text="", duration_ms=duration, is_error=True)
+
+        # Primary rate-limit signal: stderr banner. CLI writes rate-limit /
+        # overload notices to stderr independently of the model's stdout
+        # content, so this is layer-correct (below the model output) and
+        # immune to false positives from legitimate replies that mention
+        # banner-like phrases in code/docs.
+        stderr_text = stderr_data.decode("utf-8", errors="replace") if stderr_data else ""
+        if stderr_text and _looks_like_limit_banner(stderr_text):
+            log.warning("Claude CLI rate-limit/overload banner in stderr (session=%s, model=%s): %s",
+                        session_id, model, stderr_text[:200])
+            return LLMResult(
+                text=text,
+                session_id=new_session_id,
+                duration_ms=duration,
+                cost_usd=cost,
+                explore_hints=explore_text,
+                reflect_hints=reflect_text,
+                is_error=True,
+            )
+
+        # Fallback: text-based detection when there is no structured reply.
+        # Retained as a backstop for older CLI versions that may print the
+        # banner only to stdout. The `not tagged_text` guard prevents the
+        # false positive where a legitimate reply mentions banner phrases.
+        if not tagged_text and _looks_like_limit_banner(text):
+            log.warning("Claude CLI returned limit/overload banner in stdout (session=%s, model=%s): %s",
+                        session_id, model, text[:200])
+            return LLMResult(
+                text=text,
+                session_id=new_session_id,
+                duration_ms=duration,
+                cost_usd=cost,
+                explore_hints=explore_text,
+                reflect_hints=reflect_text,
+                is_error=True,
+            )
 
         return LLMResult(
             text=text,

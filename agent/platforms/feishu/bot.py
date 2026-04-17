@@ -37,6 +37,7 @@ _PROJECT_ROOT = str(_Path(__file__).resolve().parent.parent.parent.parent)
 
 DEDUP_TTL = 86400       # 24h
 DEDUP_MAX_SIZE = 1000
+CARD_TTL = 600          # stale thinking/queued card cleanup threshold (seconds)
 DEBOUNCE_SECONDS = 0.5    # debounce window for multi-part messages
 
 # Admin allowlist: only these open_ids can execute destructive commands (#restart)
@@ -51,18 +52,29 @@ FEISHU_SYSTEM_PROMPT = """## 飞书协同准则
 你当前通过飞书消息与用户沟通。消息通过飞书卡片（JSON 2.0）的 markdown 组件渲染。
 你在任务过程中会收到大量系统消息、通知的干扰，只有`<user-input>`中的内容才是用户在飞书中真正输入的内容。
 当你对`<user-input>`进行回应时，务必将回复内容完整的放入`<reply-to-user>`标记中。
+
+**关键约束（消极规则，违反会导致用户看不到你的工作）**：
+- `<reply-to-user>` 标记**之前**的所有内容（分析、推理、中间步骤、草稿）**用户完全看不到**——系统只提取标记内的内容发送
+- 不要先在标记外写分析、再在标记内复述一遍。这会导致：(a) 外层分析浪费 token 且不可见；(b) 内层复述造成"回答两次"的观感
+- 如果你需要展示分析过程，**从一开始就写在标记内**；不需要展示的内部推理，用 thinking 而非可见文本
+- 每次回应只包含**一个连续的** `<reply-to-user>` 块，不要拆成多段
+
 如果你在互动过程中发现了对长期目标有价值的探索方向，可以在回复后输出`<next-explore>`标记。这部分内容不会发送给用户，系统会自动评估并在空闲时执行深度调研。
+
+**系统是 pull-driven 模式**：探索只在**用户原话包含未决问题或决策点**时才会被系统采纳。如果本轮用户是在下任务、给反馈、简单确认，请**不要产出** `<next-explore>`——即使你想到了相关问题，产出后也会被系统硬门过滤掉，只是浪费 token。
 
 **产出规则**：
 - **每次最多 1 个方向**——质量优先于数量，宁可不产出也不凑数
 - **只产出需要深度调研才能回答的问题**——如果 10 分钟代码阅读就能解决，不需要探索
 - **必须是决策级问题**——探索结论会影响未来面向长期目标的架构/策略/优先级
+- **必须关联用户原话**——探索方向与用户本轮消息中的未决问题有直接对应关系
 
 **排除**：
 - 部署验证、运维确认、配置检查（遇到再查）
 - 已知答案但还没做的事（那是任务，不是探索）
 - 太泛的方向（"如何提升系统稳定性"）
 - 当前对话就能解决的后续问题
+- 用户在下任务时凭空派生的探索（用户说"改X"，你不要产出"X是否值得改"）
 
 **高质量方向的特征**：
 - 能回答「二选一」或「要不要」的决策问题（如：迁移到 X 框架 vs 自建，收益比多少？）
@@ -70,6 +82,14 @@ FEISHU_SYSTEM_PROMPT = """## 飞书协同准则
 - 解决后能消除一类问题而非一个问题
 
 如果你在互动过程中提炼出了**现有灵魂/认知/记忆文件尚未覆盖的**可复用模式或原则，可以在回复后输出`<next-reflect>`标记。系统会自动评估其新颖性，通过后持久化。
+
+**反思只在以下信号触发时产出**（系统会按信号类型过滤）：
+- **显式纠正**：用户说"不对/错了/应该是/别这样"——提取被纠正的默认行为
+- **隐式质疑**：用户说"真的吗/确定吗/为什么"——提取可能错误的假设
+- **负面体验**：用户重复追问、话题跳转后拉回——提取交互摩擦点
+- **非常规采纳**：用户接受了不寻常的建议——提取验证过的判断模式
+
+**中性信号不要产出反思**：用户只是正常下任务、简短确认（"好"/"收到"/"ok"）、补充信息（"另外..."），这些都**不是反思触发点**，产出后会被信号分类器过滤掉。
 
 **反思 vs 探索的区别**：
 - **探索**是前瞻性的——提出需要调研的问题
@@ -79,6 +99,7 @@ FEISHU_SYSTEM_PROMPT = """## 飞书协同准则
 - **增量性**：必须是 `~/.claude/CLAUDE.md`（灵魂）、`~/.claude/COGNITION.md`（认知）、项目 memory 中**尚未覆盖**的知识。已有规则的细化或补充也算增量，但重复表述不算
 - **可泛化**：不是任务细节，而是跨场景适用的模式或原则
 - **行为指导性**：记住它会改变未来的具体行为，而非仅仅"知道了"
+- **证据锚定**：必须能引用用户原话中的具体表述或明确的行为纠正，不能凭空抽象
 
 **反思的载体与目标文件**：
 - `feedback` — 操作模式、do/don't 规则 → 系统自动写入项目 memory 文件（L1，无需确认）
@@ -221,9 +242,11 @@ class FeishuBot(MediaMixin, SessionMixin):
         self._pending: dict[str, PendingBatch] = {}  # debounce buffers
         self._running_tasks: dict[str, asyncio.Task] = {}  # key → flush/LLM task (for cancel)
         self._thinking_cards: dict[str, str] = {}  # key → thinking card message_id
+        self._thinking_cards_ts: dict[str, float] = {}  # key → creation timestamp
         self._msg_to_key: dict[str, str] = {}  # message_id → debounce key (for recall)
         self._session_locks: dict[str, asyncio.Lock] = {}  # per-session serialization
         self._queued_cards: dict[str, str] = {}  # key → queued indicator card message_id
+        self._queued_cards_ts: dict[str, float] = {}  # key → creation timestamp
         self._ws_client = None
         self._loop = None
         self._dedup: dict[str, float] = {}  # legacy in-memory dedup (kept as L0 fast path)
@@ -411,6 +434,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                          task_key, operator_id)
                 running.cancel()
                 thinking_mid = self._thinking_cards.pop(task_key, None)
+                self._thinking_cards_ts.pop(task_key, None)
                 # Don't delete thinking card — update it to show aborted state
                 mid = msg_id or thinking_mid
                 if mid:
@@ -648,6 +672,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                     try:
                         os.kill(os.getpid(), signal.SIGTERM)
                     except Exception:
+                        self._emergency_flush()
                         os._exit(1)
                 elif sigterm_sent:
                     log.warning("WebSocket still dead (%ds), waiting for restart",
@@ -665,6 +690,18 @@ class FeishuBot(MediaMixin, SessionMixin):
                 log.warning("Failed to fetch bot open_id: %s", data)
         except Exception as e:
             log.warning("Could not fetch bot open_id: %s", e)
+
+    def _emergency_flush(self):
+        """Best-effort flush before os._exit — no asyncio, pure sync."""
+        try:
+            self.flush_all_sync()
+        except Exception as e:
+            log.error("Emergency flush (flush_all_sync) failed: %s", e)
+        try:
+            if hasattr(self, 'scheduler') and self.scheduler is not None:
+                self.scheduler._save_state_sync()
+        except Exception as e:
+            log.error("Emergency flush (scheduler state) failed: %s", e)
 
     def flush_all_sync(self):
         """Best-effort flush of all in-memory state before shutdown."""
@@ -711,6 +748,7 @@ class FeishuBot(MediaMixin, SessionMixin):
         loop = self._loop
         if loop is None or loop.is_closed():
             log.error("Event loop is closed (detected in %s), forcing exit for launchd restart", caller)
+            self._emergency_flush()
             os._exit(1)
 
     def _start_loop_watchdog(self):
@@ -730,6 +768,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                 loop = self._loop
                 if loop is None or loop.is_closed():
                     log.error("Event loop watchdog: loop is closed, forcing exit for launchd restart")
+                    self._emergency_flush()
                     os._exit(1)
                 # Also verify the loop is responsive — schedule a no-op and check it runs
                 try:
@@ -739,6 +778,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                     if getattr(self, '_shutting_down', False):
                         return  # loop busy with shutdown, don't interfere
                     log.error("Event loop watchdog: loop unresponsive, forcing exit for launchd restart")
+                    self._emergency_flush()
                     os._exit(1)
 
         t = threading.Thread(target=_watchdog, name="loop-watchdog", daemon=True)
@@ -847,6 +887,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                 # _flush CancelledError handler will delete thinking card,
                 # but also clean up here in case of race
                 thinking_mid = self._thinking_cards.pop(key, None)
+                self._thinking_cards_ts.pop(key, None)
                 if thinking_mid:
                     asyncio.create_task(self._safe_delete_card(thinking_mid))
                 return
@@ -1053,7 +1094,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                          sender_name or sender_id[:8], sender_id[:8], chat_type, text[:100])
                 key = self._debounce_key(chat_type, chat_id, sender_id)
                 await self._enqueue(key, text, "", message_id, chat_id, chat_type, sender_id,
-                                    sender_name, debounce_seconds=0)
+                                    sender_name)
                 return
             elif msg_type == "location":
                 try:
@@ -1071,7 +1112,7 @@ class FeishuBot(MediaMixin, SessionMixin):
                 log.info("Location from %s: %s (%s, %s)", sender_id[:8], loc_name, lat, lng)
                 key = self._debounce_key(chat_type, chat_id, sender_id)
                 await self._enqueue(key, text, "", message_id, chat_id, chat_type, sender_id,
-                                    sender_name, debounce_seconds=0)
+                                    sender_name)
                 return
             elif msg_type == "audio":
                 key = self._debounce_key(chat_type, chat_id, sender_id)
@@ -1095,13 +1136,14 @@ class FeishuBot(MediaMixin, SessionMixin):
                 # Stash as thinking card so _flush reuses it (no duplicate card)
                 if hint_mid:
                     self._thinking_cards[key] = hint_mid
+                    self._thinking_cards_ts[key] = time.time()
                 # Cache transcription so quoted voice messages resolve to text
                 self._cache_reply(message_id, f"[语音转写] {transcription}")
                 text = f"[语音消息转写]\n{transcription}"
                 sender_name = user.name if user else ""
                 log.info("Voice from %s: %s", sender_id[:8], transcription[:100])
                 await self._enqueue(key, text, "", message_id, chat_id, chat_type, sender_id,
-                                    sender_name, debounce_seconds=0)
+                                    sender_name)
                 return
             elif msg_type == "interactive":
                 log.debug("Ignored interactive card message %s", message_id)
@@ -1230,10 +1272,10 @@ class FeishuBot(MediaMixin, SessionMixin):
         return self._pending[key]
 
     async def _enqueue(self, key, part, footer, message_id, chat_id, chat_type, sender_id,
-                       sender_name="", debounce_seconds=DEBOUNCE_SECONDS):
+                       sender_name=""):
         """Ensure batch exists and enqueue a part."""
         await self._ensure_batch(key, message_id, chat_id, chat_type, sender_id, sender_name)
-        await self._enqueue_part(key, part, footer, debounce_seconds=debounce_seconds)
+        await self._enqueue_part(key, part, footer, debounce_seconds=0)
 
     async def _enqueue_part(self, key, part, footer="", debounce_seconds=DEBOUNCE_SECONDS):
         """Add part to existing batch and reset timer."""
@@ -1315,6 +1357,11 @@ class FeishuBot(MediaMixin, SessionMixin):
                 if key not in self._pending:
                     break
 
+        # RAII cleanup: lock owner removes it when no pending work remains
+        if key not in self._pending and self._session_locks.get(key) is lock:
+            self._session_locks.pop(key, None)
+            log.debug("session lock cleaned: %s (active: %d)", key, len(self._session_locks))
+
     async def _update_queued_card(self, key, batch):
         """Show or move the queued indicator card under the latest message."""
         old_card = self._queued_cards.get(key)
@@ -1326,10 +1373,12 @@ class FeishuBot(MediaMixin, SessionMixin):
         )
         if card_id:
             self._queued_cards[key] = card_id
+            self._queued_cards_ts[key] = time.time()
 
     async def _delete_queued_card(self, key):
         """Remove queued indicator card if exists."""
         card_id = self._queued_cards.pop(key, None)
+        self._queued_cards_ts.pop(key, None)
         if card_id:
             await self._safe_delete_card(card_id)
 
@@ -1604,20 +1653,36 @@ class FeishuBot(MediaMixin, SessionMixin):
 
     def _sweep_dicts(self):
         """Periodic cleanup of unbounded dicts to prevent memory growth."""
-        # _session_locks: remove locks not currently held
-        for key in list(self._session_locks):
-            lock = self._session_locks.get(key)
-            if lock and not lock.locked():
-                del self._session_locks[key]
-        # _thinking_cards / _queued_cards: should be transient, but sweep stale
-        # (these are managed by _process_batch, so just cap size)
-        for d in (self._thinking_cards, self._queued_cards, self._running_tasks):
-            if len(d) > 100:
-                excess = list(d.keys())[:len(d) - 100]
-                for k in excess:
-                    d.pop(k, None)
-        # _rate_limits: remove entries with no recent activity
         now = time.time()
+
+        # _running_tasks: only release done tasks — pending tasks must keep their strong ref
+        done_tasks = [k for k, t in list(self._running_tasks.items()) if t.done()]
+        for k in done_tasks:
+            self._running_tasks.pop(k, None)
+        if done_tasks:
+            log.debug("Sweep: removed %d done task(s)", len(done_tasks))
+        pending_count = len(self._running_tasks)
+        if pending_count > 200:
+            log.warning("Sweep: %d pending tasks still running — possible leak", pending_count)
+
+        # _thinking_cards / _queued_cards: TTL-based cleanup, delete stale cards in Feishu
+        stale_cutoff = now - CARD_TTL
+        for card_dict, ts_dict, label in (
+            (self._thinking_cards, self._thinking_cards_ts, "thinking"),
+            (self._queued_cards, self._queued_cards_ts, "queued"),
+        ):
+            stale_keys = [
+                k for k, ts in list(ts_dict.items()) if ts < stale_cutoff
+            ]
+            for k in stale_keys:
+                msg_id = card_dict.pop(k, None)
+                ts_dict.pop(k, None)
+                if msg_id:
+                    asyncio.create_task(self._safe_delete_card(msg_id))
+            if stale_keys:
+                log.debug("Sweep: removed %d stale %s card(s)", len(stale_keys), label)
+
+        # _rate_limits: remove entries with no recent activity
         cutoff = now - 120
         for uid in list(self._rate_limits):
             if not self._rate_limits[uid] or max(self._rate_limits[uid]) < cutoff:

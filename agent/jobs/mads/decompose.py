@@ -156,8 +156,9 @@ async def decompose_design(router, design_content: str) -> list[dict]:
             system_prompt=DECOMPOSER_PROMPT,
         )
 
-        if raw.startswith("[ERROR]"):
-            log.warning("Decomposer agent returned error: %s", raw[:200])
+        from agent.jobs.maqs import _is_limit_banner
+        if raw.startswith("[ERROR]") or _is_limit_banner(raw):
+            log.warning("Decomposer agent returned error/limit banner: %s", raw[:200])
             continue
 
         # Parse XML sub-tickets

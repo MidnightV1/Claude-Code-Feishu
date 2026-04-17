@@ -66,6 +66,10 @@ _LONG_THINKING = [
 
 _ACTIVITY_MIN_INTERVAL = 5.0  # seconds between tool activity card updates
 
+# Lock protecting MEMORY.md read-modify-write in _process_reflect_hints.
+# Only the file I/O segment is locked; LLM evaluation runs outside the lock.
+_memory_write_lock = asyncio.Lock()
+
 # Transient error markers — keep session alive for retry
 _TRANSIENT_MARKERS = ("Timeout", "ld.so", "dl-open.c")
 
@@ -85,6 +89,42 @@ _EXPLORE_TAG_RE = re.compile(r'<next-explore>(.*)</next-explore>', re.DOTALL)
 _EXPLORE_OPEN_RE = re.compile(r'<next-explore>.*', re.DOTALL)
 _REFLECT_TAG_RE = re.compile(r'<next-reflect>(.*)</next-reflect>', re.DOTALL)
 _REFLECT_OPEN_RE = re.compile(r'<next-reflect>.*', re.DOTALL)
+
+# ═══ Quality gates for exploration / reflection (pull-driven mode) ═══
+# Design: see CLAUDE.md "反思循环" section. Principle — iteration must be
+# pulled by a user need, not pushed on a schedule. Each gate rejects candidates
+# that don't map to a real user signal.
+
+# Open-question detector: user message must contain a decision/uncertainty
+# pattern for exploration to seed. Pure task-execution messages don't qualify.
+_OPEN_QUESTION_RE = re.compile(
+    r"[?？]"                              # any question mark
+    r"|怎么办|怎么样|为什么|如何|是否"   # question words
+    r"|哪个|哪种|哪里|什么情况"
+    r"|要不要|该不该|能不能|可不可以"    # decision patterns
+    r"|还是|或者|两种.*方案|两个.*选"    # alternatives
+    r"|不确定|不知道|纠结|困惑|选项"    # uncertainty markers
+    r"|建议|推荐|看看|分析一下",          # request-for-judgment
+    re.IGNORECASE,
+)
+
+# Reply-signal classifier: reflection only fires when user's current message
+# carries a correction/question/negative-experience/non-conventional-adoption
+# signal. Neutral acknowledgements ("ok/好/收到") don't qualify.
+_CORRECTION_RE = re.compile(
+    r"不对|错了|应该是|别这样|不是这样|stop|停|错误的|不准确"
+    r"|重来|重做|你理解错|误解|搞错",
+    re.IGNORECASE,
+)
+_QUESTIONING_RE = re.compile(
+    r"真的吗|确定吗|再确认|为什么会|为什么要|为什么不|根据.*吗",
+    re.IGNORECASE,
+)
+# Signal weights for classification decision
+_REFLECT_TRIGGER_SIGNALS = ("correction", "questioning", "negative", "adoption")
+
+# 7-day cooldown log: track recent reflection topic hashes to dedupe
+_REFLECT_COOLDOWN_DAYS = 7
 
 
 class SessionMixin:
@@ -185,6 +225,7 @@ class SessionMixin:
             )
             if thinking_msg_id:
                 self._thinking_cards[key] = thinking_msg_id
+                self._thinking_cards_ts[key] = time.time()
         if batch.received_at:
             io_latency = time.time() - batch.received_at
             log.info("IO latency: %.0fms (recv → thinking card)", io_latency * 1000)
@@ -327,6 +368,7 @@ class SessionMixin:
                 if thinking_msg_id and key in self._thinking_cards:
                     asyncio.create_task(self._safe_delete_card(thinking_msg_id))
                     self._thinking_cards.pop(key, None)
+                    self._thinking_cards_ts.pop(key, None)
                 self.router.remove_last_round(session_key)
                 asyncio.create_task(self.router.save_session(session_key))
                 return
@@ -493,12 +535,18 @@ class SessionMixin:
                         _ms.update_state(_batch_mids, "failed")
 
             # ── Explore hints: async task creation (non-blocking) ──
+            # A-3 gate: user's original message passed for open-question detection
             if result and result.explore_hints:
-                asyncio.create_task(self._process_explore_hints(result.explore_hints))
+                asyncio.create_task(
+                    self._process_explore_hints(result.explore_hints, combined)
+                )
 
             # ── Reflect hints: async memory persistence (non-blocking) ──
+            # B gate: user's original message passed for signal classification
             if result and result.reflect_hints:
-                asyncio.create_task(self._process_reflect_hints(result.reflect_hints))
+                asyncio.create_task(
+                    self._process_reflect_hints(result.reflect_hints, combined)
+                )
         except asyncio.CancelledError:
             log.info("Flush cancelled for %s during setup (user recalled)", key)
             if thinking_msg_id:
@@ -524,6 +572,7 @@ class SessionMixin:
                 pass
         finally:
             self._thinking_cards.pop(key, None)
+            self._thinking_cards_ts.pop(key, None)
             self._running_tasks.pop(key, None)
             # Keep _msg_to_key entries for recall-after-completion support.
             if len(self._msg_to_key) > _MSG_KEY_MAP_MAX:
@@ -543,11 +592,15 @@ class SessionMixin:
 
     # ═══ Explore Hints Processing ═══
 
-    async def _process_explore_hints(self, raw_text: str):
+    async def _process_explore_hints(self, raw_text: str, user_text: str = ""):
         """Extract <next-explore> content and create Feishu tasks asynchronously.
 
         Runs as fire-and-forget task after reply is sent. Errors are logged,
         never propagated. Uses Sonnet to evaluate hints, then task_ctl to create tasks.
+
+        Pull-driven gate (A-3 hybrid mode): only proceeds when user's current
+        message carries an open-question signal. Sentinel/briefing crons retain
+        their own proactive triggers via separate code paths.
         """
         try:
             match = _EXPLORE_TAG_RE.search(raw_text)
@@ -557,6 +610,15 @@ class SessionMixin:
             if not hints_text:
                 return
 
+            # A-3 gate: pull-driven — user message must contain an open question
+            if user_text and not _OPEN_QUESTION_RE.search(user_text):
+                log.info(
+                    "Explore hints dropped (no open-question signal in user msg, "
+                    "len=%d): %s",
+                    len(user_text), hints_text[:120],
+                )
+                return
+
             log.info("Explore hints captured: %s", hints_text[:200])
 
             # Evaluate hints with Goal Tree context (Sonnet, moderate depth)
@@ -564,8 +626,10 @@ class SessionMixin:
             _tree = _gt.load()
             _tree_ctx = _gt.format_for_prompt(_tree, max_goals=5)
 
+            _user_quote = (user_text or "")[:400]
             eval_prompt = (
                 "你是探索方向评估专家。严格筛选，宁缺勿滥。\n\n"
+                f"## 用户原话（决策触发点）\n```\n{_user_quote}\n```\n\n"
                 f"## 系统目标\n{_tree_ctx}\n\n"
                 f"## 候选方向\n{hints_text}\n\n"
                 "## 通过条件（必须全部满足）\n"
@@ -574,12 +638,15 @@ class SessionMixin:
                 "2. **信息缺口**：答案是否需要外部搜索/实验/深度代码分析才能得到？"
                 "如果读 10 分钟代码就能回答，淘汰。\n"
                 "3. **杠杆效应**：解决后能消除一类问题还是只解决一个点？"
-                "只解决一个点的，淘汰。\n\n"
+                "只解决一个点的，淘汰。\n"
+                "4. **用户关联**：探索方向必须能追溯到用户原话中的未决问题或决策点。"
+                "如果用户原话与候选方向无关联（凭空发散），淘汰。\n\n"
                 "## 直接淘汰\n"
                 "- 部署验证、运维确认、配置检查\n"
                 "- 已知答案但还没执行的事项（那是任务不是探索）\n"
                 "- 过于宽泛无法用数据回答的问题\n"
-                "- 和系统目标无关的技术好奇心\n\n"
+                "- 和系统目标无关的技术好奇心\n"
+                "- 用户原话是执行类任务（要求你做某事），却派生出探索 → 淘汰\n\n"
                 "通过筛选的方向输出 JSON 数组：\n"
                 '```json\n[{"title": "具体的决策问题（问句形式）", "priority": "P1", '
                 '"goal_id": "G1", "rationale": "一句话：回答这个问题后，什么决策会改变"}]\n```\n'
@@ -652,12 +719,104 @@ class SessionMixin:
 
     # ═══ Reflect Hints Processing ═══
 
-    async def _process_reflect_hints(self, raw_text: str):
+    def _classify_reply_signal(self, user_text: str) -> str:
+        """Classify user message into reflection-trigger categories.
+
+        Returns one of: correction / questioning / negative / adoption / neutral.
+        Only the first four proceed to reflection evaluation.
+
+        Heuristic layer only — fast regex detection. Sonnet evaluator later
+        filters out false positives via evidence anchoring.
+        """
+        if not user_text:
+            # No user text (e.g. orchestrator callback) → can't classify, drop
+            return "neutral"
+        text = user_text.strip()
+        if not text:
+            return "neutral"
+        # Explicit correction is the highest-weight signal
+        if _CORRECTION_RE.search(text):
+            return "correction"
+        if _QUESTIONING_RE.search(text):
+            return "questioning"
+        # Short acknowledgements are neutral regardless of keyword matches
+        # (e.g. "好的" / "收到" / "ok")
+        stripped = re.sub(r"\s+", "", text)
+        if len(stripped) <= 6 and re.match(r"^(好|好的|ok|OK|收到|嗯|行|可以|go|继续|对)[.!。！,，]?$", stripped):
+            return "neutral"
+        # Long messages with exploratory verbs → non-conventional adoption /
+        # decision-making context (may carry latent corrections)
+        if len(text) >= 60 and re.search(r"我觉得|我认为|我的想法|对了|另外|反过来|换个角度", text):
+            return "adoption"
+        # Repeat-question or topic-return signals (weak negative experience)
+        if re.search(r"还是.*没|仍然.*没|一直.*没|为啥.*还|怎么.*还|再说.*遍", text):
+            return "negative"
+        return "neutral"
+
+    def _reflect_cooldown_hit(self, hints_text: str) -> bool:
+        """Check if a similar reflection was logged within the cooldown window.
+
+        Uses a cheap topic-hash based on leading 40 chars of hints (normalized).
+        Not semantic dedup — that's the evaluator's job. This is just a fast
+        short-circuit to prevent spammy repeat emissions within 7 days.
+        """
+        import hashlib
+        import json as _json
+        from pathlib import Path as _Path
+        import time as _time
+        try:
+            proj = _Path(__file__).resolve().parent.parent.parent.parent
+            log_path = proj / "data" / "reflect_cooldown.jsonl"
+            # Normalize: strip whitespace + take head
+            norm = re.sub(r"\s+", "", hints_text)[:120]
+            topic_hash = hashlib.md5(norm.encode("utf-8", errors="ignore")).hexdigest()[:12]
+            now = _time.time()
+            cutoff = now - _REFLECT_COOLDOWN_DAYS * 86400
+
+            # Read existing entries
+            kept: list[dict] = []
+            hit = False
+            if log_path.exists():
+                try:
+                    for line in log_path.read_text(errors="replace").splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = _json.loads(line)
+                        except _json.JSONDecodeError:
+                            continue
+                        if entry.get("ts", 0) < cutoff:
+                            continue
+                        kept.append(entry)
+                        if entry.get("hash") == topic_hash:
+                            hit = True
+                except OSError:
+                    pass
+
+            if hit:
+                return True
+
+            # Append new entry, rewrite (also prunes expired)
+            kept.append({"ts": now, "hash": topic_hash, "head": norm[:60]})
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text("\n".join(_json.dumps(e, ensure_ascii=False) for e in kept) + "\n")
+            return False
+        except Exception as e:
+            log.warning("Reflect cooldown check failed (fail-open): %s", e)
+            return False
+
+    async def _process_reflect_hints(self, raw_text: str, user_text: str = ""):
         """Extract <next-reflect> content and persist as memory.
 
-        Pipeline: extract → Sonnet evaluate (novelty + generalizability) →
+        Pipeline: extract → signal classification → cooldown check →
+        Sonnet evaluate (novelty + generalizability) →
         write memory file → update MEMORY.md index.
         feedback type: auto-persist (L1). soul/cognition type: notify user (L2).
+
+        Signal gate (B mode): reflection only fires when user's current message
+        carries correction / questioning / negative-experience / non-conventional
+        adoption signals. Neutral acknowledgements are dropped.
         """
         try:
             match = _REFLECT_TAG_RE.search(raw_text)
@@ -667,7 +826,23 @@ class SessionMixin:
             if not hints_text:
                 return
 
-            log.info("Reflect hints captured: %s", hints_text[:200])
+            # B gate: signal classification — cheap regex first, Sonnet later
+            signal_kind = self._classify_reply_signal(user_text)
+            if signal_kind == "neutral":
+                log.info(
+                    "Reflect hints dropped (neutral user signal, len=%d): %s",
+                    len(user_text), hints_text[:120],
+                )
+                return
+            log.info(
+                "Reflect hints captured (signal=%s): %s",
+                signal_kind, hints_text[:200],
+            )
+
+            # Cooldown check: skip if same topic reflected within 7 days
+            if self._reflect_cooldown_hit(hints_text):
+                log.info("Reflect hints dropped (cooldown hit): %s", hints_text[:120])
+                return
 
             # Load existing MEMORY.md to check for duplicates
             from pathlib import Path as _Path
@@ -681,14 +856,23 @@ class SessionMixin:
             if memory_index.exists():
                 existing_index = memory_index.read_text()
 
+            # Truncate user_text for the prompt (avoid blowing context)
+            _user_quote = (user_text or "")[:400]
             eval_prompt = (
                 "你是反思评估专家。评估以下从互动中提炼的模式/原则是否值得持久化为记忆。\n\n"
+                f"## 用户原话（触发信号=`{signal_kind}`）\n```\n{_user_quote}\n```\n\n"
                 f"## 现有记忆索引\n```\n{existing_index[:2000]}\n```\n\n"
                 f"## 候选反思\n{hints_text}\n\n"
                 "## 评估标准（全部满足才通过）\n"
                 "1. **新颖性**：现有记忆中没有覆盖相同或近似的知识\n"
                 "2. **可泛化**：不是特定任务细节，而是跨场景适用的模式\n"
-                "3. **行为指导性**：记住它会具体改变未来的行为\n\n"
+                "3. **行为指导性**：记住它会具体改变未来的行为\n"
+                "4. **证据锚定**：候选反思必须能追溯到用户原话中的具体表述或明确的行为纠正。"
+                "如果反思内容与用户原话没有直接对应关系（凭空抽象、过度引申），判定为不通过。\n\n"
+                "## 直接淘汰\n"
+                "- 用户只是正常下任务/给反馈，没有纠正/质疑/明显摩擦 → 不通过\n"
+                "- 反思内容是显而易见的通识（如\"注意安全\"、\"要测试\"） → 不通过\n"
+                "- 现有记忆已覆盖同类知识（即使表述不同） → 不通过\n\n"
                 "## 输出格式\n"
                 "通过的输出 JSON：\n"
                 '```json\n{"pass": true, "type": "feedback|soul|cognition", '
@@ -805,23 +989,30 @@ class SessionMixin:
                 f"---\n\n"
                 f"{content}\n"
             )
-            filepath.write_text(memory_content)
-            log.info("Reflect memory written: %s", filepath)
 
-            # Update MEMORY.md index
-            index_line = f"- [{title}]({filename}) — {description}"
-            if filename not in existing_index:
-                # Append under Feedback section
-                if "## Feedback" in existing_index:
-                    updated = existing_index.replace(
-                        "## Feedback",
-                        f"## Feedback\n{index_line}",
-                        1,
-                    )
-                else:
-                    updated = existing_index.rstrip() + f"\n\n## Feedback\n{index_line}\n"
-                memory_index.write_text(updated)
-                log.info("MEMORY.md index updated with: %s", title)
+            # Lock only the file I/O segment (double-read pattern):
+            # re-read MEMORY.md inside the lock to get the freshest version,
+            # preventing concurrent tasks from overwriting each other's index line.
+            async with _memory_write_lock:
+                memory_dir.mkdir(parents=True, exist_ok=True)
+                filepath.write_text(memory_content)
+                log.info("Reflect memory written: %s", filepath)
+
+                # Update MEMORY.md index
+                fresh_index = memory_index.read_text() if memory_index.exists() else ""
+                index_line = f"- [{title}]({filename}) — {description}"
+                if filename not in fresh_index:
+                    # Append under Feedback section
+                    if "## Feedback" in fresh_index:
+                        updated = fresh_index.replace(
+                            "## Feedback",
+                            f"## Feedback\n{index_line}",
+                            1,
+                        )
+                    else:
+                        updated = fresh_index.rstrip() + f"\n\n## Feedback\n{index_line}\n"
+                    memory_index.write_text(updated)
+                    log.info("MEMORY.md index updated with: %s", title)
 
         except Exception as e:
             log.error("Reflect hints processing error: %s", e, exc_info=True)
@@ -923,8 +1114,7 @@ class SessionMixin:
             append_markdown_to_doc(api, doc_id, text)
 
             # Share to user
-            cfg = getattr(self, '_config', {}) or {}
-            share_to = cfg.get("heartbeat", {}).get("notify_open_id", "")
+            share_to = getattr(self.heartbeat, 'notify_open_id', '') or ''
             if share_to:
                 api.post(
                     f"/open-apis/drive/v1/permissions/{doc_id}/members",
@@ -993,29 +1183,36 @@ class SessionMixin:
     def _expand_merged_forward(self, message_id: str, max_messages: int = 50) -> str:
         """Expand a merged-forwarded message by fetching sub-messages.
 
-        Feishu merged-forward sends a placeholder text. The actual sub-messages
-        can be fetched via the message list API with upper_message_id filter.
+        Feishu's GET /open-apis/im/v1/messages/{message_id} for a merge_forward
+        message returns ALL sub-messages in items[]: the first item is the
+        merge_forward placeholder, the rest carry upper_message_id pointing
+        back to the merge_forward and contain the actual quoted content.
+
+        Earlier implementation tried container_id_type=thread which is for a
+        different feature (in-chat threading) and rejected merge_forward IDs
+        with code=230001 invalid container_id.
         """
         try:
             resp = self._feishu_api.get(
-                "/open-apis/im/v1/messages",
-                params={
-                    "container_id_type": "thread",
-                    "container_id": message_id,
-                    "page_size": str(max_messages),
-                },
+                f"/open-apis/im/v1/messages/{message_id}",
             )
             if resp.get("code") != 0:
-                log.warning("Failed to expand merged-forward %s: %s",
-                            message_id, resp.get("msg"))
+                log.warning(
+                    "Failed to expand merged-forward %s: %s",
+                    message_id, resp.get("msg"),
+                )
                 return ""
             items = resp.get("data", {}).get("items", [])
             if not items:
-                log.info("No sub-messages found for merged-forward %s", message_id)
+                log.info("No items found for merged-forward %s", message_id)
                 return ""
 
             parts = ["[合并转发消息内容]"]
             for item in items[:max_messages]:
+                # Skip the merge_forward placeholder itself
+                if (item.get("message_id") == message_id
+                        or item.get("msg_type") == "merge_forward"):
+                    continue
                 msg_type = item.get("msg_type", "")
                 sender_id_short = item.get("sender", {}).get("id", "")[:8]
                 body = item.get("body", {}).get("content", "")

@@ -94,15 +94,21 @@ def test_hardgate_reject_sets_status_open():
     )
 
 
-def test_run_pipeline_picks_up_fixing_tickets():
-    """run_maqs_pipeline must query both status='open' AND status='fixing'."""
+def test_run_pipeline_queries_open_tickets():
+    """run_maqs_pipeline queries status='open'. Stale 'fixing' tickets are
+    resurfaced via _reset_stale_intermediate_tickets before the query runs."""
     from agent.jobs import maqs
 
     query_calls = []
+    reset_called = []
 
     async def capture_query(app_token, table_id, filter_str="", limit=10):
         query_calls.append(filter_str)
         return []
+
+    async def capture_reset(app_token, table_id):
+        reset_called.append(True)
+        return 0
 
     async def run():
         router = MagicMock()
@@ -110,7 +116,7 @@ def test_run_pipeline_picks_up_fixing_tickets():
         config = {"bitable_app_token": "app1", "bitable_table_id": "tbl1"}
 
         with (
-            patch.object(maqs, "_reset_stale_intermediate_tickets", new=AsyncMock(return_value=0)),
+            patch.object(maqs, "_reset_stale_intermediate_tickets", new=AsyncMock(side_effect=capture_reset)),
             patch.object(maqs, "_bitable_query", new=AsyncMock(side_effect=capture_query)),
             patch.object(maqs, "_worktree_cleanup_stale", new=AsyncMock()),
         ):
@@ -118,13 +124,11 @@ def test_run_pipeline_picks_up_fixing_tickets():
 
     asyncio.run(run())
 
+    assert reset_called, "Stale reset must run before the open-tickets query"
     assert query_calls, "Expected _bitable_query to be called"
     filter_used = query_calls[0]
-    assert "fixing" in filter_used, (
-        f"Pipeline filter must include 'fixing', got: {filter_used!r}"
-    )
-    assert "open" in filter_used, (
-        f"Pipeline filter must still include 'open', got: {filter_used!r}"
+    assert 'status]="open"' in filter_used, (
+        f"Pipeline filter must target open tickets, got: {filter_used!r}"
     )
 
 

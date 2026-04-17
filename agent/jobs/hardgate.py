@@ -194,15 +194,31 @@ class Hardgate:
 
     async def _check_prompt_changes(self, fix_branch: str,
                                       workdir: str | None = None) -> dict:
-        """Detect prompt/system_prompt assignments in fix branch diff (deterministic grep)."""
+        """Detect prompt/system_prompt assignments that actually changed value.
+
+        Pairs added (+) and removed (-) PROMPT/system_prompt lines as multisets:
+        a pure reshuffle (identical content on both sides) is not flagged. Only
+        unmatched additions signal a real prompt change.
+        """
         _run = (lambda *a: _git_in(workdir, *a)) if workdir else _git
         rc, out, err = await _run("diff", f"dev...{fix_branch}")
         if rc != 0:
             return {"ok": True, "prompt_changes": False, "output": err}
-        changed = bool(
-            re.search(r"^\+[^+].*PROMPT\s*=", out, re.MULTILINE)
-            or re.search(r"^\+[^+].*system_prompt\s*=", out, re.MULTILINE)
-        )
+        pat = re.compile(r".*(?:PROMPT|system_prompt)\s*=")
+        added: list[str] = []
+        removed: list[str] = []
+        for line in out.splitlines():
+            if not line or line[:3] in ("+++", "---"):
+                continue
+            if line[0] == "+":
+                content = line[1:]
+                if pat.match(content):
+                    added.append(content)
+            elif line[0] == "-":
+                content = line[1:]
+                if pat.match(content):
+                    removed.append(content)
+        changed = sorted(added) != sorted(removed)
         return {"ok": not changed, "prompt_changes": changed, "output": ""}
 
     async def _check_diff_scope(self, fix_branch: str, allowed_files: list[str],

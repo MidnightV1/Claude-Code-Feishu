@@ -113,7 +113,8 @@ async def _start_design(router, dispatcher, app_token, table_id,
 
     design_content = await generate_design(router, ticket_info)
 
-    if design_content.startswith("[ERROR]"):
+    from agent.jobs.maqs import _is_limit_banner
+    if design_content.startswith("[ERROR]") or _is_limit_banner(design_content):
         log.error("[MADS] Design failed for %s: %s", ticket_id, design_content[:200])
         await bitable_update(app_token, table_id, record_id, {
             "status": "stalled",
@@ -322,7 +323,7 @@ async def process_atomic_with_contract(
     Flow: Contract → Fix → QA (enhanced version of MAQS process_ticket).
     Falls back to standard MAQS flow if contract negotiation fails.
     """
-    from agent.jobs.maqs import process_ticket, fix_ticket, qa_review, diagnose_ticket
+    from agent.jobs.maqs import _is_garbage_diagnosis, process_ticket, fix_ticket, qa_review, diagnose_ticket
 
     ticket_id = ticket.get("title", record_id[:8])
     status = ticket.get("status", "open")
@@ -387,7 +388,7 @@ async def process_atomic_with_contract(
 
         diagnosis = await diagnose_ticket(router, ticket_info)
 
-        if diagnosis.startswith("[ERROR]"):
+        if diagnosis.startswith("[ERROR]") or _is_garbage_diagnosis(diagnosis):
             await bitable_update(app_token, table_id, record_id, {
                 "status": "stalled",
                 "diagnosis": diagnosis,

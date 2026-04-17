@@ -11,6 +11,12 @@ _NOISE_PATTERNS = [
     "RequestsDependencyWarning",
     "Startup notification",
     "Rate limited:",
+    "You've hit your limit",
+    "you hit your limit",
+    "hit your limit",
+    "rate limit",
+    "rate-limit",
+    "overloaded",
 ]
 
 _lock = threading.Lock()
@@ -26,8 +32,9 @@ class ErrorTrackerHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             msg = record.getMessage()
+            msg_lower = msg.lower()
             for pattern in _NOISE_PATTERNS:
-                if pattern in msg:
+                if pattern.lower() in msg_lower:
                     return
 
             error_type = record.levelname

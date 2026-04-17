@@ -12,9 +12,10 @@ Shared infrastructure lives in agent.jobs.mads.helpers (extracted for MADS reuse
 
 import asyncio
 import logging
+import os
 
 from agent.infra.merge_queue import MergeQueue, MergeRequest
-from agent.infra.models import LoopPhase
+from agent.infra.models import LoopPhase, TicketContext
 from agent.jobs.mads.helpers import (
     bitable_add as _bitable_add,
     bitable_query as _bitable_query,
@@ -33,6 +34,7 @@ from agent.jobs.mads.helpers import (
     worktree_merge_to_dev as _worktree_merge_to_dev,
     worktree_remove as _worktree_remove,
     write_artifact,
+    WORKTREE_BASE as _WORKTREE_BASE,
 )
 
 log = logging.getLogger("hub.maqs")
@@ -96,6 +98,50 @@ def _parse_experience_summary(diagnosis: str) -> str:
     return ""
 
 
+def _is_limit_banner(text: str) -> bool:
+    """Detect Claude CLI rate-limit / overload banners (content-agnostic).
+
+    Use this for non-diagnosis outputs (fix_report, design, decomposition)
+    where short text is legitimate but banners must still short-circuit.
+    """
+    if not text:
+        return False
+    normalized = " ".join(text.lower().split())
+    if any(pattern in normalized for pattern in (
+        "you've hit your limit",
+        "you hit your limit",
+        "hit your limit",
+        "rate limit",
+        "rate-limit",
+        "overloaded",
+    )):
+        return True
+    if "503" in normalized:
+        return True
+    if "resets" in normalized and ("limit" in normalized or "rate" in normalized):
+        return True
+    return False
+
+
+def _is_garbage_diagnosis(text: str) -> bool:
+    """Reject known CLI garbage text while allowing minimal structured mock diagnosis."""
+    if _is_limit_banner(text):
+        return True
+    stripped = text.strip()
+    if (
+        len(stripped) < 100
+        and "<affected-files>" not in stripped
+        and "<diagnosis_meta>" not in stripped
+    ):
+        return True
+    # Structured diagnosis with <diagnosis_meta> but no affected_files = invalid
+    if "<diagnosis_meta>" in stripped:
+        from agent.jobs.hardgate import parse_affected_files
+        if not parse_affected_files(text):
+            return True
+    return False
+
+
 _VALID_COMPLEXITY = {"L1", "L2", "L3", "L4", "L5"}
 
 
@@ -112,8 +158,11 @@ def _parse_workflow_steps(diagnosis: str) -> list[dict]:
         return []
     try:
         steps = _json.loads(m.group(1).strip())
-        if not isinstance(steps, list) or len(steps) < 2:
+        if not isinstance(steps, list):
             log.warning("workflow_steps: expected list with 2+ items, got %s", type(steps).__name__)
+            return []
+        if len(steps) < 2:
+            log.warning("workflow_steps: expected list with 2+ items, got list with %d item(s)", len(steps))
             return []
         if len(steps) > 7:
             log.warning("workflow_steps: %d steps exceeds limit 7, truncating", len(steps))
@@ -345,6 +394,89 @@ def _parse_discoveries(text: str) -> list[str]:
     return items
 
 
+def _is_gitignored_artifact(desc: str) -> bool:
+    """Detect worktree-only discovery noise caused by gitignored artifacts."""
+    m = _re_xml.match(r"\[([^\]:]+)(?::\d+)?\]", desc.strip())
+    if not m:
+        return False
+    rel_path = m.group(1).strip().lstrip("./")
+    if not rel_path:
+        return False
+    whitelist = (
+        "config.yaml",
+        "data/",
+        "__pycache__/",
+        ".worktrees/",
+        ".gemini/",
+    )
+    if not any(rel_path == item.rstrip("/") or rel_path.startswith(item) for item in whitelist):
+        return False
+    module_path = os.path.abspath(__file__)
+    marker = f"{os.sep}.worktrees{os.sep}"
+    if marker in module_path:
+        project_root = module_path.split(marker, 1)[0]
+    else:
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(module_path)))
+    return os.path.exists(os.path.join(project_root, rel_path))
+
+
+# Hallucination signals: phrases that suggest the LLM is inventing an issue
+# from stale design docs or half-remembered code. Case-insensitive, substring.
+_DISCOVERY_HALLUCINATION_KEYWORDS = (
+    "早已修",
+    "应该存在",
+    "should exist",
+    "design doc",
+    "设计文档",
+    "todo: implement",
+    "not yet implemented",
+    "尚未实现",
+    "未落地",
+    "hypothetical",
+    "推测性",
+)
+
+
+def _validate_discovery_premise(desc: str, wt_path: str | None) -> tuple[bool, str]:
+    """Gate discovery tickets before persistence.
+
+    Checks: file path exists in worktree HEAD, line number within bounds,
+    description free of hallucination-signal keywords.
+
+    Returns (accept, reason). Logs are the caller's responsibility.
+    """
+    m = _re_xml.match(r"\[([^\]:]+)(?::(\d+))?\]\s*(.*)", desc.strip(), _re_xml.DOTALL)
+    if not m:
+        return True, "no_file_ref"  # free-form discoveries pass; only claims-about-files get validated
+    rel_path = m.group(1).strip().lstrip("./")
+    line_no = int(m.group(2)) if m.group(2) else 0
+    body = m.group(3) or ""
+
+    # (a) File existence in worktree (proxy for HEAD; worktree mirrors committed state at branch point)
+    if wt_path:
+        fpath = os.path.join(wt_path, rel_path)
+        if not os.path.exists(fpath):
+            return False, "file_not_found"
+
+        # (b) Line number within file bounds
+        if line_no > 0:
+            try:
+                with open(fpath, encoding="utf-8", errors="replace") as _fh:
+                    line_count = sum(1 for _ in _fh)
+                if line_no > line_count:
+                    return False, "line_out_of_bounds"
+            except OSError:
+                pass  # unreadable — don't block on IO errors
+
+    # (c) Hallucination-signal keywords in description
+    body_lower = body.lower()
+    for kw in _DISCOVERY_HALLUCINATION_KEYWORDS:
+        if kw in body_lower:
+            return False, f"hallucination_signal:{kw}"
+
+    return True, "ok"
+
+
 def _parse_control_signal(text: str) -> tuple[str, str] | None:
     """Extract control signal from agent output. Returns (signal, reason) or None."""
     m = _re_xml.search(r'<control signal="(\w+)">(.*?)</control>', text, _re_xml.DOTALL)
@@ -353,7 +485,7 @@ def _parse_control_signal(text: str) -> tuple[str, str] | None:
     return None
 
 
-_STALE_INTERMEDIATE_STATES = ["diagnosing", "fixing", "testing", "reviewing", "visual_qa"]
+_STALE_INTERMEDIATE_STATES = ["diagnosing", "diagnosed", "fixing", "testing", "reviewing", "visual_qa"]
 
 
 async def _reset_stale_intermediate_tickets(app_token: str, table_id: str) -> int:
@@ -374,6 +506,15 @@ async def _reset_stale_intermediate_tickets(app_token: str, table_id: str) -> in
             rid = t.get("record_id", "")
             if not rid:
                 continue
+            # For "fixing" state, skip reset if the worktree directory still exists —
+            # that indicates an active fix-agent subprocess is running inside it.
+            # Destroying an active worktree causes FileNotFoundError in the subprocess.
+            if state == "fixing":
+                safe_name = f"fix_MAQS-{rid[:8]}"
+                wt_path = os.path.join(_WORKTREE_BASE, safe_name)
+                if os.path.exists(wt_path):
+                    log.info("MAQS: skipping reset for %s — active worktree detected", rid[:8])
+                    continue
             # Clean up any residual fix branch
             branch = f"fix/MAQS-{rid[:8]}"
             await _git("branch", "-D", branch)  # ignore failure; branch may not exist
@@ -484,7 +625,8 @@ INVESTIGATOR_PROMPT = """\
 <atomic_split>none</atomic_split>
 <workflow_steps>
 [
-  {{"content": "步骤描述（祈使句）", "affected_files": ["path/to/file.py"], "verification": "验证命令或检查点"}}
+  {{"content": "更新生产代码中的目标逻辑", "affected_files": ["src/module.py"], "verification": "python3 -m pytest tests/unit/test_module.py -k target_case"}}
+  {{"content": "补充覆盖该场景的单元测试", "affected_files": ["tests/unit/test_module.py"], "verification": "grep -n 'target_case' tests/unit/test_module.py"}}
 ]
 </workflow_steps>
 </diagnosis_meta>
@@ -493,6 +635,7 @@ INVESTIGATOR_PROMPT = """\
 - 每步是**一个单一、聚焦的修改动作**，不可再有意义地拆分
 - 每步必须有具体的 verification（可执行的验证命令）
 - 每步的 affected_files 是该步骤的修改范围（子集于总 affected_files）
+- verification 中要求新增或修改的文件必须同时列入本步骤的 affected_files（典型场景：verification 要求添加测试用例时，目标测试文件必须入列）
 - 步骤按依赖顺序排列
 - 数量控制：2-7 步。少于 2 步说明拆分不够，超过 7 步说明工单应升级为 composite
 - 如果某步发现 scope 外的同类问题，该步的 content 必须写成"**检查**同类问题并上报发现"，不是"**修复**同类问题"——scope 外问题通过 `<discovery>` 提交衍生工单
@@ -506,6 +649,8 @@ INVESTIGATOR_PROMPT = """\
 
 判定优先级：先看 affected_files 数量，再看改动性质。**宁可高估不可低估**——L2 误判为 L3 只多一轮 contract，L3 误判为 L2 可能漏掉跨文件关联。
 
+**[强制]** `<complexity>` 标签内容只能是 `L1`/`L2`/`L3`/`L4`/`L5` 五个值之一，不可附加任何文字或标点。缺少此标签或格式错误将导致下游流水线路由失败。
+
 如需原子拆分，<atomic_split> 格式为多行列表：
 <atomic_split>
 - 子工单1标题
@@ -517,7 +662,31 @@ INVESTIGATOR_PROMPT = """\
 - 需要升级为人工处理（置信度不足或风险过高）：`<control signal="ESCALATE">原因</control>`
 - 需要等待外部信息（如用户确认或第三方 API 响应）：`<control signal="PAUSE">等待什么</control>`
 
-只输出上述格式的诊断报告，不要其他文字。"""
+只输出上述格式的诊断报告，不要其他文字。
+
+════════════════════════════════════════════════════════════════════
+## 强制响应终结模板（必须作为回复的最后一段完整输出）
+
+你的输出**必须**以下述 XML 块收尾，每个字段都要填入实际值（不要保留占位符，不要省略任何标签）。**缺失或格式错误将导致工单被判定为无效并需要人工介入**。
+
+<diagnosis_meta>
+<affected_files>
+- path/to/file1.py
+- path/to/file2.py
+</affected_files>
+<complexity_rationale>一句话说明复杂度判定依据</complexity_rationale>
+<complexity>L2</complexity>
+<experience_summary>一句话可复用经验</experience_summary>
+<atomic_split>none</atomic_split>
+<workflow_steps>
+[
+  {"content": "...", "affected_files": ["..."], "verification": "..."}
+]
+</workflow_steps>
+</diagnosis_meta>
+
+`<complexity>` 仅允许 `L1`/`L2`/`L3`/`L4`/`L5` 五个值之一——不要加空格、标点、注释或中文解释。
+════════════════════════════════════════════════════════════════════"""
 
 IMPLEMENTER_PROMPT = """\
 你是 claude-code-feishu 的修复 agent。基于诊断报告和步骤清单实施修复。
@@ -563,7 +732,7 @@ IMPLEMENTER_PROMPT = """\
 对每个步骤报告执行结果。
 
 ### Commit 信息草稿
-（格式：fix(MAQS-{{ticket_id}}): 简要描述）
+（格式：fix(MAQS-{ticket_id}): 简要描述）
 
 ## 控制块（必须在报告最后输出）
 
@@ -578,12 +747,78 @@ IMPLEMENTER_PROMPT = """\
 <modified_files>
 - path/to/file1.py
 </modified_files>
-<commit_message>fix(MAQS-{{ticket_id}}): 简要描述</commit_message>
+<commit_message>fix(MAQS-{ticket_id}): 简要描述</commit_message>
 </fix_meta>
 
 ## 发现上报（scope 外问题）
 
 修复过程中如果发现步骤清单范围之外的问题，**不要直接修改**，用 `<discovery>` 块上报：
+
+<discovery>
+- [path/to/file.py:行号] 问题描述
+</discovery>
+
+## 诊断挑战（仅在诊断明显错误时使用）
+
+`<control signal="CHALLENGE_DIAGNOSIS">具体理由</control>`
+
+完成修改后，执行 `git add` 暂存变更的文件。只输出上述格式的报告。"""
+
+
+IMPLEMENTER_PROMPT_LEGACY = """\
+你是 claude-code-feishu 的修复 agent。基于诊断报告实施修复。
+
+## 诊断报告
+{diagnosis}
+
+## 金标准验证数据（如有）
+{golden_data}
+
+## 执行规则（硬性约束）
+
+### Legacy 执行模式
+1. 直接根据诊断报告实施修复，不依赖步骤清单
+2. affected_files 是唯一硬边界；如果未提供 affected_files，不要扩展修改范围
+3. 禁止做诊断报告之外的任何修改
+4. 如果上轮修复被拒绝，必须显式避免重复同类问题
+
+### 范围闭合（最高优先级）
+affected_files 是硬边界。未列入的文件一律不动，包括：
+- 其他 prompt 变量（`GATEKEEPER_PROMPT`、`DESIGNER_PROMPT` 等）
+- 调用方函数（`process_ticket`、`fix_ticket` 等），除非 affected_files 明确列入
+- 任何"顺手优化"的代码
+
+### 禁止清单（硬性禁止，不可例外）
+- **禁止创建新函数**：不得创建诊断报告未要求的新 `def` 或 `class`
+- **禁止修改 prompt 变量**：`*_PROMPT` 变量只有在 affected_files 明确指向时才能改
+- **禁止引入计划外 import**：不得 import 诊断报告未提及的模块
+- **禁止重构**：不得改变未受影响的代码结构、变量名、注释
+
+### 量化锚定
+典型 bug fix 改动量：5-30 行。超过 50 行需自检是否越界。超过 100 行视为越界。
+
+{retry_section}
+
+## 输出格式
+
+### 执行报告
+说明你如何依据诊断报告完成修复。
+
+### Commit 信息草稿
+（格式：fix(MAQS-{ticket_id}): 简要描述）
+
+## 控制块（必须在报告最后输出）
+
+<fix_meta>
+<modified_files>
+- path/to/file1.py
+</modified_files>
+<commit_message>fix(MAQS-{ticket_id}): 简要描述</commit_message>
+</fix_meta>
+
+## 发现上报（scope 外问题）
+
+修复过程中如果发现诊断报告范围之外的问题，**不要直接修改**，用 `<discovery>` 块上报：
 
 <discovery>
 - [path/to/file.py:行号] 问题描述
@@ -679,7 +914,22 @@ GATEKEEPER_PROMPT = """\
 <reason>一句话判定理由</reason>
 </qa_verdict>
 
-注意：控制块是机器解析的唯一依据，必须与你的分析结论一致。只输出上述格式的报告 + 控制块。"""
+注意：控制块是机器解析的唯一依据，必须与你的分析结论一致。只输出上述格式的报告 + 控制块。
+
+════════════════════════════════════════════════════════════════════
+## 强制响应终结模板（必须作为回复的最后一段完整输出）
+
+你的回复**必须**以下述 XML 块收尾，所有字段都要填入实际值。**缺少或格式错误直接判为 REJECT 并触发完整重试**。
+
+<qa_verdict>
+<result>PASS</result>
+<signals_verified>3</signals_verified>
+<signals_failed>0</signals_failed>
+<reason>一句话判定理由</reason>
+</qa_verdict>
+
+`<result>` 仅允许 `PASS`/`PARTIAL_REJECT`/`REJECT` 三个值之一。
+════════════════════════════════════════════════════════════════════"""
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -756,6 +1006,7 @@ async def fix_ticket(router, diagnosis: str, ticket_id: str,
     diag = _strip_task_analysis(diagnosis)
 
     # Build workflow steps section
+    prompt_template = IMPLEMENTER_PROMPT
     if workflow and workflow.steps:
         wf_text = _format_workflow_for_prompt(workflow)
         retry_section = ""
@@ -773,15 +1024,20 @@ async def fix_ticket(router, diagnosis: str, ticket_id: str,
                 qa_feedback=reject_feedback[:2000],
             )
     else:
-        wf_text = "（未提供步骤清单 — 按诊断报告自由执行）"
+        prompt_template = IMPLEMENTER_PROMPT_LEGACY
         retry_section = ""
         if reject_feedback:
             diag += f"\n\n## 上次修复被拒绝的原因（务必避免重蹈覆辙）\n{reject_feedback}"
 
     af_block = _extract_affected_files_block(diagnosis)
-    prompt = af_block + IMPLEMENTER_PROMPT.format(
-        diagnosis=diag, ticket_id=ticket_id, golden_data=gd,
-        workflow_steps=wf_text, retry_section=retry_section)
+    if workflow and workflow.steps:
+        prompt = af_block + prompt_template.format(
+            diagnosis=diag, ticket_id=ticket_id, golden_data=gd,
+            workflow_steps=wf_text, retry_section=retry_section)
+    else:
+        prompt = af_block + prompt_template.format(
+            diagnosis=diag, ticket_id=ticket_id, golden_data=gd,
+            retry_section=retry_section)
 
     if provider == "codex":
         combined = f"{prompt}\n\n---\n\n请基于以上诊断报告和步骤清单实施修复。直接修改文件，不要请求确认。"
@@ -824,12 +1080,21 @@ async def qa_review(router, diagnosis: str, golden_data: str = "",
     prompt = GATEKEEPER_PROMPT.format(
         diagnosis=diagnosis, golden_data=gd,
         hardgate_report=hr, workflow_steps=wf_text) + dd
-    return await _run_agent(
+    result = await _run_agent(
         router, role="gatekeeper", model="opus",
         prompt="请按步骤清单逐步验证当前分支最新提交。",
         system_prompt=prompt,
         workdir=workdir,
     )
+    if "<qa_verdict>" not in result:
+        log.warning("QA report missing <qa_verdict>, retrying once with explicit reminder")
+        result = await _run_agent(
+            router, role="gatekeeper", model="opus",
+            prompt="请按步骤清单逐步验证当前分支最新提交。**重要：报告末尾必须输出完整的 <qa_verdict> 控制块，否则视为无效。**",
+            system_prompt=prompt,
+            workdir=workdir,
+        )
+    return result
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -840,6 +1105,164 @@ async def _notify(dispatcher, color: str, message: str, open_id: str = "",
                   dm_color: str = "", dm_message: str = ""):
     """MAQS notification — delivery chat only (notifier bot)."""
     await _notify_mads(dispatcher, color, message, header="MAQS")
+
+
+class MaqsTicketProcessor:
+    def __init__(self, router, dispatcher, app_token, table_id, *,
+                 notify_open_id: str = "", merge_queue=None):
+        self.router = router
+        self.dispatcher = dispatcher
+        self.app_token = app_token
+        self.table_id = table_id
+        self.notify_open_id = notify_open_id
+        self.merge_queue = merge_queue
+
+    async def process(self, record_id, ticket, *, skip_diagnosis=False):
+        ctx = TicketContext(
+            record_id=record_id,
+            ticket=ticket,
+            ticket_id=ticket.get("title", record_id[:8]),
+            severity=ticket.get("severity", "P1"),
+            ticket_type=ticket.get("type", ticket.get("ticket_type", "bug")),
+            card_mid=ticket.get("status_card_mid") or None,
+            golden_data=ticket.get("golden_data", "") or "",
+            notify_open_id=self.notify_open_id,
+        )
+        await self._phase_diagnosis(ctx, skip_diagnosis)
+        return ctx
+
+    async def _phase_diagnosis(self, ctx, skip):
+        if skip:
+            ctx.diagnosis = ctx.ticket.get("diagnosis", "")
+            ctx.complexity = _parse_complexity(ctx.diagnosis)
+            log.info("[MAQS] Skipping diagnosis for %s (pre-contracted)", ctx.ticket_id)
+            return
+
+        if ctx.card_mid:
+            await _update_status_card(
+                self.dispatcher, ctx.card_mid, ctx.record_id[:8], ctx.ticket_id,
+                "queued", ctx.severity, ctx.ticket_type,
+                {
+                    "diagnosing": "pending", "fixing": "pending",
+                    "testing": "pending", "reviewing": "pending",
+                },
+                workflow=ctx.workflow,
+            )
+        else:
+            ctx.card_mid = await _send_status_card(
+                self.dispatcher, ctx.record_id[:8], ctx.ticket_id,
+                "queued", ctx.severity, ctx.ticket_type,
+                {
+                    "diagnosing": "pending", "fixing": "pending",
+                    "testing": "pending", "reviewing": "pending",
+                },
+                workflow=ctx.workflow,
+            )
+            if ctx.card_mid:
+                await _bitable_update(self.app_token, self.table_id, ctx.record_id,
+                                      {"status_card_mid": ctx.card_mid})
+
+        await _bitable_update(self.app_token, self.table_id, ctx.record_id,
+                              {"status": "diagnosing"})
+        if ctx.card_mid:
+            await _update_status_card(
+                self.dispatcher, ctx.card_mid, ctx.record_id[:8], ctx.ticket_id,
+                "diagnosing", ctx.severity, ctx.ticket_type,
+                {
+                    "diagnosing": "running", "fixing": "pending",
+                    "testing": "pending", "reviewing": "pending",
+                },
+                workflow=ctx.workflow,
+            )
+        else:
+            ctx.card_mid = await _send_status_card(
+                self.dispatcher, ctx.record_id[:8], ctx.ticket_id,
+                "diagnosing", ctx.severity, ctx.ticket_type,
+                {
+                    "diagnosing": "running", "fixing": "pending",
+                    "testing": "pending", "reviewing": "pending",
+                },
+                workflow=ctx.workflow,
+            )
+            if ctx.card_mid:
+                await _bitable_update(self.app_token, self.table_id, ctx.record_id,
+                                      {"status_card_mid": ctx.card_mid})
+
+        ticket_info = (
+            f"标题: {ctx.ticket.get('title', 'N/A')}\n"
+            f"现象: {ctx.ticket.get('phenomenon', 'N/A')}\n"
+            f"来源: {ctx.ticket.get('source', 'N/A')}\n"
+            f"严重度: {ctx.ticket.get('severity', 'N/A')}\n"
+        )
+        if ctx.golden_data:
+            ticket_info += f"金标准验证数据: {ctx.golden_data}\n"
+        if ctx.ticket.get("qa_report") and ctx.ticket.get("qa_verdict") == "REJECT":
+            ticket_info += f"\n上次 QA 拒绝原因:\n{ctx.ticket['qa_report']}\n"
+
+        ctx.diagnosis = await _run_phase_with_timeout(
+            LoopPhase.DIAGNOSING, diagnose_ticket(self.router, ticket_info), ctx.ticket_id)
+
+        if ctx.diagnosis.startswith("[ERROR]"):
+            log.error("Diagnosis failed for %s: %s", ctx.ticket_id, ctx.diagnosis[:200])
+            await _bitable_update(self.app_token, self.table_id, ctx.record_id, {
+                "status": "stalled",
+                "diagnosis": ctx.diagnosis,
+                "needs_human": True,
+            })
+            if ctx.card_mid:
+                await _update_status_card(
+                    self.dispatcher, ctx.card_mid, ctx.record_id[:8], ctx.ticket_id,
+                    "diagnosing", ctx.severity, ctx.ticket_type,
+                    {
+                        "diagnosing": "failed", "fixing": "pending",
+                        "testing": "pending", "reviewing": "pending",
+                    },
+                    workflow=ctx.workflow,
+                )
+            await _notify(self.dispatcher, "orange",
+                          f"MAQS 诊断失败: {ctx.ticket_id}\n需要人工介入。",
+                          ctx.notify_open_id)
+            return
+
+        if _is_garbage_diagnosis(ctx.diagnosis):
+            log.error("Diagnosis garbage for %s: %s", ctx.ticket_id, ctx.diagnosis[:200])
+            await _bitable_update(self.app_token, self.table_id, ctx.record_id, {
+                "status": "stalled",
+                "diagnosis": ctx.diagnosis,
+                "needs_human": True,
+            })
+            if ctx.card_mid:
+                await _update_status_card(
+                    self.dispatcher, ctx.card_mid, ctx.record_id[:8], ctx.ticket_id,
+                    "diagnosing", ctx.severity, ctx.ticket_type,
+                    {
+                        "diagnosing": "failed", "fixing": "pending",
+                        "testing": "pending", "reviewing": "pending",
+                    },
+                    workflow=ctx.workflow,
+                )
+            await _notify(self.dispatcher, "orange",
+                          f"MAQS 诊断失败: {ctx.ticket_id}\n需要人工介入。",
+                          ctx.notify_open_id)
+            return
+
+        write_artifact(ctx.record_id[:8], "diagnosis.md", ctx.diagnosis)
+
+        await _bitable_update(self.app_token, self.table_id, ctx.record_id, {
+            "status": "diagnosed",
+            "diagnosis": ctx.diagnosis,
+        })
+        if ctx.card_mid:
+            await _update_status_card(
+                self.dispatcher, ctx.card_mid, ctx.record_id[:8], ctx.ticket_id,
+                "diagnosing", ctx.severity, ctx.ticket_type,
+                {
+                    "diagnosing": "done", "fixing": "pending",
+                    "testing": "pending", "reviewing": "pending",
+                },
+                workflow=ctx.workflow,
+            )
+        ctx.complexity = _parse_complexity(ctx.diagnosis)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -898,7 +1321,41 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
         if skip_diagnosis:
             # MADS contract flow: diagnosis already done and contracted
             diagnosis = ticket.get("diagnosis", "")
+            if _is_garbage_diagnosis(diagnosis):
+                log.error("Diagnosis garbage (skip path) for %s: %s", ticket_id, diagnosis[:200])
+                await _update_card("queued", {
+                    "diagnosing": "pending", "fixing": "pending",
+                    "testing": "pending", "reviewing": "pending",
+                })
+                await _bitable_update(app_token, table_id, record_id, {
+                    "status": "stalled",
+                    "diagnosis": diagnosis,
+                    "needs_human": True,
+                })
+                await _update_card("diagnosing", {
+                    "diagnosing": "failed", "fixing": "pending",
+                    "testing": "pending", "reviewing": "pending",
+                })
+                await _notify(dispatcher, "orange",
+                              f"MAQS 诊断失败: {ticket_id}\n需要人工介入。",
+                              notify_open_id)
+                return
             log.info("[MAQS] Skipping diagnosis for %s (pre-contracted)", ticket_id)
+            if _is_garbage_diagnosis(diagnosis):
+                log.error("Diagnosis garbage for %s: %s", ticket_id, diagnosis[:200])
+                await _bitable_update(app_token, table_id, record_id, {
+                    "status": "stalled",
+                    "diagnosis": diagnosis,
+                    "needs_human": True,
+                })
+                await _update_card("diagnosing", {
+                    "diagnosing": "failed", "fixing": "pending",
+                    "testing": "pending", "reviewing": "pending",
+                })
+                await _notify(dispatcher, "orange",
+                              f"MAQS 诊断失败: {ticket_id}\n需要人工介入。",
+                              notify_open_id)
+                return
         else:
             await _update_card("queued", {
                 "diagnosing": "pending", "fixing": "pending",
@@ -940,6 +1397,47 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
                               f"MAQS 诊断失败: {ticket_id}\n需要人工介入。",
                               notify_open_id)
                 return
+
+            if _is_garbage_diagnosis(diagnosis):
+                log.error("Diagnosis garbage for %s: %s", ticket_id, diagnosis[:200])
+                await _bitable_update(app_token, table_id, record_id, {
+                    "status": "stalled",
+                    "diagnosis": diagnosis,
+                    "needs_human": True,
+                })
+                await _update_card("diagnosing", {
+                    "diagnosing": "failed", "fixing": "pending",
+                    "testing": "pending", "reviewing": "pending",
+                })
+                await _notify(dispatcher, "orange",
+                              f"MAQS 诊断失败: {ticket_id}\n需要人工介入。",
+                              notify_open_id)
+                return
+
+            # Single retry if <complexity> tag is absent from diagnosis.
+            # After retry, fail closed: stall the ticket rather than silently
+            # defaulting to L3 — downstream routing (scope guard, merge path)
+            # assumes a valid complexity, and a silent fallback lets bad
+            # diagnoses leak into the wrong track.
+            _cx_re = r"<complexity>\s*L[1-5]\s*</complexity>"
+            if not _re_xml.search(_cx_re, diagnosis, _re_xml.IGNORECASE):
+                log.warning("MAQS %s: <complexity> tag missing, retrying diagnosis once", ticket_id)
+                retry_diag = await _run_phase_with_timeout(
+                    LoopPhase.DIAGNOSING, diagnose_ticket(router, ticket_info), ticket_id)
+                if not retry_diag.startswith("[ERROR]") and not _is_garbage_diagnosis(retry_diag):
+                    diagnosis = retry_diag
+                if not _re_xml.search(_cx_re, diagnosis, _re_xml.IGNORECASE):
+                    log.error("MAQS %s: <complexity> tag still absent after retry — stalling",
+                              ticket_id)
+                    await _bitable_update(app_token, table_id, record_id, {
+                        "status": "stalled",
+                        "needs_human": True,
+                        "diagnosis": diagnosis + "\n\n[PIPELINE] Stalled: <complexity> missing after retry.",
+                    })
+                    await _notify(dispatcher, "orange",
+                                  f"MAQS {ticket_id}: 诊断缺失 <complexity> 标签（已重试），需要人工介入。",
+                                  notify_open_id)
+                    return
 
             # Write diagnosis artifact
             write_artifact(record_id[:8], "diagnosis.md", diagnosis)
@@ -1011,6 +1509,26 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
             "contract_track": contract_track,
         })
 
+        # ── Pre-fix gate: fail early if diagnosis lacks both affected_files and workflow ──
+        from agent.jobs.hardgate import parse_affected_files as _parse_af
+        _af = _parse_af(diagnosis)
+        if not _af and not workflow:
+            log.error("MAQS %s: diagnosis incomplete — no affected_files and no workflow_steps",
+                      ticket_id)
+            await _bitable_update(app_token, table_id, record_id, {
+                "status": "FAILED_DIAGNOSIS_INCOMPLETE",
+                "needs_human": True,
+            })
+            await _update_card("diagnosing", {
+                "diagnosing": "failed", "fixing": "pending",
+                "testing": "pending", "reviewing": "pending",
+            })
+            await _notify(dispatcher, "orange",
+                          f"MAQS {ticket_id}: 诊断不完整，缺少 affected_files 和 workflow_steps\n"
+                          f"请重新诊断后再推进。",
+                          notify_open_id)
+            return
+
         # ── Phase 2: Fix (Sonnet/Codex) in isolated worktree ──
         severity = ticket.get("severity", "P1")
         impl_provider = "codex" if severity in ("P2", "P3") else "sonnet"
@@ -1035,9 +1553,23 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
             reject_fb = ticket["qa_report"]
         fix_timeout = 1200 if complexity in ("L3", "L4") else 0
 
+        # Guard: worktree may have been cleaned up between creation and this point
+        if not os.path.exists(wt_path):
+            log.warning("MAQS %s: worktree missing before fix — rebuilding %s", ticket_id, wt_path)
+            wt_path = await _worktree_create(branch)
+            if not wt_path:
+                await _bitable_update(app_token, table_id, record_id,
+                                       {"status": "stalled", "needs_human": True})
+                await _update_card("fixing", {
+                    "diagnosing": "done", "fixing": "failed",
+                    "testing": "pending", "reviewing": "pending",
+                })
+                await _notify(dispatcher, "orange",
+                              f"MAQS {ticket_id}: worktree 丢失且重建失败，需要人工介入。",
+                              notify_open_id)
+                return
+
         # Route L3/L4 with 2+ affected files to decomposed execution
-        from agent.jobs.hardgate import parse_affected_files as _parse_af
-        _af = _parse_af(diagnosis)
         use_decomposed = complexity in ("L3", "L4") and len(_af) >= 2
 
         if use_decomposed:
@@ -1084,7 +1616,7 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
                            workflow=workflow),
                 ticket_id, timeout_override=fix_timeout)
 
-        if not use_decomposed and fix_report.startswith("[ERROR]"):
+        if not use_decomposed and (fix_report.startswith("[ERROR]") or _is_limit_banner(fix_report)):
             log.error("Fix failed for %s: %s", ticket_id, fix_report[:200])
             await _worktree_remove(wt_path, branch)
             await _bitable_update(app_token, table_id, record_id, {
@@ -1116,12 +1648,27 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
                 })
 
         # ── Handle fix-time signals ──────────────────────────────────
-        # Discovery: fixer found scope-external issues → create new tickets
+        # Discovery: fixer found scope-external issues → create new tickets.
+        # Each discovery goes through a premise-validation gate before
+        # persistence; hallucinated claims (non-existent files, out-of-bounds
+        # line numbers, design-doc-echo keywords) are rejected with structured
+        # logs so hallucination rate is measurable.
         discoveries = _parse_discoveries(fix_report)
         if discoveries:
             log.info("MAQS %s: fixer discovered %d scope-external issue(s)",
                      ticket_id, len(discoveries))
             for disc in discoveries:
+                if _is_gitignored_artifact(disc):
+                    log.info("MAQS %s: skip gitignored artifact discovery: %s",
+                             ticket_id, disc[:200])
+                    continue
+                accept, reason = _validate_discovery_premise(disc, wt_path)
+                if not accept:
+                    log.warning(
+                        "MAQS %s: discovery_rejected reason=%s text=%s",
+                        ticket_id, reason, disc[:200],
+                    )
+                    continue
                 try:
                     await _bitable_add(app_token, table_id, {
                         "title": f"[Discovery] {disc[:80]}",
@@ -1177,6 +1724,7 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
                                        reject_feedback=reject_fb,
                                        provider="sonnet"),
                             ticket_id, timeout_override=fix_timeout)
+                        # Banner text (Claude usage limit) bypasses [ERROR] check; empty-diff at L1232 is the real safety net.
                         if not fix_report.startswith("[ERROR]"):
                             write_artifact(record_id[:8], "fix_report.md", fix_report)
                             _commit_msg = _parse_commit_message(
@@ -1217,6 +1765,30 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
                 else:
                     await _git_in(wt_path, "add", "-A")
                     rc, _, _ = await _git_in(wt_path, "commit", "-m", _commit_msg)
+
+        # Guard: verify fix branch actually diverged from dev. If every commit
+        # attempt in the fix path silently failed (e.g., pre-commit hook),
+        # HEAD stays at dev's tip and `rev-parse HEAD` would record dev's
+        # commit as fix_commit_id — a cross-ticket pollution bug.
+        _, _count, _ = await _git_in(wt_path, "rev-list", "--count", "dev..HEAD")
+        if not _count.strip() or _count.strip() == "0":
+            log.error("MAQS %s: fix branch %s has no commits beyond dev — "
+                      "no fix landed, bailing out", ticket_id, branch)
+            await _worktree_remove(wt_path, branch)
+            await _bitable_update(app_token, table_id, record_id, {
+                "status": "stalled",
+                "fix_plan": fix_report + "\n\n[Fix branch has no commits beyond dev — commit likely failed silently]",
+                "needs_human": True,
+            })
+            await _update_card("fixing", {
+                "diagnosing": "done", "fixing": "failed",
+                "testing": "pending", "reviewing": "pending",
+            })
+            await _notify(dispatcher, "orange",
+                          f"MAQS Fix failed: {ticket_id}\n"
+                          f"fix 分支 {branch} 与 dev 无差异，commit 可能因 hook 拒绝而失败。",
+                          notify_open_id)
+            return
 
         _, commit_hash, _ = await _git_in(wt_path, "rev-parse", "--short", "HEAD")
 
@@ -1279,9 +1851,28 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
                 "diagnosing": "done", "fixing": "done",
                 "testing": "failed", "reviewing": "pending",
             })
+            failed_checks = []
+            for check_name, check_result in hardgate_result.details.items():
+                if not isinstance(check_result, dict) or check_result.get("ok"):
+                    continue
+                output = (check_result.get("output") or "").strip()
+                if check_name == "diff_scope":
+                    allowed = sorted(check_result.get("allowed") or [])
+                    actual = sorted(check_result.get("actual") or [])
+                    out_of_scope = sorted(check_result.get("out_of_scope") or [])
+                    locked_violation = check_result.get("locked_violation")
+                    detail = f"allowed={allowed} actual={actual}"
+                    if out_of_scope:
+                        detail += f" out_of_scope={out_of_scope}"
+                    if locked_violation:
+                        detail += f" locked_violation={sorted(locked_violation)}"
+                    failed_checks.append(f"  - {check_name}: {detail}")
+                else:
+                    snippet = output[:300].replace("\n", " ") if output else "(no output)"
+                    failed_checks.append(f"  - {check_name}: {snippet}")
+            body = "\n".join(failed_checks) if failed_checks else "(no details)"
             await _notify(dispatcher, "orange",
-                          f"MAQS Hardgate 未通过: {ticket_id}\n"
-                          f"diff_scope={hardgate_result.details.get('diff_scope')}",
+                          f"MAQS Hardgate 未通过: {ticket_id}\n{body}",
                           notify_open_id)
             return
 
@@ -1412,11 +2003,13 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
                 except Exception as audit_err:
                     log.warning("Autonomy audit log failed: %s", audit_err)
             else:
-                log.error("Merge to dev failed for %s", ticket_id)
-                await _worktree_remove(wt_path, branch)
+                log.error("Merge to dev failed for %s (branch kept: %s)",
+                          ticket_id, branch)
+                await _worktree_remove(wt_path)
                 await _bitable_update(app_token, table_id, record_id, {
                     "status": "stalled",
                     "needs_human": True,
+                    "fix_branch": branch,
                 })
                 await _update_card("reviewing", {
                     "diagnosing": "done", "fixing": "done",
@@ -1424,7 +2017,8 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
                 })
                 await _notify(dispatcher, "orange",
                               f"MAQS Merge 失败: {ticket_id}\n"
-                              f"QA 已通过但合并到 dev 分支失败，需要人工介入。",
+                              f"QA 已通过但合并到 dev 分支失败，需要人工介入。\n"
+                              f"fix 分支已保留: `{branch}` (commit {commit_hash})",
                               notify_open_id)
         else:
             reject_count = int(ticket.get("reject_count") or 0) + 1
@@ -1579,7 +2173,7 @@ async def run_maqs_pipeline(router, dispatcher, config: dict):
 
     tickets = await _bitable_query(
         app_token, table_id,
-        filter_str='OR(CurrentValue.[status]="open",CurrentValue.[status]="fixing")',
+        filter_str='CurrentValue.[status]="open"',
         limit=MAX_PARALLEL * 2,
     )
 

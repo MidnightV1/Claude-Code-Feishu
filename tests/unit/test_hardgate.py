@@ -229,3 +229,73 @@ def test_prompt_changes_blocks_hardgate_run():
     assert result.passed is False
     assert result.details["prompt_changes"]["ok"] is False
     assert result.details["prompt_changes"]["prompt_changes"] is True
+
+
+# ── Regression: prompt_changes must not fire on line reshuffling ──────────
+
+def test_prompt_changes_ignores_line_reshuffle():
+    """Large refactors that move `system_prompt=system_prompt,` around without
+    changing its value should NOT flag prompt_changes. Previously any `+`
+    line matching the pattern fired the check regardless of matching `-`."""
+    from agent.jobs.hardgate import Hardgate
+
+    diff_reshuffle = (
+        "--- a/agent/jobs/mads/helpers.py\n"
+        "+++ b/agent/jobs/mads/helpers.py\n"
+        "@@ -10,3 +10,3 @@\n"
+        "-        system_prompt=system_prompt,\n"
+        "+        system_prompt=system_prompt,\n"
+        "@@ -50,3 +50,3 @@\n"
+        "-        system_prompt=system_prompt,\n"
+        "+        system_prompt=system_prompt,\n"
+    )
+
+    async def run_test():
+        with patch("agent.jobs.hardgate._git",
+                   new=AsyncMock(return_value=(0, diff_reshuffle, ""))):
+            return await Hardgate()._check_prompt_changes("fix/MAQS-abc")
+
+    result = asyncio.run(run_test())
+    assert result["prompt_changes"] is False
+    assert result["ok"] is True
+
+
+def test_prompt_changes_detects_real_value_change():
+    """An added prompt line without a matching removal IS a real change."""
+    from agent.jobs.hardgate import Hardgate
+
+    diff_real = (
+        "--- a/agent/jobs/maqs.py\n"
+        "+++ b/agent/jobs/maqs.py\n"
+        "-INVESTIGATOR_PROMPT = \"old\"\n"
+        "+INVESTIGATOR_PROMPT = \"new value\"\n"
+    )
+
+    async def run_test():
+        with patch("agent.jobs.hardgate._git",
+                   new=AsyncMock(return_value=(0, diff_real, ""))):
+            return await Hardgate()._check_prompt_changes("fix/MAQS-abc")
+
+    result = asyncio.run(run_test())
+    assert result["prompt_changes"] is True
+    assert result["ok"] is False
+
+
+def test_prompt_changes_detects_pure_addition():
+    """A new prompt assignment with no matching `-` line is a real change."""
+    from agent.jobs.hardgate import Hardgate
+
+    diff_new = (
+        "--- a/agent/jobs/maqs.py\n"
+        "+++ b/agent/jobs/maqs.py\n"
+        "+NEW_PROMPT = \"added\"\n"
+    )
+
+    async def run_test():
+        with patch("agent.jobs.hardgate._git",
+                   new=AsyncMock(return_value=(0, diff_new, ""))):
+            return await Hardgate()._check_prompt_changes("fix/MAQS-abc")
+
+    result = asyncio.run(run_test())
+    assert result["prompt_changes"] is True
+    assert result["ok"] is False

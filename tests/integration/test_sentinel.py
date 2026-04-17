@@ -3,7 +3,7 @@
 
 Tests the real data paths that unit tests mock away:
 - L1: SentinelStore full lifecycle on real filesystem
-- L2: Orchestrator cycle with multi-scanner coordination + intake_queue.jsonl
+- L2: Orchestrator cycle with multi-scanner coordination + bitable_add 调用
 - L3: CLI commands (list / stats / resolve) output format
 
 Usage:
@@ -154,7 +154,7 @@ class TestStoreLifecycleIntegration:
 # ── L2: Orchestrator cycle ────────────────────────────────────────────────────
 
 class TestOrchestratorCycleIntegration:
-    """L2 — Full cycle with multiple fake scanners, real Store, real intake_queue."""
+    """L2 — Full cycle with multiple fake scanners, real Store, bitable_add mock."""
 
     @pytest.fixture
     def workspace(self, tmp_path):
@@ -167,7 +167,7 @@ class TestOrchestratorCycleIntegration:
     def test_gold_standard_maqs_and_notify(self, workspace):
         """Gold standard: stale_todo(maqs) + uncommitted_stale(notify)
         → summary {total:2, maqs:1, notify:1}
-        → intake_queue.jsonl has P2 record with correct signal_id
+        → bitable_add receives the expected P2 payload
         → dispatcher.send_to_user called once for notify signal
         """
         store = SentinelStore(str(workspace / "data" / "sentinel.jsonl"))
@@ -210,7 +210,7 @@ class TestOrchestratorCycleIntegration:
             "agent.jobs.mads.helpers.bitable_add",
             new_callable=AsyncMock,
             return_value="REC001",
-        ):
+        ) as mock_add:
             summary = self._run(orchestrator.run_cycle(trigger="manual"))
 
         # Route summary
@@ -222,14 +222,11 @@ class TestOrchestratorCycleIntegration:
         stored = store.query(hours=24)
         assert len(stored) == 2
 
-        # intake_queue.jsonl written before bitable call
-        queue_path = workspace / "data" / "intake_queue.jsonl"
-        assert queue_path.exists()
-        with open(queue_path) as f:
-            records = [json.loads(line) for line in f if line.strip()]
-        assert len(records) == 1
-        assert records[0]["priority"] == "P2"
-        assert records[0]["signal_id"] == todo_sig.id
+        mock_add.assert_called_once()
+        fields = mock_add.call_args[0][2]
+        assert fields["severity"] == "P2"
+        assert fields["source"] == "sentinel:code_scanner"
+        assert fields["phenomenon"] == todo_sig.summary
 
         # Dispatcher called for notify signal (via delivery_target, not DM)
         dispatcher.send_to_delivery_target.assert_called_once()
@@ -308,8 +305,8 @@ class TestOrchestratorCycleIntegration:
         assert summary["total"] == 1
         assert summary["signals"][0].summary == "from good scanner"
 
-    def test_intake_queue_written_even_if_bitable_fails(self, workspace):
-        """Local intake_queue.jsonl is written before the bitable call — survives API failure."""
+    def test_signal_persisted_even_if_bitable_fails(self, workspace):
+        """Signal remains unresolved in sentinel store when the bitable call fails."""
         store = SentinelStore(str(workspace / "data" / "sentinel.jsonl"))
 
         maqs_sig = _sig(
@@ -340,14 +337,10 @@ class TestOrchestratorCycleIntegration:
         ):
             self._run(orchestrator.run_cycle(trigger="manual"))
 
-        queue_path = workspace / "data" / "intake_queue.jsonl"
-        assert queue_path.exists()
-        with open(queue_path) as f:
-            lines = [l for l in f if l.strip()]
-        assert len(lines) == 1
-        entry = json.loads(lines[0])
-        assert entry["priority"] == "P1"
-        assert entry["signal_id"] == maqs_sig.id
+        unresolved = store.query(hours=24, unresolved_only=True)
+        assert len(unresolved) == 1
+        assert unresolved[0].id == maqs_sig.id
+        assert unresolved[0].resolved_at is None
 
     def test_silent_log_persists_no_external_calls(self, workspace):
         store = SentinelStore(str(workspace / "data" / "sentinel.jsonl"))

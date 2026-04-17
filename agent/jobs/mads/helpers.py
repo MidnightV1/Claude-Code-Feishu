@@ -15,6 +15,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from agent.platforms.feishu.api import FeishuAPI
+
 log = logging.getLogger("hub.mads")
 
 # ══════════════════════════════════════════════════════════════════════
@@ -23,9 +25,6 @@ log = logging.getLogger("hub.mads")
 
 PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
-_BITABLE_SCRIPT = os.path.join(
-    PROJECT_ROOT, ".claude", "skills", "feishu-bitable", "scripts", "bitable_ctl.py"
-)
 _DOC_CTL_SCRIPT = os.path.join(
     PROJECT_ROOT, ".claude", "skills", "feishu-doc", "scripts", "doc_ctl.py"
 )
@@ -35,30 +34,50 @@ _TASK_CTL_SCRIPT = os.path.join(
 
 # Artifact directory for file-based agent communication
 ARTIFACTS_DIR = os.path.join(PROJECT_ROOT, "data", "mads")
+_FEISHU_API: FeishuAPI | None = None
 
 
 # ══════════════════════════════════════════════════════════════════════
 #  Bitable helpers
 # ══════════════════════════════════════════════════════════════════════
 
+async def _kill_and_reap(proc: asyncio.subprocess.Process):
+    """Kill a subprocess and wait for it to avoid zombie processes."""
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except asyncio.TimeoutError:
+        pass
+
+
+def _get_api() -> FeishuAPI:
+    """Lazy-init shared Feishu API client for Bitable operations."""
+    global _FEISHU_API
+    if _FEISHU_API is None:
+        config_path = os.path.join(PROJECT_ROOT, "config.yaml")
+        if not os.path.exists(config_path):
+            config_path = os.path.join(PROJECT_ROOT, "..", "..", "config.yaml")
+        _FEISHU_API = FeishuAPI.from_config(config_path=config_path)
+    return _FEISHU_API
+
+
 async def bitable_add(app_token: str, table_id: str, fields: dict) -> str | None:
     """Create a bitable record, return record_id or None."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, _BITABLE_SCRIPT, "record", "add", app_token, table_id,
-            "--fields", json.dumps(fields, ensure_ascii=False),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=PROJECT_ROOT,
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(
+                _get_api().post,
+                f"/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records",
+                {"fields": fields},
+            ),
+            timeout=30,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-        if proc.returncode == 0:
-            out = stdout.decode().strip()
-            if out.startswith("Created: "):
-                return out.split("Created: ", 1)[1].strip()
-            return "ok"
-        else:
-            log.warning("Bitable add failed: %s", stderr.decode()[:200])
+        if resp.get("code") == 0:
+            return resp.get("data", {}).get("record", {}).get("record_id") or "ok"
+        log.warning("Bitable add failed: %s", (resp.get("msg") or "")[:200])
     except asyncio.TimeoutError:
         log.warning("Bitable add timed out")
     except Exception as e:
@@ -70,15 +89,18 @@ async def bitable_update(app_token: str, table_id: str,
                           record_id: str, fields: dict):
     """Update an existing bitable record."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, _BITABLE_SCRIPT, "record", "update",
-            app_token, table_id, record_id,
-            "--fields", json.dumps(fields, ensure_ascii=False),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=PROJECT_ROOT,
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(
+                _get_api().put,
+                f"/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/{record_id}",
+                {"fields": fields},
+            ),
+            timeout=30,
         )
-        await asyncio.wait_for(proc.communicate(), timeout=30)
+        if resp.get("code") != 0:
+            log.warning("Bitable update failed: %s", (resp.get("msg") or "")[:200])
+    except asyncio.TimeoutError:
+        log.warning("Bitable update timed out")
     except Exception as e:
         log.warning("Bitable update error: %s", e)
 
@@ -87,20 +109,41 @@ async def bitable_query(app_token: str, table_id: str,
                          filter_str: str = "", limit: int = 50) -> list[dict]:
     """Query bitable records, return list of {record_id, fields}."""
     try:
-        cmd = [sys.executable, _BITABLE_SCRIPT, "record", "list",
-               app_token, table_id, "--limit", str(limit), "--json"]
-        if filter_str:
-            cmd.extend(["--filter", filter_str])
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=PROJECT_ROOT,
-        )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-        if proc.returncode == 0:
-            data = json.loads(stdout.decode())
-            return data if isinstance(data, list) else []
+        records = []
+        page_token = None
+        remaining = limit
+        for _ in range(20):
+            params = {"page_size": str(min(remaining, 500))}
+            if page_token:
+                params["page_token"] = page_token
+            if filter_str:
+                params["filter"] = filter_str
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _get_api().get,
+                    f"/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records",
+                    params,
+                ),
+                timeout=30,
+            )
+            if resp.get("code") != 0:
+                log.warning("Bitable query failed: %s", (resp.get("msg") or "")[:200])
+                return []
+            data = resp.get("data") or {}
+            for record in data.get("items") or []:
+                records.append({
+                    "record_id": record.get("record_id", ""),
+                    "fields": record.get("fields", {}),
+                })
+                remaining -= 1
+                if remaining <= 0:
+                    return records
+            if not data.get("has_more"):
+                break
+            page_token = data.get("page_token")
+        return records
+    except asyncio.TimeoutError:
+        log.warning("Bitable query timed out")
     except Exception as e:
         log.warning("Bitable query error: %s", e)
     return []
@@ -113,24 +156,21 @@ async def bitable_get_status(app_token: str, table_id: str,
     Returns the status string, or None if the record cannot be retrieved.
     """
     try:
-        cmd = [sys.executable, _BITABLE_SCRIPT, "record", "get",
-               app_token, table_id, record_id]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=PROJECT_ROOT,
+        resp = await asyncio.wait_for(
+            asyncio.to_thread(
+                _get_api().get,
+                f"/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records/{record_id}",
+            ),
+            timeout=15,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
-        if proc.returncode != 0:
+        if resp.get("code") != 0:
             return None
-        # Parse "  status: "value"" from text output
-        for line in stdout.decode().splitlines():
-            stripped = line.strip()
-            if stripped.startswith("status:"):
-                # status: "open" → extract "open"
-                val = stripped.split(":", 1)[1].strip().strip('"')
-                return val
+        fields = resp.get("data", {}).get("record", {}).get("fields", {})
+        status = fields.get("status")
+        if isinstance(status, str):
+            return status
+    except asyncio.TimeoutError:
+        log.warning("Bitable get_status timed out for %s", record_id)
     except Exception as e:
         log.warning("Bitable get_status error for %s: %s", record_id, e)
     return None
@@ -148,7 +188,11 @@ async def git(*args, timeout: int = 30) -> tuple[int, str, str]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        await _kill_and_reap(proc)
+        return -1, "", f"timeout after {timeout}s"
     return proc.returncode, stdout.decode().strip(), stderr.decode().strip()
 
 
@@ -206,13 +250,21 @@ WORKTREE_BASE = os.path.join(PROJECT_ROOT, ".worktrees")
 
 async def git_in(cwd: str, *args, timeout: int = 30) -> tuple[int, str, str]:
     """Run a git command in a specific directory."""
-    proc = await asyncio.create_subprocess_exec(
-        "git", *args,
-        cwd=cwd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", *args,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        log.warning("git_in: cwd does not exist: %s", cwd)
+        return -1, "", f"cwd does not exist: {cwd}"
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        await _kill_and_reap(proc)
+        return -1, "", f"timeout after {timeout}s"
     return proc.returncode, stdout.decode().strip(), stderr.decode().strip()
 
 
@@ -245,6 +297,48 @@ async def worktree_create(branch: str) -> str | None:
         log.error("Failed to create worktree for %s: %s", branch, err)
         return None
 
+    # This symlink pattern is only safe for fully gitignored files; `data/` cannot reuse it because
+    # `data/goal_tree.yaml` is tracked, so `git worktree add` creates `data/` as a real directory and
+    # mixed tracked/untracked directories will fool `os.path.exists`/`os.path.islink` guards.
+    config_src = os.path.join(PROJECT_ROOT, "config.yaml")
+    if not os.path.exists(config_src):
+        config_src = os.path.join(PROJECT_ROOT, "..", "config.yaml")
+    if not os.path.exists(config_src):
+        config_src = os.path.join(PROJECT_ROOT, "..", "..", "config.yaml")
+    config_dst = os.path.join(wt_path, "config.yaml")
+    if not os.path.exists(config_src):
+        log.error("config.yaml not found for worktree %s (searched from %s)", wt_path, PROJECT_ROOT)
+        await git("worktree", "remove", "--force", wt_path)
+        if os.path.exists(wt_path):
+            shutil.rmtree(wt_path, ignore_errors=True)
+        return None
+    if not os.path.exists(config_dst):
+        try:
+            os.symlink(config_src, config_dst)
+        except OSError as exc:
+            log.error("Failed to link config.yaml into worktree %s: %s", wt_path, exc)
+            await git("worktree", "remove", "--force", wt_path)
+            if os.path.exists(wt_path):
+                shutil.rmtree(wt_path, ignore_errors=True)
+            return None
+    if not os.path.exists(config_dst) or not os.access(config_dst, os.R_OK):
+        log.error("config.yaml unavailable in worktree %s: %s", wt_path, config_dst)
+        await git("worktree", "remove", "--force", wt_path)
+        if os.path.exists(wt_path):
+            shutil.rmtree(wt_path, ignore_errors=True)
+        return None
+
+    # Write ownership lock so concurrent cleanup_stale() calls don't delete
+    # a worktree that is still in use. The lock records this process's PID;
+    # cleanup skips dirs whose lock holder is alive.
+    try:
+        import json as _json, time as _time
+        lock_path = os.path.join(wt_path, ".owner_lock")
+        with open(lock_path, "w") as _lf:
+            _json.dump({"pid": os.getpid(), "branch": branch, "ts": _time.time()}, _lf)
+    except OSError as _exc:
+        log.warning("Failed to write owner_lock for %s: %s", wt_path, _exc)
+
     log.info("Worktree created: %s → %s", branch, wt_path)
     return wt_path
 
@@ -267,7 +361,20 @@ async def worktree_merge_to_dev(wt_path: str, branch: str) -> bool:
 
     On merge conflict, attempts rebase onto latest dev first (handles the
     common case of stale branches). If rebase succeeds, retries merge.
+
+    Refuses merge when the main repo has uncommitted changes; a dirty
+    working tree causes git merge to fail with a misleading
+    "would be overwritten" error that would otherwise leak into the
+    conflict path and risk branch deletion.
     """
+    rc_s, dirty, _ = await git("status", "--porcelain")
+    if rc_s == 0 and dirty.strip():
+        log.warning(
+            "Main repo dirty, refusing merge for %s — uncommitted changes:\n%s",
+            branch, dirty[:500],
+        )
+        return False
+
     rc, _, err = await git("checkout", "dev")
     if rc != 0:
         log.error("Failed to checkout dev for merge: %s", err)
@@ -318,8 +425,35 @@ async def worktree_merge_to_dev(wt_path: str, branch: str) -> bool:
     return True
 
 
+def _owner_lock_is_alive(wt_path: str) -> bool:
+    """Return True if worktree has a lock file held by a live process.
+
+    Protects against cleanup_stale() racing against concurrent MAQS runs
+    that created a worktree but haven't yet had it registered in
+    `git worktree list` (brief window during `git worktree add`).
+    """
+    import json as _json
+    lock_path = os.path.join(wt_path, ".owner_lock")
+    if not os.path.exists(lock_path):
+        return False
+    try:
+        with open(lock_path) as _lf:
+            data = _json.load(_lf)
+        pid = int(data.get("pid", 0))
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)  # raises if dead
+        return True
+    except (OSError, ValueError, _json.JSONDecodeError):
+        return False
+
+
 async def worktree_cleanup_stale():
-    """Remove any stale worktrees (orphaned from crashed pipelines)."""
+    """Remove any stale worktrees (orphaned from crashed pipelines).
+
+    Respects `.owner_lock` files — a worktree whose lock holder is still
+    alive is skipped, even if it hasn't yet appeared in `git worktree list`.
+    """
     if not os.path.exists(WORKTREE_BASE):
         return
     await git("worktree", "prune")
@@ -329,10 +463,15 @@ async def worktree_cleanup_stale():
     if rc == 0:
         for line in out.split("\n"):
             if line.startswith("worktree "):
-                tracked.add(line.split(" ", 1)[1])
+                tracked.add(os.path.realpath(line.split(" ", 1)[1]))
     for entry in os.listdir(WORKTREE_BASE):
         entry_path = os.path.join(WORKTREE_BASE, entry)
-        if entry_path not in tracked and os.path.isdir(entry_path):
+        # Use realpath for comparison: on macOS /Users is a symlink to /private/Users,
+        # so git worktree list returns resolved paths while entry_path may be unresolved.
+        if os.path.realpath(entry_path) not in tracked and os.path.isdir(entry_path):
+            if _owner_lock_is_alive(entry_path):
+                log.info("Skip cleanup of active worktree (lock holder alive): %s", entry_path)
+                continue
             log.info("Cleaning stale worktree dir: %s", entry_path)
             shutil.rmtree(entry_path, ignore_errors=True)
 
@@ -539,7 +678,12 @@ async def run_script(script_path: str, *args, timeout: int = 60) -> tuple[int, s
         stderr=asyncio.subprocess.PIPE,
         cwd=PROJECT_ROOT,
     )
-    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        await _kill_and_reap(proc)
+        log.warning("run_script timed out after %ds: %s", timeout, script_path)
+        return -1, "", f"timeout after {timeout}s"
     return proc.returncode, stdout.decode().strip(), stderr.decode().strip()
 
 

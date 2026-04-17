@@ -13,7 +13,7 @@ Bugs here cause silent context loss, infinite retry loops, or session corruption
 | R02 | Get existing session | after set, `get_session_id(key)` | session_id string | P0 |
 | R03 | Set LLM config | `set_session_llm(key, config)` | creates entry if absent | P0 |
 | R04 | Get LLM config | after set, `get_session_llm(key)` | returns config dict | P0 |
-| R05 | Clear session | `clear_session(key)` | removes session_id, preserves history + llm_config | P0 |
+| R05 | Clear session | `clear_session(key)` | removes session_id, preserves history + llm_config + last_summary + last_summarized_ts | P0 |
 | R06 | Clear missing key | `clear_session('missing')` | no crash | P1 |
 
 ### History Management

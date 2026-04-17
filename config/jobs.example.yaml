@@ -1,0 +1,67 @@
+# Example cron jobs configuration.
+#
+# Open-source users:
+#   1. Copy this file to config/jobs.yaml
+#   2. Remove/modify entries that don't apply to your deployment
+#   3. Add your own jobs (notify_bot names must match bots defined in config.yaml)
+#
+# Fields:
+#   id        - unique identifier (any stable string)
+#   name      - human-readable job name
+#   schedule  - cron expression (minute hour day month weekday)
+#   handler   - built-in handler: "mads_pipeline" / "mads_outcomes" / "error_scan" /
+#               "maqs_quality" / "sentinel" / "explorer" / "planner" / "arxiv:daily" /
+#               "briefing:<domain>" (briefing domains live in ~/briefing/domains/)
+#   prompt    - free-form prompt dispatched to Claude CLI (exclusive with handler)
+#   notify_bot     - optional; route output to a specific bot defined in config.yaml
+#   deliver_to_feishu - false = handler self-manages delivery (default true for prompt jobs)
+#   llm.effort     - optional; "max" to force heaviest model for this job
+#
+# Hot reload: edits take effect on next scheduler reload (SIGUSR1 or hub_ctl restart).
+
+jobs:
+
+  # ---- Dev pipeline (MADS/MAQS) --------------------------------------------
+  - id: mads-pipeline
+    name: mads-pipeline
+    schedule: '*/5 * * * *'
+    handler: mads_pipeline
+    deliver_to_feishu: false
+
+  - id: mads-outcome-daily
+    name: mads-outcome-daily
+    schedule: 0 2 * * *
+    handler: mads_outcomes
+    deliver_to_feishu: false
+
+  - id: maqs-quality-scan
+    name: maqs-quality-scan
+    schedule: 0 3 * * 0,3
+    handler: maqs_quality
+    deliver_to_feishu: false
+
+  # ---- Observability -------------------------------------------------------
+  - id: error-scan
+    name: error-scan
+    schedule: 0 12 * * *
+    handler: error_scan
+    deliver_to_feishu: false
+
+  - id: sentinel-scan
+    name: sentinel-scan
+    schedule: 0 */4 * * *
+    handler: sentinel
+    deliver_to_feishu: false
+
+  # ---- Autonomous iteration ------------------------------------------------
+  - id: planner
+    name: planner
+    schedule: 30 2 * * *
+    handler: planner
+    deliver_to_feishu: false
+
+  - id: explorer
+    name: explorer
+    schedule: 0 3 * * *
+    handler: explorer
+    deliver_to_feishu: false

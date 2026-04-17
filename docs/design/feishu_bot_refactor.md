@@ -510,6 +510,8 @@ class MessageGuard:
 
 ### 5.6 重构后的 FeishuBot
 
+> ⚠️ 本节为目标态示例，A4 (`DebounceManager`)、A7-A11（`__init__`/`_handle_message` 重构）尚未实施，当前 `bot.py` 仍内联 `PendingBatch`。
+
 ```python
 # agent/platforms/feishu/bot.py（重构后）
 
@@ -566,23 +568,23 @@ class FeishuBot(MediaMixin, SessionMixin):
 
 ### Atom 列表
 
-| # | Atom | 关注点 | 预估行数 | 依赖 | 可并行 |
-|---|------|--------|----------|------|--------|
-| A1 | 创建 `prompts.py`，迁移 `FEISHU_SYSTEM_PROMPT` 和常量 | 数据迁移 | ~20 新 | 无 | ✅ |
-| A2 | 更新 `session.py` 的 import 路径 | import 修正 | ~3 改 | A1 | — |
-| A3 | 创建 `message_guard.py`，实现 `MessageGuard` 类 | 防护逻辑提取 | ~70 新 | 无 | ✅ |
-| A4 | 创建 `debounce.py`，迁移 `PendingBatch` + `DebounceManager` | 批次管理提取 | ~170 新 | 无 | ✅ |
-| A5 | 创建 `command_router.py`，迁移命令路由和处理器 | 命令逻辑提取 | ~220 新 | 无 | ✅ |
-| A6 | 创建 `card_handlers.py`，迁移内置卡片 handler | 卡片逻辑提取 | ~220 新 | 无 | ✅ |
-| A7 | 重构 `FeishuBot.__init__`：初始化 4 个新组件 | 组件编排 | ~60 改 | A3-A6 | — |
-| A8 | 重构 `_handle_message()`：委托到 Guard/CommandRouter/Debounce | 消息流瘦身 | ~100 改 | A3-A5, A7 | — |
-| A9 | 重构 `_handle_recall()`：委托到 DebounceManager | 撤回流适配 | ~20 改 | A4, A7 | — |
-| A10 | 更新 `SessionMixin._process_batch()`：通过 `self._debounce` 访问状态 | mixin 适配 | ~15 改 | A4, A7 | — |
-| A11 | 移除 bot.py 中已迁移的代码，验证行数 ≤ 800 | 清理 | ~删除 800 行 | A7-A10 | — |
-| A12 | 为 `CommandRouter` 编写单元测试 | 测试 | ~80 新 | A5 | ✅ |
-| A13 | 为 `MessageGuard` 编写单元测试 | 测试 | ~60 新 | A3 | ✅ |
-| A14 | 为 `DebounceManager` 编写单元测试 | 测试 | ~100 新 | A4 | ✅ |
-| A15 | 集成 smoke test（`smoke_test.py` 通过 + import 链完整） | 验证 | ~20 改 | A11 | — |
+| # | Atom | 状态 | 关注点 | 预估行数 | 依赖 | 可并行 |
+|---|------|------|--------|----------|------|--------|
+| A1 | 创建 `prompts.py`，迁移 `FEISHU_SYSTEM_PROMPT` 和常量 | ✅ Done | 数据迁移 | ~20 新 | 无 | ✅ |
+| A2 | 更新 `session.py` 的 import 路径 | ⏳ Pending | import 修正 | ~3 改 | A1 | — |
+| A3 | 创建 `message_guard.py`，实现 `MessageGuard` 类 | ✅ Done | 防护逻辑提取 | ~70 新 | 无 | ✅ |
+| A4 | 创建 `debounce.py`，迁移 `PendingBatch` + `DebounceManager` | ⏳ Pending | 批次管理提取 | ~170 新 | 无 | ✅ |
+| A5 | 创建 `command_router.py`，迁移命令路由和处理器 | ✅ Done | 命令逻辑提取 | ~220 新 | 无 | ✅ |
+| A6 | 创建 `card_handlers.py`，迁移内置卡片 handler | ✅ Done | 卡片逻辑提取 | ~220 新 | 无 | ✅ |
+| A7 | 重构 `FeishuBot.__init__`：初始化 4 个新组件 | ⏳ Pending | 组件编排 | ~60 改 | A3-A6 | — |
+| A8 | 重构 `_handle_message()`：委托到 Guard/CommandRouter/Debounce | ⏳ Pending | 消息流瘦身 | ~100 改 | A3-A5, A7 | — |
+| A9 | 重构 `_handle_recall()`：委托到 DebounceManager | ⏳ Pending | 撤回流适配 | ~20 改 | A4, A7 | — |
+| A10 | 更新 `SessionMixin._process_batch()`：通过 `self._debounce` 访问状态 | ⏳ Pending | mixin 适配 | ~15 改 | A4, A7 | — |
+| A11 | 移除 bot.py 中已迁移的代码，验证行数 ≤ 800 | ⏳ Pending | 清理 | ~删除 800 行 | A7-A10 | — |
+| A12 | 为 `CommandRouter` 编写单元测试 | ⏳ Pending | 测试 | ~80 新 | A5 | ✅ |
+| A13 | 为 `MessageGuard` 编写单元测试 | ⏳ Pending | 测试 | ~60 新 | A3 | ✅ |
+| A14 | 为 `DebounceManager` 编写单元测试 | ⏳ Pending | 测试 | ~100 新 | A4 | ✅ |
+| A15 | 集成 smoke test（`smoke_test.py` 通过 + import 链完整） | ⏳ Pending | 验证 | ~20 改 | A11 | — |
 
 ### 依赖图
 

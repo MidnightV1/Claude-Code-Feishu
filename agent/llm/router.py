@@ -55,6 +55,10 @@ RECOVERY_PREAMBLE = (
     "如需操作之前涉及的文件，重新读取确认当前状态。\n"
     "3. **不要主动追问历史事项** — 如果摘要中有未完成的事项，"
     "等用户主动提起再处理，不要自行延续。\n"
+    "4. **不要重复摘要中已展示的分析/结论** — 摘要里出现过的推导过程不要在本次"
+    "回复中重新走一遍，除非用户明确要求更新或更深入的分析。直接基于已有结论回应新消息。\n"
+    "5. **回复仍须完整放入 `<reply-to-user>` 标记** — 标记外的内容用户看不到，"
+    "不要在标记前写分析草稿再在标记内复述。\n"
 )
 
 SUMMARY_PROMPT = (
@@ -196,6 +200,10 @@ class LLMRouter:
                 preserved["history"] = entry["history"]
             if entry.get("llm_config"):
                 preserved["llm_config"] = entry["llm_config"]
+            if entry.get("last_summary"):
+                preserved["last_summary"] = entry["last_summary"]
+            if entry.get("last_summarized_ts"):
+                preserved["last_summarized_ts"] = entry["last_summarized_ts"]
             self._sessions[session_key] = preserved if preserved else {}
         else:
             self._sessions.pop(session_key, None)
@@ -383,8 +391,7 @@ class LLMRouter:
                 entry["last_summary"] = summary
                 if older:
                     entry["last_summarized_ts"] = older[-1].get("ts", "")
-                if hasattr(self._sessions, "save"):
-                    self._sessions.save(session_key, entry)
+                await self.save_session(session_key)
                 if compress_input and raw_len:
                     self._archive_summary(session_key, summary, raw_len)
                 parts.append(f"### 早期对话摘要\n{summary}")
@@ -419,6 +426,18 @@ class LLMRouter:
             return True
         # Generic empty-result crash (no stderr info)
         if t == "":
+            return True
+        return False
+
+    @staticmethod
+    def _is_rate_limited(result: LLMResult) -> bool:
+        """Check if a CLI error is an account-level rate limit (keep in sync with agent/jobs/maqs.py _is_garbage_diagnosis)."""
+        if not result.is_error:
+            return False
+        normalized = " ".join(result.text.lower().split())
+        if "you've hit your limit" in normalized or "you hit your limit" in normalized:
+            return True
+        if "resets" in normalized and ("limit" in normalized or "rate" in normalized):
             return True
         return False
 
@@ -506,6 +525,9 @@ class LLMRouter:
                 return result
             # Resume failed — fall through to fresh session with recovery context
             log.warning("Resume failed for %s: %s", session_key, result.text[:LOG_PREVIEW_LEN])
+            if self._is_rate_limited(result):
+                log.warning("Rate limited — skipping fresh session retry for %s", session_key)
+                return result
 
         # ── Step 2: Fresh session with recovery context via system prompt ──
         effective_system = llm_config.system_prompt
@@ -535,6 +557,10 @@ class LLMRouter:
                 setting_sources=setting_sources,
             )
             if result.cancelled:
+                return result
+            if self._is_rate_limited(result):
+                log.warning("Rate limited (fresh session, attempt %d): %s",
+                            attempt + 1, result.text[:LOG_PREVIEW_LEN])
                 return result
             if not result.is_error or not self._is_transient(result):
                 break

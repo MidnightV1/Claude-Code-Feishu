@@ -6,8 +6,36 @@ import os
 import shutil
 import asyncio
 import logging
+import threading
+from typing import Callable, Generic, TypeVar
 
 log = logging.getLogger("hub.store")
+L = TypeVar("L")
+
+
+class LockPool(Generic[L]):
+    def __init__(self, lock_factory: Callable[[], L], max_size: int = 50) -> None:
+        self._factory = lock_factory
+        self._max_size = max_size
+        self._locks: dict[str, L] = {}
+        self._guard = threading.Lock()
+
+    def get(self, key: str) -> L:
+        with self._guard:
+            if key not in self._locks:
+                self._locks[key] = self._factory()
+            if len(self._locks) > self._max_size:
+                for lock_key in list(self._locks):
+                    if lock_key != key and not self._locks[lock_key].locked():
+                        del self._locks[lock_key]
+            return self._locks[key]
+
+    def clear(self) -> None:
+        with self._guard:
+            self._locks.clear()
+
+    def __len__(self) -> int:
+        return len(self._locks)
 
 
 def _ensure_dir(path: str):
