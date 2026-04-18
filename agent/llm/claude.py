@@ -12,6 +12,7 @@ from pathlib import PurePosixPath
 from typing import Awaitable, Callable
 
 from agent.infra.models import LLMResult
+from agent.infra.skill_usage import extract_skill, log_skill_usage
 
 log = logging.getLogger("hub.claude_cli")
 
@@ -411,6 +412,9 @@ class ClaudeCli:
                             # Persistent tool call log (survives cron/chat alike)
                             _tool_summary = _summarize_tool_input(name, inp)
                             log.info("tool_use: %s %s", name, _tool_summary)
+                            _skill_hit = extract_skill(name, inp)
+                            if _skill_hit:
+                                log_skill_usage(_skill_hit, source=f"tool_use:{name}")
                             # TodoWrite → forward full todo list
                             if name == "TodoWrite" and on_todo:
                                 try:

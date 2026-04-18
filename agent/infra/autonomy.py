@@ -145,7 +145,7 @@ async def _create_l2_task(summary: str) -> str:
     title = f"[L2] {summary[:80]}"
     try:
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, script, "create", title, "--due", "+7d",
+            sys.executable, script, "create", title, "--due", "+168h",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

@@ -46,6 +46,17 @@ briefing:
     model: sonnet
     timeout_seconds: 300
 
+hub:
+  # Shell command executed when admin sends #restart in Feishu.
+  # HUB_CHILD env var is cleared automatically so hub.sh's self-kill guard doesn't fire.
+  # Default: "./hub.sh restart" — cross-platform (screen-based, works on Linux + macOS).
+  # Examples for other process managers:
+  #   macOS launchd: "launchctl unload ~/Library/LaunchAgents/com.my-hub.plist && sleep 2 && launchctl load ~/Library/LaunchAgents/com.my-hub.plist"
+  #   systemd (user): "systemctl --user restart claude-code-feishu"
+  #   systemd (root): "sudo systemctl restart claude-code-feishu"  # requires NOPASSWD sudoers entry
+  #   docker: "docker restart claude-code-feishu"
+  restart_command: "./hub.sh restart"
+
 scheduler:
   enabled: true
   store_path: data/jobs.json

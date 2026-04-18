@@ -151,9 +151,18 @@ Check for ALL of the following, IN THIS PRIORITY ORDER:
 
 ## Output
 
-**CRITICAL**: Your output MUST include a `<contract_verdict>` XML block.
-Without this block the system cannot parse your judgment and the contract
-will stall. This is mandatory regardless of your verdict.
+**CRITICAL**: Your output MUST end with a `<contract_verdict>` XML block.
+Without this block the system cannot parse your judgment and will default
+to REVISE — wasting a round regardless of your actual assessment.
+
+Common reasons reviewers skip this block — and why they are wrong:
+
+| Temptation | Reality |
+|---|---|
+| "My verdict is obvious from the narrative" | The pipeline cannot read narrative — it only parses XML. No block = REVISE by default. |
+| "I stated ACCEPT/REVISE in plain text" | Plain-text verdict is invisible to the parser. Only the XML block counts. |
+| "The feedback is already in my prose" | Prose feedback never reaches the Implementer. Only `<feedback>` inside the XML block does. |
+| "The contract is clearly good/bad, no need" | Obvious to you, invisible to the parser. Always output the block, every time. |
 
 Write a brief review narrative (2-5 sentences), then output the control block:
 
@@ -232,7 +241,16 @@ Check these 3 points:
 
 ## Output
 
-**CRITICAL**: Your output MUST include a `<contract_verdict>` XML block.
+**CRITICAL**: Your output MUST end with a `<contract_verdict>` XML block.
+Without this block the pipeline defaults to REVISE regardless of your intent.
+
+Common reasons reviewers skip this block — and why they are wrong:
+
+| Temptation | Reality |
+|---|---|
+| "My verdict is obvious from the narrative" | The pipeline cannot read narrative — it only parses XML. No block = REVISE by default. |
+| "I stated ACCEPT/REVISE in plain text" | Plain-text verdict is invisible to the parser. Only the XML block counts. |
+| "The feedback is already in my prose" | Prose feedback never reaches the Implementer. Only `<feedback>` inside the XML block does. |
 
 ```xml
 <contract_verdict>
@@ -276,7 +294,7 @@ def parse_contract_verdict(text: str, round_num: int = 1) -> tuple[str, str]:
         return verdict, feedback
 
     # Parse failure — fail-closed: always REVISE to prevent silent bad contracts
-    log.warning(
+    log.error(
         "Contract review missing <contract_verdict> at round %d — "
         "defaulting to REVISE (fail-closed)",
         round_num,

@@ -273,6 +273,9 @@ class FeishuBot(MediaMixin, SessionMixin):
         self._tenant_key: str = config.get("tenant_key", "")
         # Hub 3.0: callback for dev signal detection
         self.on_dev_signal: callable | None = None
+        # Restart command for #restart — configurable, default to cross-platform hub.sh.
+        # Users with launchd/systemd/docker set their own via config.yaml `hub.restart_command`.
+        self._restart_command = config.get("restart_command", "./hub.sh restart")
 
     def _register_card_actions(self):
         """Register built-in card action handlers."""
@@ -1569,24 +1572,22 @@ class FeishuBot(MediaMixin, SessionMixin):
             return f"Quota check error: {e}"
 
     async def _do_server_restart(self):
-        """Wait for reply delivery, then trigger hub restart via launchctl."""
+        """Wait for reply delivery, then trigger hub restart via configured command."""
         await asyncio.sleep(3)
         import subprocess
         log_path = os.path.join(_PROJECT_ROOT, "data", "restart.log")
+        # Clear HUB_CHILD so hub.sh-based restart commands aren't blocked by the
+        # self-kill guard. Other env inherits.
+        env = {k: v for k, v in os.environ.items() if k != "HUB_CHILD"}
         with open(log_path, "a") as lf:
+            lf.write(f"\n[{time.strftime('%Y-%m-%d %H:%M:%S')}] exec: {self._restart_command}\n")
             subprocess.Popen(
-                ["/bin/sh", "-c",
-                 "launchctl unload ~/Library/LaunchAgents/com.claude-code-feishu-health.plist 2>/dev/null; "
-                 "launchctl unload ~/Library/LaunchAgents/com.claude-code-feishu-invest.plist 2>/dev/null; "
-                 "launchctl unload ~/Library/LaunchAgents/com.claude-code-feishu.plist && "
-                 "sleep 2 && "
-                 "launchctl load ~/Library/LaunchAgents/com.claude-code-feishu.plist && "
-                 "launchctl load ~/Library/LaunchAgents/com.claude-code-feishu-health.plist 2>/dev/null; "
-                 "launchctl load ~/Library/LaunchAgents/com.claude-code-feishu-invest.plist 2>/dev/null"],
+                ["/bin/sh", "-c", self._restart_command],
                 cwd=_PROJECT_ROOT,
                 start_new_session=True,
                 stdout=lf,
                 stderr=lf,
+                env=env,
             )
 
     # ═══ Orchestration ═══

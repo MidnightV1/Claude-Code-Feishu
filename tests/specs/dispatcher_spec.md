@@ -49,19 +49,19 @@ This is a **security gate** — false negatives mean secret leakage to users.
 
 | ID | Pattern | Example | Expected |
 |----|---------|---------|----------|
-| S01 | Anthropic key | `sk-ant-api03-<REDACTED>…` | not None |
-| S02 | OpenAI key | `sk-<REDACTED>` | not None |
-| S03 | GitHub PAT | `ghp_<REDACTED>` | not None |
-| S04 | GitHub OAuth | `gho_<REDACTED>` | not None |
-| S05 | Slack bot token | `xoxb-<ID>-<SECRET>` | not None |
-| S06 | Slack app token | `xoxa-<ID>-<SECRET>` | not None |
-| S07 | Google API key | `AIza<REDACTED>` | not None |
+| S01 | Anthropic key | `sk-ant-api03-<LOWER>…` | not None |
+| S02 | OpenAI key | `sk-<MIXED>` | not None |
+| S03 | GitHub PAT | `ghp_<MIXED>` | not None |
+| S04 | GitHub OAuth | `gho_<LOWER>` | not None |
+| S05 | Slack bot token | `xoxb-<NUM>-<LOWER>` | not None |
+| S06 | Slack app token | `xoxa-<NUM>-<LOWER>` | not None |
+| S07 | Google API key | `AIzaSy<MIXED>` | not None |
 | S08 | RSA private key header | `-----BEGIN RSA PRIVATE KEY-----` | not None |
 | S09 | EC private key header | `-----BEGIN EC PRIVATE KEY-----` | not None |
-| S10 | AWS access key | `AKIA<REDACTED>` | not None |
+| S10 | AWS access key | `AKIA<UPPER>` | not None |
 | S11 | Clean Chinese text | `"这是普通中文，没有密钥"` | `None` |
 | S12 | Clean English text | `"Hello world"` | `None` |
-| S13 | Secret embedded in longer text | `"配置: AKIA1234567890ABCDEF 泄漏了"` | not None |
+| S13 | Secret embedded in longer text | `"配置: AKIA<MIXED> 泄漏了"` | not None |
 | S14 | Too-short OpenAI prefix | `"sk-short"` (< 20 chars after sk-) | `None` |
 | S15 | Too-short GitHub PAT | `"ghp_12345"` (< 10 chars after ghp_) | `None` |
 

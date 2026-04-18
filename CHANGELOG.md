@@ -6,6 +6,21 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.22.2] — 2026-04-19
+
+### Fixed
+- `#restart` command is now config-driven via `hub.restart_command` in `config.yaml`. Previously hardcoded to one deployment's macOS launchctl + plist paths, causing silent restart failures on other hosts. Default `./hub.sh restart` works cross-platform (screen-based). See `config.yaml.example` for launchd/systemd/docker examples. HUB_CHILD env is cleared in the subprocess so hub.sh's self-kill guard doesn't fire.
+
+### Hardened
+- MAQS `workflow_steps` parser tolerates empty/nested JSON tags with single-retry on empty output.
+- MADS contract reviewer prompts now include rationalization tables to resist LLM "skip-the-step" drift.
+- Autonomy L2 task due-date uses `+168h` instead of unsupported `+7d` unit.
+
+### Added
+- `agent/infra/skill_usage.py` — telemetry producer for HealthPulse idle-skill scanner.
+
+---
+
 ## [0.22.1] — 2026-04-18
 
 - Isolate personal cron config from open-source sync (config/jobs.yaml excluded)

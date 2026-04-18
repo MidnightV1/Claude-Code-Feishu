@@ -156,8 +156,15 @@ def _parse_workflow_steps(diagnosis: str) -> list[dict]:
     m = _re_xml.search(r"<workflow_steps>(.*?)</workflow_steps>", diagnosis, _re_xml.DOTALL)
     if not m:
         return []
+    raw = m.group(1).strip()
+    if not raw:
+        log.warning("workflow_steps: empty content in tag")
+        return []
+    json_m = _re_xml.search(r'\[.*\]', raw, _re_xml.DOTALL)
+    if json_m:
+        raw = json_m.group(0)
     try:
-        steps = _json.loads(m.group(1).strip())
+        steps = _json.loads(raw)
         if not isinstance(steps, list):
             log.warning("workflow_steps: expected list with 2+ items, got %s", type(steps).__name__)
             return []
@@ -173,7 +180,7 @@ def _parse_workflow_steps(diagnosis: str) -> list[dict]:
                 return []
         return steps
     except (_json.JSONDecodeError, ValueError) as e:
-        log.warning("Failed to parse workflow_steps JSON: %s", e)
+        log.warning("Failed to parse workflow_steps JSON: %s | raw=%r", e, raw[:200])
     return []
 
 
@@ -638,6 +645,7 @@ INVESTIGATOR_PROMPT = """\
 - verification 中要求新增或修改的文件必须同时列入本步骤的 affected_files（典型场景：verification 要求添加测试用例时，目标测试文件必须入列）
 - 步骤按依赖顺序排列
 - 数量控制：2-7 步。少于 2 步说明拆分不够，超过 7 步说明工单应升级为 composite
+- **[禁止]** `<workflow_steps>[]</workflow_steps>` 或空 JSON 数组无效——即使最简单的修复也需 2 步（如：修改代码 + 验证通过）
 - 如果某步发现 scope 外的同类问题，该步的 content 必须写成"**检查**同类问题并上报发现"，不是"**修复**同类问题"——scope 外问题通过 `<discovery>` 提交衍生工单
 
 ### 复杂度判定规则（complexity 字段取值 L1-L5，严格按以下标准）
@@ -680,7 +688,8 @@ INVESTIGATOR_PROMPT = """\
 <atomic_split>none</atomic_split>
 <workflow_steps>
 [
-  {"content": "...", "affected_files": ["..."], "verification": "..."}
+  {{"content": "步骤1：具体修改动作", "affected_files": ["path/to/file.py"], "verification": "验证命令1"}},
+  {{"content": "步骤2：具体修改动作", "affected_files": ["path/to/file.py"], "verification": "验证命令2"}}
 ]
 </workflow_steps>
 </diagnosis_meta>
@@ -1438,6 +1447,16 @@ async def process_ticket(router, dispatcher, app_token: str, table_id: str,
                                   f"MAQS {ticket_id}: 诊断缺失 <complexity> 标签（已重试），需要人工介入。",
                                   notify_open_id)
                     return
+
+            # Single retry if workflow_steps is empty — mirrors <complexity> retry pattern.
+            if not _parse_workflow_steps(diagnosis):
+                log.warning("MAQS %s: workflow_steps empty, retrying diagnosis once", ticket_id)
+                retry_diag = await _run_phase_with_timeout(
+                    LoopPhase.DIAGNOSING, diagnose_ticket(router, ticket_info), ticket_id)
+                if not retry_diag.startswith("[ERROR]") and not _is_garbage_diagnosis(retry_diag):
+                    diagnosis = retry_diag
+                if not _parse_workflow_steps(diagnosis):
+                    log.error("MAQS %s: workflow_steps still empty after retry", ticket_id)
 
             # Write diagnosis artifact
             write_artifact(record_id[:8], "diagnosis.md", diagnosis)

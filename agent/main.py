@@ -276,10 +276,15 @@ async def main():
     message_store = MessageStore("data")
     message_store.cleanup()
 
+    # Shared hub-level settings applied to every bot
+    hub_cfg = cfg.get("hub", {})
+    default_restart_cmd = hub_cfg.get("restart_command", "./hub.sh restart")
+
     # Create bot instances — one per feishu app
     loop_executor: "LoopExecutor | None" = None
     bots: list[FeishuBot] = []
     for bot_cfg in bot_configs:
+        bot_cfg.setdefault("restart_command", default_restart_cmd)
         # Per-bot default model + env override
         bot_env = {
             "FEISHU_APP_ID": bot_cfg.get("app_id", ""),

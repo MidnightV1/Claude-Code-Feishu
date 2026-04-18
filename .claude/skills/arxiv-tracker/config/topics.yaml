@@ -8,10 +8,10 @@ settings:
   batch_size: 8
   # 评估模型
   model: "3.1-Pro"
-  # 飞书文档归档文件夹 token（论文日报）
-  feishu_folder: ""  # your feishu folder token
-  # 分享给用户
-  share_to: ""  # your feishu user open_id
+  # 飞书文档归档文件夹 token（论文日报）— 用户自行填入
+  feishu_folder: ""
+  # 分享给用户（open_id）— 用户自行填入
+  share_to: ""
   # 评分权重（v2: 新增 collaboration 维度）
   weights:
     novelty: 0.25
