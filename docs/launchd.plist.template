@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd plist template for claude-code-feishu.
+
+  Do NOT install this file directly. Run:
+      scripts/install_launchd.sh
+  which fills in {{PYTHON}}, {{REPO}}, {{HOME}} with real paths and
+  copies the result to ~/Library/LaunchAgents/.
+
+  Labeled as a LaunchAgent (user session), not a LaunchDaemon (system).
+  Auto-login must be enabled for this to run on boot without manual
+  login — see docs/SETUP.md Phase 5.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claude-code-feishu</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{{PYTHON}}</string>
+        <string>-m</string>
+        <string>agent.main</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>{{REPO}}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:{{HOME}}/.local/bin</string>
+        <key>PYTHONPATH</key>
+        <string>{{REPO}}</string>
+        <key>HOME</key>
+        <string>{{HOME}}</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>{{REPO}}/data/launchd-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{REPO}}/data/launchd-stderr.log</string>
+</dict>
+</plist>

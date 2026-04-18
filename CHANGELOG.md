@@ -6,6 +6,17 @@ Format: feature-oriented grouping per release, not per-commit.
 
 ---
 
+## [0.22.3] — 2026-04-19
+
+### Added
+- **launchd installer** (`scripts/install_launchd.sh`) for macOS Mac mini-as-server deployments. Checks auto-login, fills `docs/launchd.plist.template` with real paths, installs and loads the service.
+- **SETUP Phase 5b** — explains why auto-login is required (LaunchAgent needs a user session) and why skipping this step causes silent restart-after-reboot failures. Includes both macOS and Linux (systemd) recipes.
+
+### Fixed
+- Restored the launchd template that was dropped in v0.22.1. Generic placeholders (`{{PYTHON}}`, `{{REPO}}`, `{{HOME}}`) make it portable; filename renamed to `launchd.plist.template` to avoid branch-specific label confusion.
+
+---
+
 ## [0.22.2] — 2026-04-19
 
 ### Fixed

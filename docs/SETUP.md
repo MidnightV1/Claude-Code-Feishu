@@ -126,7 +126,7 @@ Set `scheduler.enabled: false` and `heartbeat.enabled: false` for first boot (en
 
 ---
 
-## Phase 5 — First Boot
+## Phase 5 — First Boot (manual)
 
 ```bash
 ./hub.sh start
@@ -140,6 +140,81 @@ tail -20 data/claude-code-feishu.log
 **Ask user**: "Send a test message to the bot in Feishu — do you get a reply?"
 
 If yes → core setup complete. If no → check log for errors (usually: wrong app_id/secret, bot not published, WebSocket not enabled).
+
+---
+
+## Phase 5b — Auto-Start on Boot (recommended for server deployments)
+
+Once first boot works, configure the hub to survive reboots. This matters
+for Mac mini-as-server setups where the box may restart unattended.
+
+### macOS (LaunchAgent)
+
+**Prerequisite — enable auto-login.**  LaunchAgents run inside a user
+session, not at boot time. If no one logs in after reboot, the bot never
+starts. Tell the user:
+
+> System Settings → Users & Groups → Login Options → "Automatically log in as"
+> → select your user → enter password.
+>
+> (FileVault must be disabled, or the login password must be stored in the
+> keychain. Without auto-login, the Mac sits at the login screen and
+> LaunchAgents stay idle.)
+
+Then run the installer:
+
+```bash
+scripts/install_launchd.sh
+```
+
+What it does:
+- Verifies auto-login is on (prompts user to enable if not)
+- Fills `docs/launchd.plist.template` with real paths (`which python3`, `$PWD`, `$HOME`)
+- Copies to `~/Library/LaunchAgents/com.claude-code-feishu.plist`
+- `launchctl load`s it and verifies via `launchctl list`
+
+After reboot, the bot starts automatically once auto-login completes.
+
+**Recommended config.yaml entry** so `#restart` from Feishu uses launchctl
+(not hub.sh, which would conflict with the launchd-managed process):
+
+```yaml
+hub:
+  restart_command: "launchctl kickstart -k gui/$(id -u)/com.claude-code-feishu"
+```
+
+### Linux (systemd)
+
+Create `~/.config/systemd/user/claude-code-feishu.service`:
+
+```ini
+[Unit]
+Description=Claude Hub Feishu bot
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/claude-code-feishu
+ExecStart=/usr/bin/python3 -m agent.main
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+```
+
+Then:
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now claude-code-feishu
+loginctl enable-linger $USER   # so the service runs when user not logged in
+```
+
+Corresponding `config.yaml`:
+```yaml
+hub:
+  restart_command: "systemctl --user restart claude-code-feishu"
+```
 
 ---
 
